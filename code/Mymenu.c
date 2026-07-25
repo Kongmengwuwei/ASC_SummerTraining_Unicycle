@@ -1,12 +1,13 @@
 #include "Mymenu.h"
 #include "Attitude.h"
+#include "Y_Motor.h"
 #include <stdio.h>
 
 #define MENU_FONT_H (16U)
 #define MENU_VISIBLE_ITEMS (7U)
 #define MENU_VALUE_X (160U)
 #define MENU_STEP_COUNT (5U)
-#define MENU_ATTITUDE_REFRESH_TICKS (20U)
+#define MENU_STATUS_REFRESH_TICKS (20U)
 
 static const float menu_steps[MENU_STEP_COUNT] =
     {
@@ -28,8 +29,8 @@ static bool test_value8;
 static Menu_Item root;
 static Menu_Item *current;
 static uint8_t step_index = 2U;
-static uint8_t attitude_refresh_ticks;
-static volatile bool attitude_refresh_pending;
+static uint8_t status_refresh_ticks;
+static volatile bool status_refresh_pending;
 static bool redraw = true;
 
 void Menu_Create(void)
@@ -67,8 +68,8 @@ void Menu_Init(void)
     Menu_Create();
     All_Folder_Menu_Init(&root);
     current = root.First_Son;
-    attitude_refresh_ticks = 0U;
-    attitude_refresh_pending = true;
+    status_refresh_ticks = 0U;
+    status_refresh_pending = true;
     redraw = true;
 }
 
@@ -133,6 +134,18 @@ static void Menu_Show_Attitude(void)
         Menu_Show_Status_Line(208U, "ATTITUDE: CALIBRATING");
         Menu_Show_Status_Line(224U, "");
     }
+}
+
+static void Menu_Show_Y_Motor_Encoder(void)
+{
+    y_motor_encoder_data_t encoder;
+    char text[31];
+
+    Y_Motor_GetEncoder(&encoder);
+    (void)snprintf(text, sizeof(text), "ENC5:%6d TOTAL:%10ld",
+                   (int)encoder.count_5ms,
+                   (long)encoder.total_count);
+    Menu_Show_Status_Line(192U, text);
 }
 
 static void Menu_Show_Value(const Menu_Item *item, uint16_t y)
@@ -293,8 +306,8 @@ void Menu_Show(void)
     }
 
     ips200_draw_line(0U, 160U, 239U, 160U, RGB565_WHITE);
-    ips200_show_string(0U, 176U, "K1:UP/+   K2:DOWN/-");
-    ips200_show_string(0U, 192U, "K4:OK/STEP K3:BACK");
+    ips200_show_string(0U, 176U, "K1:+ K2:- K4:OK K3:BACK");
+    Menu_Show_Y_Motor_Encoder();
     Menu_Show_Attitude();
 }
 
@@ -384,11 +397,11 @@ void Menu_KeyScan_5ms_ISR(void)
 {
     key_scanner();
 
-    attitude_refresh_ticks++;
-    if (attitude_refresh_ticks >= MENU_ATTITUDE_REFRESH_TICKS)
+    status_refresh_ticks++;
+    if (status_refresh_ticks >= MENU_STATUS_REFRESH_TICKS)
     {
-        attitude_refresh_ticks = 0U;
-        attitude_refresh_pending = true;
+        status_refresh_ticks = 0U;
+        status_refresh_pending = true;
     }
 }
 
@@ -399,12 +412,13 @@ void Menu_Task(void)
     if (redraw)
     {
         redraw = false;
-        attitude_refresh_pending = false;
+        status_refresh_pending = false;
         Menu_Show();
     }
-    else if (attitude_refresh_pending)
+    else if (status_refresh_pending)
     {
-        attitude_refresh_pending = false;
+        status_refresh_pending = false;
+        Menu_Show_Y_Motor_Encoder();
         Menu_Show_Attitude();
     }
 }

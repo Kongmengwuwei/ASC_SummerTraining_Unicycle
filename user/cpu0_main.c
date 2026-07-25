@@ -35,6 +35,7 @@
 #include "zf_common_headfile.h"
 #include "../code/Mymenu.h"
 #include "../code/Attitude.h"
+#include "../code/Y_Motor.h"
 #pragma section all "cpu0_dsram"
 // 将本语句与#pragma section all restore语句之间的全局变量都放在CPU0的RAM中
 
@@ -46,8 +47,9 @@
 int core0_main(void)
 {
     bool attitude_ready;
-    clock_init();                   // 获取时钟频率<务必保留>
+     clock_init();                   // 获取时钟频率<务必保留>
     debug_init();                   // 初始化默认调试串口
+    Y_Motor_Init();                 // Initialize P33.7 pulse / P33.6 direction encoder
     Menu_Init();                    // Initialize IPS200 menu and keys
     attitude_ready = Attitude_Init(); // Initialize IMU660RB and Mahony attitude on CPU0
     // 此处编写用户代码 例如外设初始化代码等
