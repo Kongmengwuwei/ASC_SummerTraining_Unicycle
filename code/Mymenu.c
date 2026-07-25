@@ -1,10 +1,12 @@
 #include "Mymenu.h"
+#include "Attitude.h"
 #include <stdio.h>
 
 #define MENU_FONT_H (16U)
 #define MENU_VISIBLE_ITEMS (7U)
 #define MENU_VALUE_X (160U)
 #define MENU_STEP_COUNT (5U)
+#define MENU_ATTITUDE_REFRESH_TICKS (20U)
 
 static const float menu_steps[MENU_STEP_COUNT] =
     {
@@ -26,6 +28,8 @@ static bool test_value8;
 static Menu_Item root;
 static Menu_Item *current;
 static uint8_t step_index = 2U;
+static uint8_t attitude_refresh_ticks;
+static volatile bool attitude_refresh_pending;
 static bool redraw = true;
 
 void Menu_Create(void)
@@ -63,6 +67,8 @@ void Menu_Init(void)
     Menu_Create();
     All_Folder_Menu_Init(&root);
     current = root.First_Son;
+    attitude_refresh_ticks = 0U;
+    attitude_refresh_pending = true;
     redraw = true;
 }
 
@@ -79,6 +85,53 @@ static void Menu_Clear_Page(void)
     for (row = 0U; row < 15U; row++)
     {
         Menu_Clear_Row(row);
+    }
+}
+
+static void Menu_Show_Status_Line(uint16_t y, const char *text)
+{
+    char line[31];
+
+    (void)snprintf(line, sizeof(line), "%-30.30s", text);
+    ips200_show_string(0U, y, line);
+}
+
+static void Menu_Show_Attitude(void)
+{
+    attitude_euler_t attitude;
+    attitude_performance_t performance;
+    char text[31];
+
+    if (Attitude_GetEuler(&attitude))
+    {
+        (void)snprintf(text, sizeof(text), "P:%7.2f R:%7.2f",
+                       attitude.pitch, attitude.roll);
+        Menu_Show_Status_Line(208U, text);
+
+        if (Attitude_GetPerformance(&performance))
+        {
+            (void)snprintf(text, sizeof(text),
+                           "Y:%5.1f T:%4luus L:%4.1f%%",
+                           attitude.yaw,
+                           (unsigned long)performance.last_time_us,
+                           performance.cpu_load_percent);
+        }
+        else
+        {
+            (void)snprintf(text, sizeof(text), "Y:%7.2f CPU0:OK",
+                           attitude.yaw);
+        }
+        Menu_Show_Status_Line(224U, text);
+    }
+    else if (eulerAngle.imu_error)
+    {
+        Menu_Show_Status_Line(208U, "ATTITUDE: IMU ERROR");
+        Menu_Show_Status_Line(224U, "");
+    }
+    else
+    {
+        Menu_Show_Status_Line(208U, "ATTITUDE: CALIBRATING");
+        Menu_Show_Status_Line(224U, "");
     }
 }
 
@@ -242,6 +295,7 @@ void Menu_Show(void)
     ips200_draw_line(0U, 160U, 239U, 160U, RGB565_WHITE);
     ips200_show_string(0U, 176U, "K1:UP/+   K2:DOWN/-");
     ips200_show_string(0U, 192U, "K4:OK/STEP K3:BACK");
+    Menu_Show_Attitude();
 }
 
 void Menu_Switch(void)
@@ -329,6 +383,13 @@ void Menu_Switch(void)
 void Menu_KeyScan_5ms_ISR(void)
 {
     key_scanner();
+
+    attitude_refresh_ticks++;
+    if (attitude_refresh_ticks >= MENU_ATTITUDE_REFRESH_TICKS)
+    {
+        attitude_refresh_ticks = 0U;
+        attitude_refresh_pending = true;
+    }
 }
 
 void Menu_Task(void)
@@ -338,6 +399,12 @@ void Menu_Task(void)
     if (redraw)
     {
         redraw = false;
+        attitude_refresh_pending = false;
         Menu_Show();
+    }
+    else if (attitude_refresh_pending)
+    {
+        attitude_refresh_pending = false;
+        Menu_Show_Attitude();
     }
 }
