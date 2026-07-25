@@ -33,6 +33,7 @@
 * 2022-09-15       pudding            first version
 ********************************************************************************************************************/
 #include "zf_common_headfile.h"
+#include "../code/Mymenu.h"
 #pragma section all "cpu0_dsram"
 // 将本语句与#pragma section all restore语句之间的全局变量都放在CPU0的RAM中
 
@@ -45,14 +46,18 @@ int core0_main(void)
 {
     clock_init();                   // 获取时钟频率<务必保留>
     debug_init();                   // 初始化默认调试串口
+    Menu_Init();                    // Initialize IPS200 menu and keys
     // 此处编写用户代码 例如外设初始化代码等
 
 
 
     // 此处编写用户代码 例如外设初始化代码等
     cpu_wait_event_ready();         // 等待所有核心初始化完毕
+    pit_ms_init(CCU60_CH0, 5U);     // 5 ms key-scan interrupt
+    interrupt_global_enable(0);     // Enable CPU0 interrupts after both cores are ready
     while (TRUE)
     {
+        Menu_Task();
         // 此处编写需要循环执行的代码
 
 

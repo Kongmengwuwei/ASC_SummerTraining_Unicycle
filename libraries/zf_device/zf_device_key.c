@@ -49,7 +49,8 @@
 
 #include "zf_device_key.h"
 
-static uint32               scanner_period = 0;                                 // 按键的扫描周期
+static uint32               key_shock_count = 0;
+static uint32               key_long_count = 0;
 static uint32               key_press_time[KEY_NUMBER];                         // 按键信号持续时长
 static key_state_enum       key_state[KEY_NUMBER];                              // 按键状态
 
@@ -70,14 +71,19 @@ void key_scanner (void)
         if(KEY_RELEASE_LEVEL != gpio_get_level(key_index[i]))                   // 按键按下
         {
             key_press_time[i] ++;
-            if(KEY_LONG_PRESS_PERIOD / scanner_period <= key_press_time[i])
+            if(key_long_count <= key_press_time[i])
             {
                 key_state[i] = KEY_LONG_PRESS;
             }
         }
         else                                                                    // 按键释放
         {
-            if((KEY_LONG_PRESS != key_state[i]) && (KEY_MAX_SHOCK_PERIOD <= key_press_time[i]) && (KEY_LONG_PRESS_PERIOD > key_press_time[i]))
+            if(KEY_SHORT_PRESS == key_state[i])
+            {
+                key_press_time[i] = 0;
+                continue;
+            }
+            if((KEY_LONG_PRESS != key_state[i]) && (key_shock_count <= key_press_time[i]) && (key_long_count > key_press_time[i]))
             {
                 key_state[i] = KEY_SHORT_PRESS;
             }
@@ -140,10 +146,11 @@ void key_init (uint32 period)
 {
     zf_assert(0 < period);
     uint8 loop_temp = 0; 
+    key_shock_count = (KEY_MAX_SHOCK_PERIOD + period - 1U) / period;
+    key_long_count = (KEY_LONG_PRESS_PERIOD + period - 1U) / period;
     for(loop_temp = 0; KEY_NUMBER > loop_temp; loop_temp ++)
     {
         gpio_init(key_index[loop_temp], GPI, GPIO_HIGH, GPI_PULL_UP);
         key_state[loop_temp] = KEY_RELEASE;
     }
-    scanner_period = period;
 }
