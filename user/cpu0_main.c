@@ -49,7 +49,7 @@ int core0_main(void)
     clock_init();                   // 获取时钟频率<务必保留>
     debug_init();                   // 初始化默认调试串口
     Menu_Init();                    // Initialize IPS200 menu and keys
-    attitude_ready = Attitude_Init(); // Initialize IMU963RA and Mahony attitude on CPU0
+    attitude_ready = Attitude_Init(); // Initialize IMU660RB and Mahony attitude on CPU0
     // 此处编写用户代码 例如外设初始化代码等
 
 

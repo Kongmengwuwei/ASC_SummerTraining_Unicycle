@@ -43,7 +43,7 @@ uint8 imu_init(void)
     gyro_sum_count = 0U;
     yaw_angle = 0.0f;
     element_angle = 0.0f;
-    return imu963ra_init();
+    return imu660rb_init();
 }
 
 void imu_calibrate(void)
@@ -63,10 +63,10 @@ void imu_calibrate(void)
         float body_y;
         float body_z;
 
-        imu963ra_get_gyro();
-        sensor_x = imu963ra_gyro_transition(imu963ra_gyro_x);
-        sensor_y = imu963ra_gyro_transition(imu963ra_gyro_y);
-        sensor_z = imu963ra_gyro_transition(imu963ra_gyro_z);
+        imu660rb_get_gyro();
+        sensor_x = imu660rb_gyro_transition(imu660rb_gyro_x);
+        sensor_y = imu660rb_gyro_transition(imu660rb_gyro_y);
+        sensor_z = imu660rb_gyro_transition(imu660rb_gyro_z);
         Imu_SensorToBody(sensor_x, sensor_y, sensor_z,
                         &body_x, &body_y, &body_z);
         sum_x += body_x;
@@ -93,10 +93,10 @@ void imu_update_gyro(void)
     float body_y;
     float body_z;
 
-    imu963ra_get_gyro();
-    sensor_x = imu963ra_gyro_transition(imu963ra_gyro_x);
-    sensor_y = imu963ra_gyro_transition(imu963ra_gyro_y);
-    sensor_z = imu963ra_gyro_transition(imu963ra_gyro_z);
+    imu660rb_get_gyro();
+    sensor_x = imu660rb_gyro_transition(imu660rb_gyro_x);
+    sensor_y = imu660rb_gyro_transition(imu660rb_gyro_y);
+    sensor_z = imu660rb_gyro_transition(imu660rb_gyro_z);
     Imu_SensorToBody(sensor_x, sensor_y, sensor_z,
                     &body_x, &body_y, &body_z);
 
@@ -119,10 +119,10 @@ void imu_update_acc(void)
     float body_y;
     float body_z;
 
-    imu963ra_get_acc();
-    sensor_x = imu963ra_acc_transition(imu963ra_acc_x);
-    sensor_y = imu963ra_acc_transition(imu963ra_acc_y);
-    sensor_z = imu963ra_acc_transition(imu963ra_acc_z);
+    imu660rb_get_acc();
+    sensor_x = imu660rb_acc_transition(imu660rb_acc_x);
+    sensor_y = imu660rb_acc_transition(imu660rb_acc_y);
+    sensor_z = imu660rb_acc_transition(imu660rb_acc_z);
     Imu_SensorToBody(sensor_x, sensor_y, sensor_z,
                     &body_x, &body_y, &body_z);
     imu.acc_x = body_x;
