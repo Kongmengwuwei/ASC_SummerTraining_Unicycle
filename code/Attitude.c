@@ -281,7 +281,11 @@ bool Attitude_Init(void)
         return false;
     }
 
-    imu_calibrate();
+    if (!imu_calibrate())
+    {
+        eulerAngle.imu_error = true;
+        return false;
+    }
     Attitude_ResetMahony();
 
     imu_update_gyro();

@@ -16,7 +16,7 @@ typedef struct
 extern volatile imu_data_t imu;
 
 uint8 imu_init(void);
-void imu_calibrate(void);
+bool imu_calibrate(void);
 void imu_update_gyro(void);
 void imu_update_acc(void);
 void imu_get_gyro_avg(float *gx, float *gy, float *gz);

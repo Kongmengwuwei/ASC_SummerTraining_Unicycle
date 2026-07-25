@@ -139,12 +139,15 @@ static void Menu_Show_Attitude(void)
 static void Menu_Show_Y_Motor_Encoder(void)
 {
     y_motor_encoder_data_t encoder;
+    float gyro_z;
     char text[31];
 
     Y_Motor_GetEncoder(&encoder);
-    (void)snprintf(text, sizeof(text), "ENC5:%6d TOTAL:%10ld",
+    gyro_z = attitudeRate.yaw_rate;
+    (void)snprintf(text, sizeof(text), "E:%5d T:%8ld GZ:%6.2f",
                    (int)encoder.count_5ms,
-                   (long)encoder.total_count);
+                   (long)encoder.total_count,
+                   gyro_z);
     Menu_Show_Status_Line(192U, text);
 }
 
