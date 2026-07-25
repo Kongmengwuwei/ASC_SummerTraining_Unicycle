@@ -1,0 +1,53 @@
+# AURIX Development Studio (ADS) / Eclipse local state
+/.ads/
+/.metadata/
+
+# ADS managed-build output directories
+/Debug/
+/Release/
+
+# Eclipse per-user UI/cache files
+*.launch
+.recommenders/
+
+# Compiler, assembler, linker and dependency outputs
+*.o
+*.obj
+*.a
+*.lib
+*.d
+*.dep
+*.src
+*.opt
+*.elf
+*.hex
+*.map
+*.mdf
+*.lst
+*.srec
+*.mot
+*.bin
+
+# Generated makefiles
+**/subdir.mk
+**/objects.mk
+**/sources.mk
+**/makefile
+
+# Editor and operating-system clutter
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary, backup and log files
+*.tmp
+*.temp
+*.bak
+*.log
+*.orig
