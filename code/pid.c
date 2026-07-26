@@ -1,186 +1,88 @@
 #include "pid.h"
 
-#include <stddef.h>
-
-#define PID_MIN_SAMPLE_TIME_S (1.0e-6f)
-
-static float PID_Absolute(float value)
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     浮点数限幅
+// 参数说明     amt             输入值, low/high 为下限和上限
+// 返回参数     float           限幅后的值
+// 使用示例     offset = constrain_float(offset, -LEAN_LIMIT, LEAN_LIMIT);
+//-------------------------------------------------------------------------------------------------------------------
+float constrain_float(float amt, float low, float high)
 {
-    return (value < 0.0f) ? -value : value;
+    return (amt < low) ? low : ((amt > high) ? high : amt);
 }
 
-static float PID_Clamp(float value, float limit)
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     int16 数值限幅
+// 参数说明     amt             输入值, low/high 为下限和上限
+// 返回参数     int16           限幅后的值
+// 使用示例     a = (int16)constrain_short(a, -FLYWHEEL_OUT_LIMIT, FLYWHEEL_OUT_LIMIT);
+//-------------------------------------------------------------------------------------------------------------------
+int16 constrain_short(int16 amt, int16 low, int16 high)
 {
-    float positive_limit = PID_Absolute(limit);
-
-    if (value > positive_limit)
-    {
-        return positive_limit;
-    }
-    if (value < -positive_limit)
-    {
-        return -positive_limit;
-    }
-    return value;
+    return (amt < low) ? low : ((amt > high) ? high : amt);
 }
 
-static float PID_ClampUnit(float value)
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     设置 PID 参数并清除历史状态
+// 参数说明     p               PID 结构体, kp/ki/kd 为系数, imax 为积分限幅
+// 返回参数     void
+// 使用示例     pid_set(&p_vel_pid, P_VEL_KP, P_VEL_KI, P_VEL_KD, P_VEL_IMAX);
+//-------------------------------------------------------------------------------------------------------------------
+void pid_set(pid_t *p, float kp, float ki, float kd, float imax)
 {
-    if (value < 0.0f)
-    {
-        return 0.0f;
-    }
-    if (value > 1.0f)
-    {
-        return 1.0f;
-    }
-    return value;
+    p->kp = kp; p->ki = ki; p->kd = kd; p->imax = imax;
+    pid_reset(p);
 }
 
-static void PID_PushError(pid_controller_t *pid,
-                          float measurement,
-                          float setpoint)
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     清除 PID 积分与误差历史
+// 参数说明     p               PID 结构体指针
+// 返回参数     void
+// 使用示例     pid_reset(&p_vel_pid);
+//-------------------------------------------------------------------------------------------------------------------
+void pid_reset(pid_t *p)
 {
-    pid->measurement = measurement;
-    pid->setpoint = setpoint;
-    pid->error[2] = pid->error[1];
-    pid->error[1] = pid->error[0];
-    pid->error[0] = setpoint - measurement;
+    p->out_p = p->out_i = p->out_d = p->out = 0;
+    p->integrator = 0;
+    p->last_error = 0;
+    p->last_derivative = 0;
 }
 
-void PID_Init(pid_controller_t *pid, const pid_config_t *config)
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     计算位置式 PID 输出
+// 参数说明     p               PID 结构体, error 为当前误差
+// 返回参数     float           PID 输出
+// 使用示例     pid_loc_calc(&p_angle_pid, p_vel_pid.out - att.pitch + zero);
+//-------------------------------------------------------------------------------------------------------------------
+float pid_loc_calc(pid_t *p, float error)
 {
-    if ((pid == NULL) || (config == NULL))
-    {
-        return;
-    }
+    p->integrator += error;
+    p->integrator = constrain_float(p->integrator, -p->imax, p->imax);  // 积分限幅
 
-    pid->measurement = 0.0f;
-    pid->setpoint = 0.0f;
-    pid->error[0] = 0.0f;
-    pid->error[1] = 0.0f;
-    pid->error[2] = 0.0f;
-    pid->proportional = 0.0f;
-    pid->integral = 0.0f;
-    pid->derivative = 0.0f;
-    pid->output = 0.0f;
-    pid->previous_output = 0.0f;
-    PID_UpdateConfig(pid, config);
+    p->out_p = p->kp * error;
+    p->out_i = p->ki * p->integrator;
+    p->out_d = p->kd * (error - p->last_error);
+    p->last_error = error;
+
+    p->out = p->out_p + p->out_i + p->out_d;
+    return p->out;
 }
 
-void PID_UpdateConfig(pid_controller_t *pid, const pid_config_t *config)
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     计算增量式 PID 累积输出
+// 参数说明     p               PID 结构体, error 为当前误差
+// 返回参数     float           PID 累积输出
+// 使用示例     pid_inc_calc(&pid, error);
+//-------------------------------------------------------------------------------------------------------------------
+float pid_inc_calc(pid_t *p, float error)
 {
-    if ((pid == NULL) || (config == NULL))
-    {
-        return;
-    }
+    p->out_p = p->kp * (error - p->last_error);
+    p->out_i = p->ki * error;
+    p->out_d = p->kd * ((error - p->last_error) - p->last_derivative);
 
-    pid->kp = config->kp;
-    pid->ki = config->ki;
-    pid->kd = config->kd;
-    pid->integral_limit = PID_Absolute(config->integral_limit);
-    pid->output_limit = PID_Absolute(config->output_limit);
-    pid->derivative_alpha = PID_ClampUnit(config->derivative_alpha);
-    pid->sample_time_s =
-        (config->sample_time_s >= PID_MIN_SAMPLE_TIME_S)
-            ? config->sample_time_s
-            : PID_MIN_SAMPLE_TIME_S;
+    p->last_derivative = error - p->last_error;
+    p->last_error = error;
 
-    pid->integral = PID_Clamp(pid->integral, pid->integral_limit);
-    pid->output = PID_Clamp(pid->output, pid->output_limit);
-    pid->previous_output =
-        PID_Clamp(pid->previous_output, pid->output_limit);
-}
-
-void PID_Clear(pid_controller_t *pid)
-{
-    if (pid == NULL)
-    {
-        return;
-    }
-
-    pid->measurement = 0.0f;
-    pid->setpoint = 0.0f;
-    pid->error[0] = 0.0f;
-    pid->error[1] = 0.0f;
-    pid->error[2] = 0.0f;
-    pid->proportional = 0.0f;
-    pid->integral = 0.0f;
-    pid->derivative = 0.0f;
-    pid->output = 0.0f;
-    pid->previous_output = 0.0f;
-}
-
-float PID_PositionCalculate(pid_controller_t *pid,
-                            float measurement,
-                            float setpoint)
-{
-    float raw_derivative;
-    float unsaturated_output;
-
-    if (pid == NULL)
-    {
-        return 0.0f;
-    }
-
-    PID_PushError(pid, measurement, setpoint);
-
-    pid->proportional = pid->kp * pid->error[0];
-    pid->integral += pid->ki * pid->error[0] * pid->sample_time_s;
-    pid->integral = PID_Clamp(pid->integral, pid->integral_limit);
-
-    raw_derivative =
-        pid->kd * (pid->error[0] - pid->error[1]) /
-        pid->sample_time_s;
-    pid->derivative =
-        pid->derivative_alpha * raw_derivative +
-        (1.0f - pid->derivative_alpha) * pid->derivative;
-
-    unsaturated_output =
-        pid->proportional + pid->integral + pid->derivative;
-    pid->previous_output = pid->output;
-    pid->output = PID_Clamp(unsaturated_output, pid->output_limit);
-    return pid->output;
-}
-
-float PID_IncrementalCalculate(pid_controller_t *pid,
-                               float measurement,
-                               float setpoint)
-{
-    float proportional_delta;
-    float integral_delta;
-    float derivative_delta;
-    float raw_derivative_delta;
-    float output_delta;
-
-    if (pid == NULL)
-    {
-        return 0.0f;
-    }
-
-    PID_PushError(pid, measurement, setpoint);
-
-    proportional_delta = pid->kp * (pid->error[0] - pid->error[1]);
-    integral_delta = pid->ki * pid->error[0] * pid->sample_time_s;
-    integral_delta = PID_Clamp(integral_delta, pid->integral_limit);
-
-    raw_derivative_delta =
-        pid->kd *
-        (pid->error[0] - 2.0f * pid->error[1] + pid->error[2]) /
-        pid->sample_time_s;
-    derivative_delta =
-        pid->derivative_alpha * raw_derivative_delta +
-        (1.0f - pid->derivative_alpha) * pid->derivative;
-
-    pid->proportional = proportional_delta;
-    pid->integral = integral_delta;
-    pid->derivative = derivative_delta;
-    output_delta =
-        proportional_delta + integral_delta + derivative_delta;
-
-    pid->previous_output = pid->output;
-    pid->output =
-        PID_Clamp(pid->previous_output + output_delta,
-                  pid->output_limit);
-    return pid->output;
+    p->out += p->out_p + p->out_i + p->out_d;
+    return p->out;
 }

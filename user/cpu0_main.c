@@ -1,84 +1,42 @@
-/*********************************************************************************************************************
-* TC264 Opensourec Library ¼´£¨TC264 ¿ªÔ´¿â£©ÊÇÒ»¸ö»ùÓÚ¹Ù·½ SDK ½Ó¿ÚµÄµÚÈı·½¿ªÔ´¿â
-* Copyright (c) 2022 SEEKFREE Öğ·É¿Æ¼¼
-*
-* ±¾ÎÄ¼şÊÇ TC264 ¿ªÔ´¿âµÄÒ»²¿·Ö
-*
-* TC264 ¿ªÔ´¿â ÊÇÃâ·ÑÈí¼ş
-* Äú¿ÉÒÔ¸ù¾İ×ÔÓÉÈí¼ş»ù½ğ»á·¢²¼µÄ GPL£¨GNU General Public License£¬¼´ GNUÍ¨ÓÃ¹«¹²Ğí¿ÉÖ¤£©µÄÌõ¿î
-* ¼´ GPL µÄµÚ3°æ£¨¼´ GPL3.0£©»ò£¨ÄúÑ¡ÔñµÄ£©ÈÎºÎºóÀ´µÄ°æ±¾£¬ÖØĞÂ·¢²¼ºÍ/»òĞŞ¸ÄËü
-*
-* ±¾¿ªÔ´¿âµÄ·¢²¼ÊÇÏ£ÍûËüÄÜ·¢»Ó×÷ÓÃ£¬µ«²¢Î´¶ÔÆä×÷ÈÎºÎµÄ±£Ö¤
-* ÉõÖÁÃ»ÓĞÒşº¬µÄÊÊÏúĞÔ»òÊÊºÏÌØ¶¨ÓÃÍ¾µÄ±£Ö¤
-* ¸ü¶àÏ¸½ÚÇë²Î¼û GPL
-*
-* ÄúÓ¦¸ÃÔÚÊÕµ½±¾¿ªÔ´¿âµÄÍ¬Ê±ÊÕµ½Ò»·İ GPL µÄ¸±±¾
-* Èç¹ûÃ»ÓĞ£¬Çë²ÎÔÄ<https://www.gnu.org/licenses/>
-*
-* ¶îÍâ×¢Ã÷£º
-* ±¾¿ªÔ´¿âÊ¹ÓÃ GPL3.0 ¿ªÔ´Ğí¿ÉÖ¤Ğ­Òé ÒÔÉÏĞí¿ÉÉêÃ÷ÎªÒëÎÄ°æ±¾
-* Ğí¿ÉÉêÃ÷Ó¢ÎÄ°æÔÚ libraries/doc ÎÄ¼ş¼ĞÏÂµÄ GPL3_permission_statement.txt ÎÄ¼şÖĞ
-* Ğí¿ÉÖ¤¸±±¾ÔÚ libraries ÎÄ¼ş¼ĞÏÂ ¼´¸ÃÎÄ¼ş¼ĞÏÂµÄ LICENSE ÎÄ¼ş
-* »¶Ó­¸÷Î»Ê¹ÓÃ²¢´«²¥±¾³ÌĞò µ«ĞŞ¸ÄÄÚÈİÊ±±ØĞë±£ÁôÖğ·É¿Æ¼¼µÄ°æÈ¨ÉùÃ÷£¨¼´±¾ÉùÃ÷£©
-*
-* ÎÄ¼şÃû³Æ          cpu0_main
-* ¹«Ë¾Ãû³Æ          ³É¶¼Öğ·É¿Æ¼¼ÓĞÏŞ¹«Ë¾
-* °æ±¾ĞÅÏ¢          ²é¿´ libraries/doc ÎÄ¼ş¼ĞÄÚ version ÎÄ¼ş °æ±¾ËµÃ÷
-* ¿ª·¢»·¾³          ADS v1.10.2
-* ÊÊÓÃÆ½Ì¨          TC264D
-* µêÆÌÁ´½Ó          https://seekfree.taobao.com/
-*
-* ĞŞ¸Ä¼ÇÂ¼
-* ÈÕÆÚ              ×÷Õß                ±¸×¢
-* 2022-09-15       pudding            first version
-********************************************************************************************************************/
 #include "zf_common_headfile.h"
-#include "../code/Mymenu.h"
-#include "../code/Attitude.h"
-#include "../code/Y_Motor.h"
-#include "../code/W_Motor.h"
-#include "../code/Control.h"
+
+#include "board_config.h"
+#include "control.h"
+#include "menu.h"
+#include "vofa.h"
+
 #pragma section all "cpu0_dsram"
-// ½«±¾Óï¾äÓë#pragma section all restoreÓï¾äÖ®¼äµÄÈ«¾Ö±äÁ¿¶¼·ÅÔÚCPU0µÄRAMÖĞ
 
-// ±¾Àı³ÌÊÇ¿ªÔ´¿â¿Õ¹¤³Ì ¿ÉÓÃ×÷ÒÆÖ²»òÕß²âÊÔ¸÷ÀàÄÚÍâÉè
-// ±¾Àı³ÌÊÇ¿ªÔ´¿â¿Õ¹¤³Ì ¿ÉÓÃ×÷ÒÆÖ²»òÕß²âÊÔ¸÷ÀàÄÚÍâÉè
-// ±¾Àı³ÌÊÇ¿ªÔ´¿â¿Õ¹¤³Ì ¿ÉÓÃ×÷ÒÆÖ²»òÕß²âÊÔ¸÷ÀàÄÚÍâÉè
-
-// **************************** ´úÂëÇøÓò ****************************
+//-------------------------------------------------------------------------------------------------------------------
+// å‡½æ•°ç®€ä»‹     CPU0åˆå§‹åŒ–å¹¶æŒç»­è¿è¡Œèœå•ä¸VOFAé€šä¿¡
+// å‚æ•°è¯´æ˜     void
+// è¿”å›å‚æ•°     int             ä¸»ç¨‹åºè¿”å›å€¼
+// ä½¿ç”¨ç¤ºä¾‹     core0_main();
+//-------------------------------------------------------------------------------------------------------------------
 int core0_main(void)
 {
-    bool attitude_ready;
-    clock_init();                   // »ñÈ¡Ê±ÖÓÆµÂÊ<Îñ±Ø±£Áô>
-    debug_init();                   // ³õÊ¼»¯Ä¬ÈÏµ÷ÊÔ´®¿Ú
-    Y_Motor_Init();                 // Initialize P33.7 pulse / P33.6 direction encoder
-    W_Motor_Init();                 // Initialize CYT2BL3 UART3 and keep both flywheels stopped
-    Menu_Init();                    // Initialize IPS200 menu and keys
-    attitude_ready = Attitude_Init(); // Initialize IMU660RB and Mahony attitude on CPU0
-    Control_Init();                 // Initialize both cascaded controllers in disabled state
-    // ´Ë´¦±àĞ´ÓÃ»§´úÂë ÀıÈçÍâÉè³õÊ¼»¯´úÂëµÈ
+    clock_init();
+    debug_init();
 
+    ips200_set_dir(IPS200_PORTAIT);
+    ips200_init(IPS200_TYPE_SPI);
+    ips200_set_font(IPS200_8X16_FONT);
+    ips200_set_color(RGB565_WHITE, RGB565_BLACK);
+    ips200_full(RGB565_BLACK);
+    ips200_show_string(5, 5, "SYSTEM INIT");
+    ips200_show_string(5, 25, "Keep car still...");
 
+    control_init();
+    menu_init();
 
-    // ´Ë´¦±àĞ´ÓÃ»§´úÂë ÀıÈçÍâÉè³õÊ¼»¯´úÂëµÈ
-    cpu_wait_event_ready();         // µÈ´ıËùÓĞºËĞÄ³õÊ¼»¯Íê±Ï
-    pit_ms_init(CCU60_CH0, 5U);     // 5 ms key-scan interrupt
-    if (attitude_ready)
-    {
-        pit_ms_init(CCU61_CH0, ATTITUDE_GYRO_SAMPLE_PERIOD_MS);
-    }
-    interrupt_global_enable(0);     // Enable CPU0 interrupts after both cores are ready
+    cpu_wait_event_ready();
     while (TRUE)
     {
-        Menu_Task();
-        // ´Ë´¦±àĞ´ĞèÒªÑ­»·Ö´ĞĞµÄ´úÂë
-
-
-
-
-        // ´Ë´¦±àĞ´ĞèÒªÑ­»·Ö´ĞĞµÄ´úÂë
+        menu_run();
+        vofa_cmd_poll();
+        vofa_poll();
+        vofa_tx_pump();
     }
 }
 
 #pragma section all restore
-// **************************** ´úÂëÇøÓò ****************************

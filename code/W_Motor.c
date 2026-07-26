@@ -1,113 +1,283 @@
 #include "W_Motor.h"
 
-#include "zf_common_headfile.h"
+#include "board_config.h"
+#include "pid.h"
 
-/*
- * P15.6/P15.7 对应逐飞 TC264 库的 UART3 引脚：
- *
- *     P15.6：TC264 发送，连接 CYT2BL3 接收；
- *     P15.7：TC264 接收，连接 CYT2BL3 发送。
- *
- * 当前模块只实现控制命令发送，不开启 UART3 接收中断，也不会与
- * 工程模板中遗留的 GNSS 接收回调发生冲突。后续若需要读取驱动板
- * 返回的转速，再单独增加 UART3 接收解析和对应中断回调。
- */
-#define W_MOTOR_UART       (UART_3)
-#define W_MOTOR_UART_TX    (UART3_TX_P15_6)
-#define W_MOTOR_UART_RX    (UART3_RX_P15_7)
+#define W_MOTOR_FRAME_HEAD       (0xA5u)
+#define W_MOTOR_SET_DUTY_CMD     (0x01u)
+#define W_MOTOR_GET_SPEED_CMD    (0x02u)
+#define W_MOTOR_FRAME_SIZE       (7u)
+#define W_MOTOR_TX_FIFO_DEPTH    (16u)
 
-#define W_MOTOR_FRAME_HEAD      (0xA5U)
-#define W_MOTOR_SET_DUTY_CMD    (0x01U)
-#define W_MOTOR_FRAME_SIZE      (7U)
+#pragma section all "cpu0_dsram"
+static uint8  w_motor_rx_buffer[W_MOTOR_FRAME_SIZE];
+static uint8  w_motor_rx_length;
+static volatile int16  w_motor_speed_1;
+static volatile int16  w_motor_speed_2;
+static volatile uint32 w_motor_rx_frames;
+static uint32 w_motor_seen_frames;
+static uint16 w_motor_link_age_ms;
+static uint16 w_motor_request_age_ms;
+static uint8  w_motor_brake_locked;
+#pragma section all restore
 
-/* 将用户命令限制在 CYT2BL3 占空比协议允许的范围内。 */
-static int16_t W_Motor_LimitDuty(int32_t duty)
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将占空比限制在 CYT2BL3 有符号协议范围内
+// 参数说明     duty            待限制占空比
+// 返回参数     int16           限幅后的有符号占空比
+// 使用示例     duty = W_Motor_LimitDuty(duty);
+//-------------------------------------------------------------------------------------------------------------------
+static int16 W_Motor_LimitDuty(int32 duty)
 {
-    if (duty > W_MOTOR_DUTY_MAX)
-    {
-        return (int16_t)W_MOTOR_DUTY_MAX;
-    }
-
-    if (duty < -W_MOTOR_DUTY_MAX)
-    {
-        return (int16_t)(-W_MOTOR_DUTY_MAX);
-    }
-
-    return (int16_t)duty;
+    return (int16)func_limit_ab(duty, -W_MOTOR_DUTY_MAX, W_MOTOR_DUTY_MAX);
 }
 
-/*
- * 计算前 6 字节的八位累加和。
- * uint8_t 自然保留累加结果的低 8 位，与 CYT2BL3 官方协议一致。
- */
-static uint8_t W_Motor_Checksum(const uint8_t frame[W_MOTOR_FRAME_SIZE])
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     计算 CYT2BL3 定长帧前六字节的八位累加校验
+// 参数说明     frame           七字节协议帧
+// 返回参数     uint8           累加和低八位
+// 使用示例     frame[6] = W_Motor_Checksum(frame);
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 W_Motor_Checksum(const uint8 frame[W_MOTOR_FRAME_SIZE])
 {
-    uint8_t checksum = 0U;
-    uint8_t index;
+    uint8 checksum = 0;
+    uint8 index;
 
-    for (index = 0U; index < (W_MOTOR_FRAME_SIZE - 1U); index++)
-    {
-        checksum = (uint8_t)(checksum + frame[index]);
-    }
-
+    for (index = 0; index < (W_MOTOR_FRAME_SIZE - 1u); index++)
+        checksum = (uint8)(checksum + frame[index]);
     return checksum;
 }
 
-void W_Motor_Init(void)
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     非阻塞发送一帧 CYT2BL3 命令，硬件 FIFO 空间不足时整帧丢弃
+// 参数说明     command         功能字
+// 参数说明     data0~data3     四字节负载
+// 返回参数     void
+// 使用示例     W_Motor_SendFrame(W_MOTOR_SET_DUTY_CMD, h1, l1, h2, l2);
+//-------------------------------------------------------------------------------------------------------------------
+static void W_Motor_SendFrame(uint8 command, uint8 data0, uint8 data1, uint8 data2, uint8 data3)
 {
-    /*
-     * uart_init() 的参数顺序为：串口号、波特率、TX 引脚、RX 引脚。
-     * 逐飞 UART 初始化默认关闭接收中断，符合当前仅发送控制命令的
-     * 精简实现。
-     */
-    uart_init(W_MOTOR_UART,
-              W_MOTOR_UART_BAUDRATE,
-              W_MOTOR_UART_TX,
-              W_MOTOR_UART_RX);
+    uint8 frame[W_MOTOR_FRAME_SIZE];
+    uint8 index;
+    uint32 interrupt_state;
 
-    /* 上电初始化完成后首先明确发送双路零输出。 */
-    W_Motor_Stop();
-}
-
-void W_Motor_SetDuty(int32_t motor1_duty, int32_t motor2_duty)
-{
-    uint8_t frame[W_MOTOR_FRAME_SIZE];
-    uint16_t motor1_data;
-    uint16_t motor2_data;
-
-    /*
-     * 先限幅，再转成 uint16_t 取得有符号 int16_t 的原始二进制编码。
-     * 这样正数和负数都能按高字节在前的顺序装入通讯帧。
-     */
-    motor1_data = (uint16_t)W_Motor_LimitDuty(motor1_duty);
-    motor2_data = (uint16_t)W_Motor_LimitDuty(motor2_duty);
-
-    /*
-     * CYT2BL3 设置双路占空比帧，共 7 字节：
-     *
-     * [0] 0xA5                         帧头
-     * [1] 0x01                         设置占空比功能字
-     * [2] [3] 第一台电机有符号占空比   高字节、低字节
-     * [4] [5] 第二台电机有符号占空比   高字节、低字节
-     * [6] 前 6 字节的八位累加和
-     */
     frame[0] = W_MOTOR_FRAME_HEAD;
-    frame[1] = W_MOTOR_SET_DUTY_CMD;
-    frame[2] = (uint8_t)(motor1_data >> 8U);
-    frame[3] = (uint8_t)(motor1_data & 0x00FFU);
-    frame[4] = (uint8_t)(motor2_data >> 8U);
-    frame[5] = (uint8_t)(motor2_data & 0x00FFU);
+    frame[1] = command;
+    frame[2] = data0;
+    frame[3] = data1;
+    frame[4] = data2;
+    frame[5] = data3;
     frame[6] = W_Motor_Checksum(frame);
 
-    /*
-     * 一帧仅 7 字节。UART 驱动在这里完成发送，不在函数中加入延时、
-     * 重试或动态内存操作。应由 CPU0 单独拥有该模块，避免多个执行
-     * 上下文同时发送而造成帧交错。
-     */
-    uart_write_buffer(W_MOTOR_UART, frame, W_MOTOR_FRAME_SIZE);
+    interrupt_state = interrupt_global_disable();
+    if (IfxAsclin_getTxFifoFillLevel(uart3_handle.asclin) >
+        (W_MOTOR_TX_FIFO_DEPTH - W_MOTOR_FRAME_SIZE))
+    {
+        interrupt_global_enable(interrupt_state);
+        return;
+    }
+
+    for (index = 0; index < W_MOTOR_FRAME_SIZE; index++)
+        IfxAsclin_writeTxData(uart3_handle.asclin, frame[index]);
+    interrupt_global_enable(interrupt_state);
 }
 
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     初始化 CYT2BL3 双路无刷驱动 UART3、锁定软件刹车并请求周期回传转速
+// 参数说明     void
+// 返回参数     void
+// 使用示例     W_Motor_Init();
+//-------------------------------------------------------------------------------------------------------------------
+void W_Motor_Init(void)
+{
+    w_motor_rx_length = 0;
+    w_motor_speed_1 = 0;
+    w_motor_speed_2 = 0;
+    w_motor_rx_frames = 0;
+    w_motor_seen_frames = 0;
+    w_motor_link_age_ms = W_MOTOR_LINK_TIMEOUT_MS;
+    w_motor_request_age_ms = 0;
+    w_motor_brake_locked = 1;
+
+    uart_init(W_MOTOR_UART,
+              W_MOTOR_UART_BAUDRATE,
+              W_MOTOR_UART_TX_PIN,
+              W_MOTOR_UART_RX_PIN);
+    uart_rx_interrupt(W_MOTOR_UART, 1);
+
+    W_Motor_Stop();
+    W_Motor_SendFrame(W_MOTOR_GET_SPEED_CMD, 0, 0, 0, 0);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     设置两只动量轮的有符号占空比，软件刹车锁定时强制发送双路零输出
+// 参数说明     motor1_duty    动量轮 A 占空比
+// 参数说明     motor2_duty    动量轮 B 占空比
+// 返回参数     void
+// 使用示例     W_Motor_SetDuty(g_motor_a, g_motor_b);
+//-------------------------------------------------------------------------------------------------------------------
+void W_Motor_SetDuty(int32 motor1_duty, int32 motor2_duty)
+{
+    uint16 motor1_data;
+    uint16 motor2_data;
+
+    if (w_motor_brake_locked)
+    {
+        motor1_duty = 0;
+        motor2_duty = 0;
+    }
+
+    motor1_duty = (int32)W_Motor_LimitDuty(motor1_duty) * MOTOR_DIR_A;
+    motor2_duty = (int32)W_Motor_LimitDuty(motor2_duty) * MOTOR_DIR_B;
+    motor1_data = (uint16)(int16)motor1_duty;
+    motor2_data = (uint16)(int16)motor2_duty;
+
+    W_Motor_SendFrame(W_MOTOR_SET_DUTY_CMD,
+                      (uint8)(motor1_data >> 8),
+                      (uint8)(motor1_data & 0xFFu),
+                      (uint8)(motor2_data >> 8),
+                      (uint8)(motor2_data & 0xFFu));
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     锁定动量轮软件刹车并立即发送双路零输出
+// 参数说明     void
+// 返回参数     void
+// 使用示例     W_Motor_Stop();
+//-------------------------------------------------------------------------------------------------------------------
 void W_Motor_Stop(void)
 {
+    w_motor_brake_locked = 1;
     W_Motor_SetDuty(0, 0);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     解除动量轮软件刹车闩，允许后续占空比命令生效
+// 参数说明     void
+// 返回参数     void
+// 使用示例     W_Motor_Release();
+//-------------------------------------------------------------------------------------------------------------------
+void W_Motor_Release(void)
+{
+    w_motor_brake_locked = 0;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     解析 CYT2BL3 回传字节，由 UART3 接收中断调用
+// 参数说明     void
+// 返回参数     void
+// 使用示例     W_Motor_RxHandler();
+//-------------------------------------------------------------------------------------------------------------------
+void W_Motor_RxHandler(void)
+{
+    uint8 byte;
+    uint8 checksum;
+    uint8 index;
+
+    while (uart_query_byte(W_MOTOR_UART, &byte))
+    {
+        if (w_motor_rx_length == 0u && byte != W_MOTOR_FRAME_HEAD)
+            continue;
+
+        w_motor_rx_buffer[w_motor_rx_length++] = byte;
+        if (w_motor_rx_length < W_MOTOR_FRAME_SIZE)
+            continue;
+        w_motor_rx_length = 0;
+
+        checksum = 0;
+        for (index = 0; index < (W_MOTOR_FRAME_SIZE - 1u); index++)
+            checksum = (uint8)(checksum + w_motor_rx_buffer[index]);
+        if (checksum != w_motor_rx_buffer[6])
+            continue;
+        if (w_motor_rx_buffer[1] != W_MOTOR_GET_SPEED_CMD)
+            continue;
+
+        w_motor_speed_1 =
+            (int16)((int16)(((uint16)w_motor_rx_buffer[2] << 8) | w_motor_rx_buffer[3]) * MOTOR_DIR_A);
+        w_motor_speed_2 =
+            (int16)((int16)(((uint16)w_motor_rx_buffer[4] << 8) | w_motor_rx_buffer[5]) * MOTOR_DIR_B);
+        w_motor_rx_frames++;
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     更新无刷驱动通信看门狗，断链时周期补发转速请求
+// 参数说明     void
+// 返回参数     void
+// 使用示例     W_Motor_Tick1ms();
+//-------------------------------------------------------------------------------------------------------------------
+void W_Motor_Tick1ms(void)
+{
+    uint32 frames = w_motor_rx_frames;
+
+    if (frames != w_motor_seen_frames)
+    {
+        w_motor_seen_frames = frames;
+        w_motor_link_age_ms = 0;
+    }
+    else if (w_motor_link_age_ms < W_MOTOR_LINK_TIMEOUT_MS)
+    {
+        w_motor_link_age_ms++;
+    }
+
+    if (w_motor_link_age_ms >= W_MOTOR_LINK_TIMEOUT_MS)
+    {
+        if (w_motor_request_age_ms < W_MOTOR_SPEED_REQUEST_MS)
+        {
+            w_motor_request_age_ms++;
+        }
+        else
+        {
+            w_motor_request_age_ms = 0;
+            W_Motor_SendFrame(W_MOTOR_GET_SPEED_CMD, 0, 0, 0, 0);
+        }
+    }
+    else
+    {
+        w_motor_request_age_ms = 0;
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读取动量轮 A 的驱动回传转速
+// 参数说明     void
+// 返回参数     int16           动量轮 A 转速(RPM，已应用 MOTOR_DIR_A)
+// 使用示例     int16 speed = W_Motor_GetSpeed1();
+//-------------------------------------------------------------------------------------------------------------------
+int16 W_Motor_GetSpeed1(void)
+{
+    return w_motor_speed_1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读取动量轮 B 的驱动回传转速
+// 参数说明     void
+// 返回参数     int16           动量轮 B 转速(RPM，已应用 MOTOR_DIR_B)
+// 使用示例     int16 speed = W_Motor_GetSpeed2();
+//-------------------------------------------------------------------------------------------------------------------
+int16 W_Motor_GetSpeed2(void)
+{
+    return w_motor_speed_2;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     查询 CYT2BL3 是否超过规定时间没有回传合法转速帧
+// 参数说明     void
+// 返回参数     uint8           1=通信中断 0=通信正常
+// 使用示例     if (W_Motor_LinkLost()) control_stop();
+//-------------------------------------------------------------------------------------------------------------------
+uint8 W_Motor_LinkLost(void)
+{
+    return (uint8)(w_motor_link_age_ms >= W_MOTOR_LINK_TIMEOUT_MS);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读取 UART3 已收到的合法转速回传帧数
+// 参数说明     void
+// 返回参数     uint32          合法转速帧累计数
+// 使用示例     uint32 frames = W_Motor_GetRxFrames();
+//-------------------------------------------------------------------------------------------------------------------
+uint32 W_Motor_GetRxFrames(void)
+{
+    return w_motor_rx_frames;
 }
