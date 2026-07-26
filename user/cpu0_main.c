@@ -37,6 +37,7 @@
 #include "../code/Attitude.h"
 #include "../code/Y_Motor.h"
 #include "../code/W_Motor.h"
+#include "../code/Motor_Test.h"
 #include "../code/Control.h"
 #pragma section all "cpu0_dsram"
 // 将本语句与#pragma section all restore语句之间的全局变量都放在CPU0的RAM中
@@ -53,6 +54,7 @@ int core0_main(void)
     debug_init();                   // 初始化默认调试串口
     Y_Motor_Init();                 // Initialize P33.7 pulse / P33.6 direction encoder
     W_Motor_Init();                 // Initialize CYT2BL3 UART3 and keep both flywheels stopped
+    Motor_Test_RunOnBoot();         // Test forward/reverse rotation, then stop all motors
     Menu_Init();                    // Initialize IPS200 menu and keys
     attitude_ready = Attitude_Init(); // Initialize IMU660RB and Mahony attitude on CPU0
     Control_Init();                 // Initialize both cascaded controllers in disabled state
