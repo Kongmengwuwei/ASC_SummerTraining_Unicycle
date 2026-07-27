@@ -3,93 +3,82 @@
 #include "Y_Motor.h"
 #include "board_config.h"
 #include "imu.h"
-#include "key.h"
 #include "attitude.h"
-#include "balance.h"
 #include "vofa.h"
 #include "param.h"
 #include "pid.h"
 #include "vision_core.h"
-#include <stddef.h>
-#include <string.h>
+#include <math.h>
 
-// 直立串级最终执行器限幅，在各级 out_limit 之上再限一次，防转弯分量叠加后越界
-#define CONTROL_DRIVE_OUTPUT_LIMIT      (8000.0f)   // 行进轮输出限幅
-#define CONTROL_FLYWHEEL_OUTPUT_LIMIT   (8000.0f)   // 单只动量轮输出限幅
-#define CONTROL_TURN_OUTPUT_LIMIT       (2000.0f)   // 转弯前馈量限幅
+// ====================== 对外全局量 ======================
 
-#define CONTROL_FALL_ANGLE_LIMIT_DEG    (30.0f)     // 防倒角硬上限，与菜单保护角取较小者
-#define CONTROL_SPEED_DT_S              (0.010f)    // 速度外环差分周期(s)
+start_state_t start_flag = START_STOP;          // 发车状态机，上电全停
 
-float g_dbg_error   = 0.0f;                      // 中线偏差
-uint8 g_imu_ok      = 0;                         // IMU 初始化状态
-uint8 g_cam_ok      = 0;                         // 摄像头初始化状态
-uint8 g_track_valid = 0;                         // 当前循迹帧状态
-uint16 g_track_lost_frames = 0;                  // 连续无效帧计数
-volatile uint16 g_vision_age_ms = 0;             // 图像帧间隔(ms)
-volatile uint32 g_control_uptime_ms = 0;          // 控制运行时间(ms)
-volatile uint32 g_vision_frame_seq = 0;           // 最新视觉帧序号
-volatile uint32 g_vision_heartbeat = 0;           // CPU1 主循环心跳
-uint16 g_vision_threshold = 0;                    // 最新大津阈值
-uint16 g_vision_search_stop = 0;                  // 最新有效前瞻行数
-uint16 g_vision_left_lost = 0;                    // 最新左边丢线数
-uint16 g_vision_right_lost = 0;                   // 最新右边丢线数
-uint16 g_vision_both_lost = 0;                    // 最新双边丢线数
-// uint8  g_vision_active_elem = 0;               // 元素识别启用后恢复
+float g_roll_zero, g_pitch_zero;                // 机械零点(°)
+float g_lean_offset = 0;                        // 压弯动态零点偏移(°)
+float g_pwm_roll, g_pwm_pitch, g_pwm_yaw;       // 三轴串级输出，混控前
+int16 g_motor_a, g_motor_b, g_motor_c;          // 混控后的三电机控制量
+int   g_target_distance = 0;                    // Pitch 速度环目标(counts/20ms)
+float g_yaw_target = 0;                         // 转向外环目标航向(°)
+balance_dbg_t g_bal_dbg;                        // 串级各环中间量，只给 vofa 波形用
 
-static volatile uint8 s_control_test_active;
-static volatile control_test_status_t s_test_status;
-// static uint8 s_vision_timeout_active;          // 完整跑车流程启用后恢复
-// static uint8 s_vision_recover_count;
-// static float s_vision_hold_yaw;
+float g_dbg_error   = 0.0f;                     // 中线偏差，右偏为正
+uint8 g_imu_ok      = 0;                        // IMU660RB 初始化结果
+uint8 g_cam_ok      = 0;                        // CPU1 摄像头就绪标志
+uint8 g_track_valid = 0;                        // 最新一帧循迹是否有效
+uint16 g_track_lost_frames = 0;                 // 连续无效帧计数
+volatile uint16 g_vision_age_ms = 0;            // 距上一帧视觉结果的时间(ms)
+volatile uint32 g_control_uptime_ms = 0;        // 1ms 中断累计运行时间(ms)
+volatile uint32 g_vision_frame_seq = 0;         // 最新视觉帧序号
+volatile uint32 g_vision_heartbeat = 0;         // CPU1 主循环心跳
+uint16 g_vision_threshold = 0;                  // 最新大津阈值
+uint16 g_vision_search_stop = 0;                // 最新有效前瞻行数
+uint16 g_vision_left_lost = 0;                  // 最新左边线丢线行数
+uint16 g_vision_right_lost = 0;                 // 最新右边线丢线行数
+uint16 g_vision_both_lost = 0;                  // 最新双边丢线行数
+uint8  g_vision_active_elem = 0;                // 最新元素编号
+uint8  g_vision_island_state = 0;               // 最新环岛状态号，0=空闲
+float  g_vision_speed_scale = 1.0f;             // 元素建议速度倍率，Run 尚未使用
+uint8  g_vision_stop_request = 0;               // 元素停车请求，Run 尚未使用
 
-// Motor 页架空点动，倒计时在 1ms 中断里跑，菜单卡死也会自动停
-static volatile motor_jog_t s_jog_target;
-static volatile int16       s_jog_duty;
-static volatile uint16      s_jog_left_ms;
+// ====================== 内部状态 ======================
 
-// 三串级初始增益，全 0 表示未整定，按角速度内环->角度中环->速度外环逐级调
-// 限幅只是软件保护初值，不代表实车可以安全用到该输出
-control_cascade_config_t control_fore_aft_config =            // 前后通道，行进轮
+static pid_t r_rcy_pid, r_angle_pid, r_rate_pid;    // Roll ：飞轮回收 / 角度 / 角速度
+static pid_t p_vel_pid, p_angle_pid, p_rate_pid;    // Pitch：速度 / 角度 / 角速度
+static pid_t y_angle_pid, y_rate_pid;               // Yaw  ：转向外环 / 角速度内环
+
+static float s_speed_ramp;                      // 斜坡后的速度环实际目标(counts/20ms)
+static float s_lean_raw;                        // 压弯零点累加值，g_lean_offset 限速率跟随它
+
+// Test/Wave 状态，前台启停、1ms 中断读
+static volatile uint8 s_test_running;           // 单轴测试运行标志
+static tune_axis_t s_test_axis;                 // 当前测试轴
+static tune_ring_t s_test_ring;                 // 当前测试的最高启用环
+static uint16 s_test_tick;                      // 测试用 1ms 分频计数
+static int16  s_test_speed_c;                   // 测试用行进轮速度快照
+static volatile uint8 s_control_test_active;    // 菜单看到的 Test/Wave 运行标志
+static volatile control_test_status_t s_test_status;    // 最近一次启动结果
+
+// 架空点动状态，倒计时在 1ms 中断里跑，菜单卡死也会自动停
+static volatile motor_jog_t s_jog_target;       // 点动目标电机
+static volatile int16       s_jog_duty;         // 点动占空比，带符号
+static volatile uint16      s_jog_left_ms;      // 点动剩余时间(ms)
+
+// 姿态与驱动通信的阻断原因，只在本文件内用来生成菜单提示
+typedef enum
 {
-    { 0.0f, 0.0f, 0.0f,   10.0f,   15.0f },                         // 速度外环
-    { 0.0f, 0.0f, 0.0f,  100.0f,  300.0f },                         // 角度中环
-    { 0.0f, 0.0f, 0.0f, 1000.0f, CONTROL_DRIVE_OUTPUT_LIMIT }       // 角速度内环
-};
+    CTRL_BLOCK_NONE = 0,        // 无阻断
+    CTRL_BLOCK_IMU_FAIL,        // IMU 初始化失败
+    CTRL_BLOCK_IMU_CALIB,       // IMU 静止标定无效
+    CTRL_BLOCK_ATT_CONVERGING,  // 姿态解算尚未收敛
+    CTRL_BLOCK_ATT_DIVERGED,    // 四元数发散
+    CTRL_BLOCK_IMU_LOST,        // IMU 链路中断
+    CTRL_BLOCK_BLDC_LOST,       // CYT2BL3 通信中断
+} control_block_t;
 
-control_cascade_config_t control_left_right_config =          // 左右通道，两只动量轮
-{
-    { 0.0f, 0.0f, 0.0f,   10.0f,   15.0f },                         // 速度外环
-    { 0.0f, 0.0f, 0.0f,  100.0f,  300.0f },                         // 角度中环
-    { 0.0f, 0.0f, 0.0f, 1000.0f, CONTROL_FLYWHEEL_OUTPUT_LIMIT }    // 角速度内环
-};
+static void test_stop(void);                    // test_run 里检测到异常要回调它
 
-static pid_t s_fore_aft_speed_pid;      // 前后速度外环
-static pid_t s_fore_aft_angle_pid;      // 前后角度中环
-static pid_t s_fore_aft_rate_pid;       // 前后角速度内环
-static pid_t s_left_right_speed_pid;    // 左右速度外环
-static pid_t s_left_right_angle_pid;    // 左右角度中环
-static pid_t s_left_right_rate_pid;     // 左右角速度内环
-
-static volatile uint8 s_cascade_ready;              // Control_Init 已执行
-static volatile uint8 s_cascade_enabled;            // 直立闭环使能
-static volatile control_fault_t s_cascade_fault;    // 当前故障原因
-
-// 以下四项由前台写、1ms 中断读
-static volatile float s_forward_speed_target;       // 前进速度目标(counts/s)
-static volatile float s_lateral_speed_target;       // 横向速度目标
-static volatile float s_lateral_speed_feedback;     // 横向速度反馈，无传感器时为 0
-static volatile float s_turn_output_target;         // 转弯前馈量(占空比)
-static volatile float s_pitch_zero;                 // 俯仰机械零点(°)
-static volatile float s_roll_zero;                  // 横滚机械零点(°)
-
-static control_actuator_sign_t s_actuator_signs;    // 执行器方向符号，默认全 0 = 未确认
-static uint8  s_angle_divider;                      // 角度中环分频计数
-static uint8  s_speed_divider;                      // 速度外环分频计数
-static int32  s_previous_encoder_total;             // 速度外环差分基准
-static volatile control_state_t s_cascade_state;    // 供前台读取的状态快照
-
-static void Control_Init(void);                     // 定义在下方，control_init() 先用到
+// ====================== 电机输出 ======================
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     停止行进轮并锁定动量轮软件刹车
@@ -104,7 +93,7 @@ static void control_motor_stop(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     分别向 W_Motor 与 Y_Motor 下发三电机控制量
+// 函数简介     向 W_Motor 与 Y_Motor 下发三电机控制量
 // 参数说明     motor_a/b/c     动量轮 A、动量轮 B、行进轮 C 控制量
 // 返回参数     void
 // 使用示例     control_motor_output(g_motor_a, g_motor_b, g_motor_c);
@@ -116,7 +105,610 @@ static void control_motor_output(int16 motor_a, int16 motor_b, int16 motor_c)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     初始化参数、按键、IMU660RB、姿态解算与调试串口
+// 函数简介     判断浮点是否为有限值，即非 NaN 且非 ±Inf
+// 参数说明     v               待判值
+// 返回参数     uint8           1=有限值 0=NaN/Inf
+// 使用示例     if (!ctrl_is_finite(att.roll)) { ... }
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 ctrl_is_finite(float v)
+{
+    if (v != v) return 0;                               // NaN
+    if (v > 3.0e38f || v < -3.0e38f) return 0;          // ±Inf 或量级异常
+    return 1;
+}
+
+// ====================== 串级公共部分 ======================
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     把菜单改过的增益刷进 PID 结构，不清运行状态，每控制周期调一次
+// 参数说明     void
+// 返回参数     void
+// 使用示例     cascade_gain_refresh();
+//-------------------------------------------------------------------------------------------------------------------
+static void cascade_gain_refresh(void)
+{
+    r_rcy_pid.kp   = R_RCY_KP;    r_rcy_pid.ki   = R_RCY_KI;   r_rcy_pid.kd   = R_RCY_KD;
+    r_angle_pid.kp = R_ANGLE_KP;  r_angle_pid.ki = R_ANGLE_KI; r_angle_pid.kd = R_ANGLE_KD;
+    r_rate_pid.kp  = R_RATE_KP;   r_rate_pid.ki  = R_RATE_KI;  r_rate_pid.kd  = R_RATE_KD;
+
+    p_vel_pid.kp   = P_VEL_KP;    p_vel_pid.ki   = P_VEL_KI;   p_vel_pid.kd   = P_VEL_KD;
+    p_angle_pid.kp = P_ANGLE_KP;  p_angle_pid.ki = P_ANGLE_KI; p_angle_pid.kd = P_ANGLE_KD;
+    p_rate_pid.kp  = P_RATE_KP;   p_rate_pid.ki  = P_RATE_KI;  p_rate_pid.kd  = P_RATE_KD;
+
+    y_angle_pid.kp = Y_ANGLE_KP;  y_angle_pid.ki = Y_ANGLE_KI; y_angle_pid.kd = Y_ANGLE_KD;
+    y_rate_pid.kp  = Y_RATE_KP;   y_rate_pid.ki  = Y_RATE_KI;  y_rate_pid.kd  = Y_RATE_KD;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     清全部串级 PID 的积分、误差历史和增量累积输出，同时清压弯偏移与速度斜坡
+// 参数说明     void
+// 返回参数     void
+// 使用示例     cascade_reset();
+//-------------------------------------------------------------------------------------------------------------------
+static void cascade_reset(void)
+{
+    pid_reset(&r_rcy_pid);   pid_reset(&r_angle_pid); pid_reset(&r_rate_pid);
+    pid_reset(&p_vel_pid);   pid_reset(&p_angle_pid); pid_reset(&p_rate_pid);
+    pid_reset(&y_angle_pid); pid_reset(&y_rate_pid);
+    g_lean_offset = 0;
+    s_lean_raw = 0;
+    s_speed_ramp = 0.0f;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     把速度环目标按斜坡挪向 g_target_distance，20ms 一拍，避免目标阶跃踹速度环
+// 参数说明     void
+// 返回参数     void
+// 使用示例     if (run20) speed_ramp_update();
+//-------------------------------------------------------------------------------------------------------------------
+static void speed_ramp_update(void)
+{
+    float target = (float)g_target_distance;
+    float delta  = target - s_speed_ramp;
+    float step;
+
+    if (delta == 0.0f) return;
+
+    // 朝远离 0 的方向算加速，朝 0 的方向算减速，两个方向速率不同
+    step = (fabsf(target) > fabsf(s_speed_ramp)) ? SPEED_UP_RATE : SPEED_DOWN_RATE;
+    if (step <= 0.0f)                       // 速率给 0 表示不限速率，直接跟上
+    {
+        s_speed_ramp = target;
+        return;
+    }
+
+    if (delta > step)       s_speed_ramp += step;
+    else if (delta < -step) s_speed_ramp -= step;
+    else                    s_speed_ramp = target;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     更新压弯动态零点的目标值：有转向需求时按转角累加，直行时按 LEAN_DECAY 衰减回 0
+// 参数说明     turn            转向外环输出，即内环目标角速度，代表期望转弯快慢
+// 返回参数     float           压弯零点目标值(°)，再经 lean_slew_update() 限速率后才生效
+// 使用示例     s_lean_raw = lean_offset_update(y_angle_pid.out);
+//-------------------------------------------------------------------------------------------------------------------
+static float lean_offset_update(float turn)
+{
+    float offset = s_lean_raw;
+    float limit;
+
+    if (fabsf(turn) > LEAN_TURN_DEAD)                   // 有转向需求，按转角累加偏移
+        offset += turn * LEAN_K1;
+    else                                                // 直行或停车，缓慢衰减回 0
+        offset *= LEAN_DECAY;
+
+    if (LEAN_LIMIT_MODE == 0)                           // 固定限幅
+        limit = LEAN_LIMIT;
+    else                                                // 动态限幅：速度越快转得越急，允许倾得越多
+        limit = fabsf((float)Y_Motor_GetSpeed20ms() * turn * LEAN_K2);
+
+    limit = constrain_float(limit, 0, LEAN_LIMIT_MAX);  // 压弯角硬上限
+    s_lean_raw = constrain_float(offset, -limit, limit);
+    return s_lean_raw;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     把压弯零点按速率挪向目标值，避免零点阶跃直接变成横滚角度环的目标阶跃
+// 参数说明     target          压弯零点目标值(°)
+// 返回参数     float           本拍生效的压弯零点(°)
+// 使用示例     g_lean_offset = lean_slew_update(s_lean_raw);
+//-------------------------------------------------------------------------------------------------------------------
+static float lean_slew_update(float target)
+{
+    float step  = LEAN_SLEW;
+    float delta = target - g_lean_offset;
+
+    if (step <= 0.0f) return target;        // 速率给 0 表示不限速率
+    if (delta > step)  return g_lean_offset + step;
+    if (delta < -step) return g_lean_offset - step;
+    return target;
+}
+
+// ====================== 三轴串级 ======================
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     Roll 串级，输出由 A/B 动量轮差动执行：回收环 -> 角度环 -> 角速度环
+// 参数说明     zero/run5/run20 横滚零点、5ms 分频标志、20ms 分频标志
+// 返回参数     float           横滚角速度环的累计输出 PWM_roll
+// 使用示例     g_pwm_roll = roll_cascade_ctrl(g_roll_zero + g_lean_offset, run5, run20);
+//-------------------------------------------------------------------------------------------------------------------
+static float roll_cascade_ctrl(float zero, uint8 run5, uint8 run20)
+{
+    // 回收环把飞轮差速拉回 0，防止动量轮越转越快最后饱和、失去可用力矩
+    if (run20) pid_loc_calc(&r_rcy_pid, -(float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1()));
+    if (run5)  pid_loc_calc(&r_angle_pid, r_rcy_pid.out + att.roll - zero);                    // 角度环，位置式
+    pid_inc_calc(&r_rate_pid, att.roll_rate + r_angle_pid.out);                                // 角速度环，增量式
+    r_rate_pid.out = constrain_float(r_rate_pid.out, -FLYWHEEL_OUT_LIMIT, FLYWHEEL_OUT_LIMIT); // 增量累积限幅防饱和
+
+    g_bal_dbg.r_rcy_set  = 0.0f;
+    g_bal_dbg.r_rcy_fb   = (float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1());
+    g_bal_dbg.r_rcy_out  = r_rcy_pid.out;
+    g_bal_dbg.r_ang_fb   = att.roll;
+    g_bal_dbg.r_ang_out  = r_angle_pid.out;
+    g_bal_dbg.r_rate_fb  = att.roll_rate;
+    g_bal_dbg.r_pwm      = r_rate_pid.out;
+    return r_rate_pid.out;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     Pitch 串级，输出由 C 行进轮执行：速度环 -> 角度环 -> 角速度环
+// 参数说明     zero/run5/run20 俯仰零点、5ms 分频标志、20ms 分频标志
+// 返回参数     float           俯仰角速度环的累计输出 PWM_pitch
+// 使用示例     g_pwm_pitch = pitch_cascade_ctrl(g_pitch_zero, run5, run20);
+//-------------------------------------------------------------------------------------------------------------------
+static float pitch_cascade_ctrl(float zero, uint8 run5, uint8 run20)
+{
+    // 速度环输出的是倾角目标：想加速就往前倒一点，所以误差取 反馈 - 目标
+    // 目标用斜坡后的 s_speed_ramp，不用 g_target_distance，避免目标阶跃踹速度环
+    if (run20) pid_loc_calc(&p_vel_pid, (float)Y_Motor_GetSpeed20ms() - s_speed_ramp);
+    if (run5)  pid_loc_calc(&p_angle_pid, p_vel_pid.out - att.pitch + zero);             // 角度环，位置式
+    pid_inc_calc(&p_rate_pid, -att.pitch_rate + p_angle_pid.out);                        // 角速度环，增量式
+    p_rate_pid.out = constrain_float(p_rate_pid.out, -DRIVE_OUT_LIMIT, DRIVE_OUT_LIMIT); // 增量累积限幅
+
+    g_bal_dbg.p_vel_set  = s_speed_ramp;
+    g_bal_dbg.p_vel_fb   = (float)Y_Motor_GetSpeed20ms();
+    g_bal_dbg.p_vel_out  = p_vel_pid.out;
+    g_bal_dbg.p_ang_fb   = att.pitch;
+    g_bal_dbg.p_ang_out  = p_angle_pid.out;
+    g_bal_dbg.p_rate_fb  = att.pitch_rate;
+    g_bal_dbg.p_pwm      = p_rate_pid.out;
+    return p_rate_pid.out;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     Yaw 串级，输出由 A/B 动量轮同向执行：转向外环 -> 角速度内环，两级都是位置式
+// 参数说明     run5            5ms 分频标志，为 1 时跑转向外环
+// 返回参数     float           航向角速度内环输出 PWM_yaw
+// 使用示例     g_pwm_yaw = yaw_cascade_ctrl(run5);
+//-------------------------------------------------------------------------------------------------------------------
+static float yaw_cascade_ctrl(uint8 run5)
+{
+    // 航向用连续角，环岛要累计 340°，这里不能换成 ±180° 包装角
+    if (run5) pid_loc_calc(&y_angle_pid, g_yaw_target - imu_get_angle_yaw());   // 转向外环，5ms
+    pid_loc_calc(&y_rate_pid, y_angle_pid.out - imu.gyro_z);                    // 角速度内环，1ms
+
+    g_bal_dbg.y_set     = g_yaw_target;
+    g_bal_dbg.y_fb      = imu_get_angle_yaw();
+    g_bal_dbg.y_out     = y_angle_pid.out;
+    g_bal_dbg.y_rate_fb = imu.gyro_z;
+    g_bal_dbg.y_pwm     = y_rate_pid.out;
+    return y_rate_pid.out;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     跑一拍三轴串级：刷增益 -> 安全闸 -> 三轴串级 -> 混控 -> 保护角 -> 按状态机下发
+// 参数说明     void
+// 返回参数     void
+// 使用示例     cascade_run();
+//-------------------------------------------------------------------------------------------------------------------
+static void cascade_run(void)
+{
+    static uint16 tick;                                  // 1ms 分频计数，20ms 一轮回绕
+    uint8 run5, run20;
+    float roll_cmd, yaw_room, yaw_cmd;
+    float roll_err, pitch_err;
+    int32 mix_a, mix_b, mix_c;
+
+    tick++;
+    if (tick >= CTRL_DIV_SPEED) tick = 0;
+    run5  = (uint8)((tick % CTRL_DIV_ATT) == 0);         // 5ms 拍：角度环、转向外环、压弯零点
+    run20 = (uint8)(tick == 0);                          // 20ms 拍：速度环、飞轮回收环
+
+    cascade_gain_refresh();                              // 菜单或串口改的增益下一拍就生效
+
+    // IMU 或驱动通信断了就停机。驱动断链时输出发不出去，继续跑串级只会让增量式积分堆积
+    if (!g_imu_ok || imu_link_lost() || W_Motor_LinkLost())
+    {
+        cascade_reset();
+        g_pwm_roll = g_pwm_pitch = g_pwm_yaw = 0.0f;
+        g_motor_a = g_motor_b = g_motor_c = 0;
+        start_flag = START_STOP;
+        control_motor_stop();
+        return;
+    }
+
+    // 姿态出现 NaN/Inf 立即停机。这一判必须排在保护角之前，fabsf(NaN) > 阈值 恒假，拦不住 NaN
+    if (attitude_diverged() ||
+        !ctrl_is_finite(att.roll)      || !ctrl_is_finite(att.pitch) ||
+        !ctrl_is_finite(att.roll_rate) || !ctrl_is_finite(att.pitch_rate) ||
+        !ctrl_is_finite(imu.gyro_z))
+    {
+        cascade_reset();
+        g_pwm_roll = g_pwm_pitch = g_pwm_yaw = 0.0f;
+        g_motor_a = g_motor_b = g_motor_c = 0;
+        start_flag = START_STOP;
+        control_motor_stop();
+        return;
+    }
+
+    if (start_flag == START_STOP)
+    {
+        cascade_reset();                                 // 清积分、增量累积和压弯偏移
+        g_yaw_target = imu_get_angle_yaw();              // 目标跟随当前航向，防起步跳变
+    }
+    if (start_flag == START_DRIVE_ONLY)
+    {
+        // 飞轮还锁着刹车，Roll 与 Yaw 的积分和增量累积必须清掉，否则松刹车瞬间会甩出去
+        pid_reset(&r_rcy_pid); pid_reset(&r_angle_pid); pid_reset(&r_rate_pid);
+        pid_reset(&y_angle_pid); pid_reset(&y_rate_pid);
+        g_lean_offset = 0;
+        g_yaw_target  = imu_get_angle_yaw();
+    }
+
+    g_pwm_yaw = yaw_cascade_ctrl(run5);
+    if (run5)                                            // 压弯零点与转向外环同拍，系数按 5ms 节拍整定
+        g_lean_offset = lean_slew_update(lean_offset_update(y_angle_pid.out));
+    if (run20) speed_ramp_update();                      // 速度目标斜坡与速度环同拍
+    g_pwm_roll  = roll_cascade_ctrl(g_roll_zero + g_lean_offset, run5, run20);
+    g_pwm_pitch = pitch_cascade_ctrl(g_pitch_zero, run5, run20);
+
+    // 混控：平衡优先，Yaw 只能用 Roll 剩下的余量。不许改成先相加再统一钳幅
+    roll_cmd = constrain_float(g_pwm_roll, -(float)FLYWHEEL_OUT_LIMIT, (float)FLYWHEEL_OUT_LIMIT);
+    yaw_room = (float)FLYWHEEL_OUT_LIMIT - fabsf(roll_cmd);
+    yaw_cmd  = constrain_float(g_pwm_yaw, -yaw_room, yaw_room);
+
+    mix_a = (int32)(-roll_cmd + yaw_cmd);                // 动量轮 A：横滚分量取负
+    mix_b = (int32)(+roll_cmd + yaw_cmd);                // 动量轮 B：差动出平衡，同向出转向
+    mix_c = (int32)(g_pwm_pitch);                        // 行进轮 C
+    // 浮点转整数前再限一次幅
+    g_motor_a = (int16)func_limit(mix_a, FLYWHEEL_OUT_LIMIT);
+    g_motor_b = (int16)func_limit(mix_b, FLYWHEEL_OUT_LIMIT);
+    g_motor_c = (int16)func_limit(mix_c, DRIVE_OUT_LIMIT);
+
+    // 横滚或俯仰误差超过保护角，立即停机并锁死刹车
+    roll_err  = att.roll  - g_roll_zero;
+    pitch_err = att.pitch - g_pitch_zero;
+    if (fabsf(roll_err) > ROLL_PROTECT_ANGLE || fabsf(pitch_err) > PITCH_PROTECT_ANGLE)
+    {
+        g_motor_a = g_motor_b = g_motor_c = 0;
+        start_flag = START_STOP;
+        W_Motor_Stop();
+    }
+
+    // 每个分支都必须给 W_Motor 下发一帧，喂住驱动固件的失控保护看门狗
+    switch (start_flag)
+    {
+    case START_STOP:
+        control_motor_stop();
+        break;
+    case START_DRIVE_ONLY:
+        W_Motor_Stop();
+        Y_Motor_SetDuty(g_motor_c);
+        break;
+    case START_BALANCE:
+        W_Motor_Release();
+        control_motor_output(g_motor_a, g_motor_b, g_motor_c);
+        break;
+    default:
+        break;
+    }
+}
+
+// ====================== 单轴 Test/Wave ======================
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     按测试限幅驱动行进轮 C，动量轮保持软件刹车锁死
+// 参数说明     command         控制量，方向与死区补偿由 Y_Motor 内部处理
+// 返回参数     void
+// 使用示例     test_drive_c_output(g_pwm_pitch);
+//-------------------------------------------------------------------------------------------------------------------
+static void test_drive_c_output(float command)
+{
+    int32 out = func_limit((int32)command, BAL_TEST_DRIVE_LIMIT);
+
+    W_Motor_Stop();
+    Y_Motor_SetDuty(out);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     检查 Test/Wave 的输入是否可信：IMU、标定、驱动通信、NaN 和保护角
+// 参数说明     void
+// 返回参数     uint8           1=可以继续 0=必须立即停止测试
+// 使用示例     if (!test_input_valid()) test_stop();
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 test_input_valid(void)
+{
+    if (!g_imu_ok || imu_link_lost() || attitude_diverged() || !attitude_converged()) return 0;
+    if (imu_calib_state() != IMU_CALIB_OK) return 0;
+    if (s_test_axis != TUNE_AXIS_PITCH && W_Motor_LinkLost()) return 0;  // 动飞轮就要求驱动在线
+    if (!ctrl_is_finite(att.roll) || !ctrl_is_finite(att.pitch) || !ctrl_is_finite(att.roll_rate) ||
+        !ctrl_is_finite(att.pitch_rate) || !ctrl_is_finite(imu.gyro_z)) return 0;
+    if (fabsf(att.roll - g_roll_zero) > ROLL_PROTECT_ANGLE) return 0;
+    if (fabsf(att.pitch - g_pitch_zero) > PITCH_PROTECT_ANGLE) return 0;
+    return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     跑一拍 Roll 测试串级，比选中环更外的环整个旁路并保持清零
+// 参数说明     run5/run20      5ms 与 20ms 分频标志
+// 返回参数     float           Roll 测试输出
+// 使用示例     output = roll_test_ctrl(run5, run20);
+//-------------------------------------------------------------------------------------------------------------------
+static float roll_test_ctrl(uint8 run5, uint8 run20)
+{
+    if (s_test_ring >= TUNE_RING_VEL)
+    {
+        if (run20) pid_loc_calc(&r_rcy_pid, -(float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1()));
+    }
+    else
+    {
+        pid_reset(&r_rcy_pid);
+    }
+
+    if (s_test_ring >= TUNE_RING_ANGLE)
+    {
+        if (run5) pid_loc_calc(&r_angle_pid, r_rcy_pid.out + att.roll - g_roll_zero);
+    }
+    else
+    {
+        pid_reset(&r_angle_pid);
+    }
+
+    pid_inc_calc(&r_rate_pid, att.roll_rate + r_angle_pid.out);
+    r_rate_pid.out = constrain_float(r_rate_pid.out, -BAL_TEST_FLY_LIMIT, BAL_TEST_FLY_LIMIT);
+
+    g_bal_dbg.r_rcy_set = 0.0f;
+    g_bal_dbg.r_rcy_fb  = (float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1());
+    g_bal_dbg.r_rcy_out = r_rcy_pid.out;
+    g_bal_dbg.r_ang_fb  = att.roll;
+    g_bal_dbg.r_ang_out = r_angle_pid.out;
+    g_bal_dbg.r_rate_fb = att.roll_rate;
+    g_bal_dbg.r_pwm     = r_rate_pid.out;
+    return r_rate_pid.out;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     跑一拍 Pitch 测试串级，比选中环更外的环整个旁路并保持清零
+// 参数说明     run5/run20      5ms 与 20ms 分频标志
+// 返回参数     float           Pitch 测试输出
+// 使用示例     output = pitch_test_ctrl(run5, run20);
+//-------------------------------------------------------------------------------------------------------------------
+static float pitch_test_ctrl(uint8 run5, uint8 run20)
+{
+    if (s_test_ring >= TUNE_RING_VEL)
+    {
+        if (run20)
+        {
+            speed_ramp_update();
+            s_test_speed_c = Y_Motor_GetSpeed20ms();
+            pid_loc_calc(&p_vel_pid, (float)s_test_speed_c - s_speed_ramp);
+        }
+    }
+    else
+    {
+        pid_reset(&p_vel_pid);
+    }
+
+    if (s_test_ring >= TUNE_RING_ANGLE)
+    {
+        if (run5) pid_loc_calc(&p_angle_pid, p_vel_pid.out - att.pitch + g_pitch_zero);
+    }
+    else
+    {
+        pid_reset(&p_angle_pid);
+    }
+
+    pid_inc_calc(&p_rate_pid, -att.pitch_rate + p_angle_pid.out);
+    p_rate_pid.out = constrain_float(p_rate_pid.out, -BAL_TEST_DRIVE_LIMIT, BAL_TEST_DRIVE_LIMIT);
+
+    g_bal_dbg.p_vel_set  = s_speed_ramp;
+    g_bal_dbg.p_vel_fb   = (float)s_test_speed_c;
+    g_bal_dbg.p_vel_out  = p_vel_pid.out;
+    g_bal_dbg.p_ang_fb   = att.pitch;
+    g_bal_dbg.p_ang_out  = p_angle_pid.out;
+    g_bal_dbg.p_rate_fb  = att.pitch_rate;
+    g_bal_dbg.p_pwm      = p_rate_pid.out;
+    return p_rate_pid.out;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     跑一拍 Yaw 测试串级，未选转向外环时整个旁路并保持清零
+// 参数说明     run5            5ms 分频标志
+// 返回参数     float           Yaw 测试输出
+// 使用示例     output = yaw_test_ctrl(run5);
+//-------------------------------------------------------------------------------------------------------------------
+static float yaw_test_ctrl(uint8 run5)
+{
+    if (s_test_ring >= TUNE_RING_ANGLE)
+    {
+        if (run5) pid_loc_calc(&y_angle_pid, g_yaw_target - imu_get_angle_yaw());
+    }
+    else
+    {
+        pid_reset(&y_angle_pid);
+    }
+
+    pid_loc_calc(&y_rate_pid, y_angle_pid.out - imu.gyro_z);
+    y_rate_pid.out = constrain_float(y_rate_pid.out, -BAL_TEST_FLY_LIMIT, BAL_TEST_FLY_LIMIT);
+
+    g_bal_dbg.y_set     = g_yaw_target;
+    g_bal_dbg.y_fb      = imu_get_angle_yaw();
+    g_bal_dbg.y_out     = y_angle_pid.out;
+    g_bal_dbg.y_rate_fb = imu.gyro_z;
+    g_bal_dbg.y_pwm     = y_rate_pid.out;
+    return y_rate_pid.out;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     启动单轴 Test/Wave，只闭对应轴，比选中环更外的环全部旁路
+// 参数说明     axis/ring       测试轴与最高启用环
+// 返回参数     uint8           1=启动成功 0=轴环组合非法
+// 使用示例     test_start(TUNE_AXIS_PITCH, TUNE_RING_RATE);
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 test_start(tune_axis_t axis, tune_ring_t ring)
+{
+    if (axis >= TUNE_AXIS_MAX || ring >= TUNE_RING_MAX) return 0;
+    if (axis == TUNE_AXIS_YAW && ring == TUNE_RING_VEL) return 0;
+
+    cascade_reset();
+    g_pwm_roll = 0.0f;
+    g_pwm_pitch = 0.0f;
+    g_pwm_yaw = 0.0f;
+    g_motor_a = 0;
+    g_motor_b = 0;
+    g_motor_c = 0;
+    g_target_distance = 0;
+    g_yaw_target = imu_get_angle_yaw();
+
+    s_test_axis = axis;
+    s_test_ring = ring;
+    s_test_tick = 0;
+    s_test_speed_c = 0;
+    if (axis == TUNE_AXIS_PITCH) Y_Motor_EncoderClear();
+
+    s_test_running = 1;
+    return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     停止单轴 Test/Wave，清全部 PID 状态并停三电机
+// 参数说明     void
+// 返回参数     void
+// 使用示例     test_stop();
+//-------------------------------------------------------------------------------------------------------------------
+static void test_stop(void)
+{
+    uint8 was_running = s_test_running;
+
+    s_test_running = 0;
+    cascade_reset();
+    g_pwm_roll = 0.0f;
+    g_pwm_pitch = 0.0f;
+    g_pwm_yaw = 0.0f;
+    g_motor_a = 0;
+    g_motor_b = 0;
+    g_motor_c = 0;
+    g_target_distance = 0;
+    start_flag = START_STOP;
+
+    if (!was_running) return;
+    control_motor_stop();
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     跑一拍单轴 Test/Wave，输入不合法或输出发散时自动停车
+// 参数说明     void
+// 返回参数     void
+// 使用示例     test_run();
+//-------------------------------------------------------------------------------------------------------------------
+static void test_run(void)
+{
+    uint8 run5;
+    uint8 run20;
+    float output;
+
+    if (!s_test_running) return;
+    if (!test_input_valid())
+    {
+        test_stop();
+        return;
+    }
+
+    s_test_tick++;
+    if (s_test_tick >= CTRL_DIV_SPEED) s_test_tick = 0;
+    run5  = (uint8)((s_test_tick % CTRL_DIV_ATT) == 0);
+    run20 = (uint8)(s_test_tick == 0);
+
+    cascade_gain_refresh();
+    g_pwm_roll = 0.0f;
+    g_pwm_pitch = 0.0f;
+    g_pwm_yaw = 0.0f;
+    g_motor_a = 0;
+    g_motor_b = 0;
+    g_motor_c = 0;
+
+    if (s_test_axis == TUNE_AXIS_ROLL)
+    {
+        output = roll_test_ctrl(run5, run20);
+        if (!ctrl_is_finite(output)) { test_stop(); return; }
+        g_pwm_roll = output;
+        g_motor_a = (int16)(-output);
+        g_motor_b = (int16)(output);
+        W_Motor_Release();
+        control_motor_output(g_motor_a, g_motor_b, 0);
+    }
+    else if (s_test_axis == TUNE_AXIS_PITCH)
+    {
+        output = pitch_test_ctrl(run5, run20);
+        if (!ctrl_is_finite(output)) { test_stop(); return; }
+        g_pwm_pitch = output;
+        g_motor_c = (int16)output;
+        test_drive_c_output(output);
+    }
+    else
+    {
+        output = yaw_test_ctrl(run5);
+        if (!ctrl_is_finite(output)) { test_stop(); return; }
+        g_pwm_yaw = output;
+        g_motor_a = (int16)output;
+        g_motor_b = (int16)output;
+        W_Motor_Release();
+        control_motor_output(g_motor_a, g_motor_b, 0);
+    }
+}
+
+// ====================== 安全闸 ======================
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读取姿态与 IMU 的阻断原因
+// 参数说明     void
+// 返回参数     control_block_t 阻断原因，CTRL_BLOCK_NONE 表示姿态可用
+// 使用示例     block = control_attitude_block_reason();
+//-------------------------------------------------------------------------------------------------------------------
+static control_block_t control_attitude_block_reason(void)
+{
+    if (!g_imu_ok)              return CTRL_BLOCK_IMU_FAIL;
+    if (imu_link_lost())        return CTRL_BLOCK_IMU_LOST;
+    if (imu_calib_state() != IMU_CALIB_OK) return CTRL_BLOCK_IMU_CALIB;
+    if (attitude_diverged())    return CTRL_BLOCK_ATT_DIVERGED;
+    if (!attitude_converged())  return CTRL_BLOCK_ATT_CONVERGING;
+    return CTRL_BLOCK_NONE;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     把阻断原因翻译成 Test/Wave 状态码
+// 参数说明     block           阻断原因
+// 返回参数     control_test_status_t 对应状态码
+// 使用示例     s_test_status = control_block_to_test_status(block);
+//-------------------------------------------------------------------------------------------------------------------
+static control_test_status_t control_block_to_test_status(control_block_t block)
+{
+    switch (block)
+    {
+        case CTRL_BLOCK_IMU_FAIL:     return CTRL_TEST_STATUS_IMU_FAIL;
+        case CTRL_BLOCK_IMU_CALIB:    return CTRL_TEST_STATUS_IMU_CALIB;
+        case CTRL_BLOCK_IMU_LOST:     return CTRL_TEST_STATUS_IMU_LOST;
+        case CTRL_BLOCK_ATT_DIVERGED: return CTRL_TEST_STATUS_ATT_DIVERGED;
+        case CTRL_BLOCK_BLDC_LOST:    return CTRL_TEST_STATUS_BLDC_LOST;
+        default:                      return CTRL_TEST_STATUS_ATT_CONVERGING;
+    }
+}
+
+// ====================== 对外接口 ======================
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     初始化参数、按键、两路电机、三轴串级、波形和 IMU660RB，最后开 1ms 中断
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_init();
@@ -135,22 +727,47 @@ void control_init(void)
     g_vision_left_lost = 0;
     g_vision_right_lost = 0;
     g_vision_both_lost = 0;
-//  g_vision_active_elem = 0;
+    g_vision_active_elem = 0;
+    g_vision_island_state = 0;
+    g_vision_speed_scale = 1.0f;
+    g_vision_stop_request = 0;
     s_control_test_active = 0;
     s_test_status = CTRL_TEST_STATUS_OK;
-//  s_vision_timeout_active = 0;
-//  s_vision_recover_count = 0;
-//  s_vision_hold_yaw = 0.0f;
     s_jog_target = MOTOR_JOG_NONE;
     s_jog_duty = 0;
     s_jog_left_ms = 0;
 
     param_init();
-    key_io_init();
+    key_init(CTRL_DIV_KEY);             // 扫描周期必须等于下面 control_loop 里调 key_scanner 的分频
     W_Motor_Init();                     // 上电锁定 A/B 软件刹车并请求转速回传
-    Y_Motor_Init();                     // C 轮 PWM/DIR 与 5ms 编码器
-    balance_init();
-    Control_Init();                     // 直立串级控制器，初始化后不使能任何输出
+    Y_Motor_Init();                     // C 轮 PWM/DIR 与脉冲方向编码器
+
+    // 三轴串级初值
+    g_roll_zero   = ROLL_ZERO_INIT;
+    g_pitch_zero  = PITCH_ZERO_INIT;
+    g_yaw_target  = 0;
+    g_lean_offset = 0;
+    s_lean_raw    = 0;
+    s_speed_ramp  = 0.0f;
+    start_flag    = START_STOP;
+
+    pid_set(&r_rcy_pid,   R_RCY_KP,   R_RCY_KI,   R_RCY_KD,   R_RCY_IMAX);
+    pid_set(&r_angle_pid, R_ANGLE_KP, R_ANGLE_KI, R_ANGLE_KD, R_ANGLE_IMAX);
+    pid_set(&r_rate_pid,  R_RATE_KP,  R_RATE_KI,  R_RATE_KD,  R_RATE_IMAX);
+
+    pid_set(&p_vel_pid,   P_VEL_KP,   P_VEL_KI,   P_VEL_KD,   P_VEL_IMAX);
+    pid_set(&p_angle_pid, P_ANGLE_KP, P_ANGLE_KI, P_ANGLE_KD, P_ANGLE_IMAX);
+    pid_set(&p_rate_pid,  P_RATE_KP,  P_RATE_KI,  P_RATE_KD,  P_RATE_IMAX);
+
+    pid_set(&y_angle_pid, Y_ANGLE_KP, Y_ANGLE_KI, Y_ANGLE_KD, Y_ANGLE_IMAX);
+    pid_set(&y_rate_pid,  Y_RATE_KP,  Y_RATE_KI,  Y_RATE_KD,  Y_RATE_IMAX);
+
+    s_test_running = 0;
+    s_test_axis = TUNE_AXIS_ROLL;
+    s_test_ring = TUNE_RING_RATE;
+    s_test_tick = 0;
+    s_test_speed_c = 0;
+
     vofa_init();
 
     g_imu_ok = (imu_init() == 0) ? 1 : 0;
@@ -163,104 +780,7 @@ void control_init(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     读取姿态闭环被拒的安全原因
-// 参数说明     void
-// 返回参数     control_block_t 姿态或 IMU 阻断原因
-// 使用示例     block = control_attitude_block_reason();
-//-------------------------------------------------------------------------------------------------------------------
-static control_block_t control_attitude_block_reason(void)
-{
-    if (!g_imu_ok)              return CTRL_BLOCK_IMU_FAIL;
-    if (imu_link_lost())        return CTRL_BLOCK_IMU_LOST;
-    if (attitude_diverged())    return CTRL_BLOCK_ATT_DIVERGED;
-    if (!attitude_converged())  return CTRL_BLOCK_ATT_CONVERGING;
-    return CTRL_BLOCK_NONE;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     把阻断原因翻译成 Test/Wave 状态码
-// 参数说明     block           阻断原因
-// 返回参数     control_test_status_t 对应的测试状态码
-// 使用示例     s_test_status = control_block_to_test_status(block);
-//-------------------------------------------------------------------------------------------------------------------
-static control_test_status_t control_block_to_test_status(control_block_t block)
-{
-    switch (block)
-    {
-        case CTRL_BLOCK_IMU_FAIL:     return CTRL_TEST_STATUS_IMU_FAIL;
-        case CTRL_BLOCK_IMU_LOST:     return CTRL_TEST_STATUS_IMU_LOST;
-        case CTRL_BLOCK_ATT_DIVERGED: return CTRL_TEST_STATUS_ATT_DIVERGED;
-        case CTRL_BLOCK_BLDC_LOST:    return CTRL_TEST_STATUS_BLDC_LOST;
-        default:                      return CTRL_TEST_STATUS_ATT_CONVERGING;
-    }
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     检查是否允许离开 STOP 状态
-// 参数说明     void
-// 返回参数     uint8           1=允许 0=禁止
-// 使用示例     if (control_allow_start()) control_start_balance();
-//-------------------------------------------------------------------------------------------------------------------
-// uint8 control_allow_start(void)
-// {
-//     return (uint8)(control_start_block_reason() == CTRL_BLOCK_NONE);
-// }
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     读取正常发车被拒的安全原因
-// 参数说明     void
-// 返回参数     control_block_t 姿态、IMU 或驱动通讯阻断原因
-// 使用示例     switch (control_start_block_reason()) { ... }
-//-------------------------------------------------------------------------------------------------------------------
-// control_block_t control_start_block_reason(void)
-// {
-//     control_block_t block = control_attitude_block_reason();
-//
-//     if (block != CTRL_BLOCK_NONE) return block;
-//     if (W_Motor_LinkLost())       return CTRL_BLOCK_BLDC_LOST;   // 发车必须先有飞轮
-//     return CTRL_BLOCK_NONE;
-// }
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     安全进入三轴平衡运行状态
-// 参数说明     void
-// 返回参数     uint8           1=已启动 0=安全条件不允许
-// 使用示例     if (!control_start_balance()) display_start_blocked_screen(control_start_block_reason());
-//-------------------------------------------------------------------------------------------------------------------
-// uint8 control_start_balance(void)
-// {
-//     if (!control_allow_start()) return 0;
-//     control_test_stop();
-//     control_jog_stop();
-//     g_target_distance = 0;
-//     g_yaw_target = imu_get_angle_yaw();
-//     s_vision_timeout_active = 0;
-//     s_vision_recover_count = 0;
-//     start_flag = START_BALANCE;
-//     return 1;
-// }
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     进入完整跑赛道流程：平衡闭环 + 视觉循迹驱动转向与速度
-// 参数说明     void
-// 返回参数     uint8           1=已发车 0=流程未启用或安全条件不允许
-// 使用示例     if (!control_start_run()) menu_status("RUN BLOCKED");
-//-------------------------------------------------------------------------------------------------------------------
-// uint8 control_start_run(void)
-// {
-// #if RUN_FLOW_ENABLE
-//     // 循迹目标由 control_vision_exchange() 在 START_BALANCE 下写入 g_yaw_target 与 g_target_distance，
-//     // 因此发车流程本身只需要确认视觉在线后进入平衡态。
-//     if (vision_core_state() != VISION_CORE_READY) return 0;
-//     if (!control_start_balance()) return 0;
-//     return 1;
-// #else
-//     return 0;                       // 分轴 PID 与电机方向未实车验证前不允许发车
-// #endif
-// }
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     立即停止正常运行与 Test/Wave 并锁定可用电机
+// 函数简介     立即停止 Test/Wave 与点动，三电机清零并锁死动量轮软件刹车
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_stop();
@@ -269,26 +789,34 @@ void control_stop(void)
 {
     control_test_stop();
     control_jog_stop();
-    if (s_cascade_enabled) Control_EmergencyStop(CONTROL_FAULT_MANUAL_STOP);
     g_target_distance = 0;
     start_flag = START_STOP;
-//  s_vision_timeout_active = 0;
-//  s_vision_recover_count = 0;
     control_motor_stop();
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     启动一次限时架空点动，用于确认电机转向与转速反馈符号
-// 参数说明     target/forward  点动电机与方向, forward 为 1 表示正转
-// 返回参数     uint8           1=已启动 0=正在跑其它闭环或安全条件不允许
+// 函数简介     启动一次限时架空点动，用于确认电机转向与转速回读符号
+// 参数说明     target/forward  点动电机与方向，forward 为 1 表示正转
+// 返回参数     uint8           1=已启动 0=姿态、标定、运行状态或驱动条件不满足
 // 使用示例     control_jog_start(MOTOR_JOG_A, 1);
 //-------------------------------------------------------------------------------------------------------------------
 uint8 control_jog_start(motor_jog_t target, uint8 forward)
 {
+    control_block_t block;
     int16 duty;
 
-    if (target == MOTOR_JOG_NONE) return 0;
-    if (start_flag != START_STOP || balance_test_running() || s_cascade_enabled) return 0;
+    if (target == MOTOR_JOG_NONE || start_flag != START_STOP || s_test_running)
+    {
+        s_test_status = CTRL_TEST_STATUS_INVALID;
+        return 0;
+    }
+
+    block = control_attitude_block_reason();
+    if (block != CTRL_BLOCK_NONE)
+    {
+        s_test_status = control_block_to_test_status(block);
+        return 0;
+    }
     if (target != MOTOR_JOG_C && W_Motor_LinkLost())
     {
         s_test_status = CTRL_TEST_STATUS_BLDC_LOST;
@@ -301,29 +829,36 @@ uint8 control_jog_start(motor_jog_t target, uint8 forward)
     if (target != MOTOR_JOG_C) W_Motor_Release();
     s_jog_duty = duty;
     s_jog_left_ms = MOTOR_JOG_MS;
-    s_jog_target = target;              // 最后赋值: 1ms 中断读到 target 时其余字段已就绪
+    g_vofa_mode = VOFA_MOTOR;
+    s_jog_target = target;              // 最后赋值：1ms 中断读到 target 时其余字段已就绪
     s_test_status = CTRL_TEST_STATUS_OK;
     return 1;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     立即结束点动并重新锁死动量轮
+// 函数简介     立即结束点动并重新锁死动量轮软件刹车
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_jog_stop();
 //-------------------------------------------------------------------------------------------------------------------
 void control_jog_stop(void)
 {
+    uint8 was_running = (uint8)(s_jog_target != MOTOR_JOG_NONE);
+
     s_jog_target = MOTOR_JOG_NONE;
     s_jog_left_ms = 0;
     s_jog_duty = 0;
+    g_motor_a = 0;
+    g_motor_b = 0;
+    g_motor_c = 0;
+    if (was_running && g_vofa_mode == VOFA_MOTOR) g_vofa_mode = VOFA_OFF;
     control_motor_stop();
 }
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     查询当前正在点动的电机
 // 参数说明     void
-// 返回参数     motor_jog_t     点动目标, MOTOR_JOG_NONE 表示未运行
+// 返回参数     motor_jog_t     点动目标，MOTOR_JOG_NONE 表示未运行
 // 使用示例     if (control_jog_running() == MOTOR_JOG_A) { ... }
 //-------------------------------------------------------------------------------------------------------------------
 motor_jog_t control_jog_running(void)
@@ -365,537 +900,9 @@ static void control_jog_run(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     判断浮点是否为有限值(非 NaN / 非 ±Inf)
-// 参数说明     v               待判值
-// 返回参数     uint8           1=有限值 0=NaN/Inf
-// 使用示例     if (!control_is_finite(att.roll)) { ... }
-//-------------------------------------------------------------------------------------------------------------------
-static uint8 control_is_finite(float v)
-{
-    if (v != v) return 0;                                   // NaN
-    if (v > 3.0e38f || v < -3.0e38f) return 0;              // ±Inf
-    return 1;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     取浮点绝对值，不引入数学库
-// 参数说明     v               输入值
-// 返回参数     float           绝对值
-// 使用示例     if (control_fabs(err) > limit) { ... }
-//-------------------------------------------------------------------------------------------------------------------
-static float control_fabs(float v)
-{
-    return (v < 0.0f) ? -v : v;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     计算一级位置式环并按本级限幅截断
-// 参数说明     p/cfg           PID 实例与增益，measurement/target 为反馈与目标
-// 返回参数     float           限幅后的本级输出
-// 使用示例     out = control_pos_stage(&s_fore_aft_angle_pid, &cfg->angle, pitch, target);
-//-------------------------------------------------------------------------------------------------------------------
-static float control_pos_stage(pid_t *p, const control_pid_config_t *cfg,
-                               float measurement, float target)
-{
-    p->out = constrain_float(pid_loc_calc(p, target - measurement),
-                             -cfg->out_limit, cfg->out_limit);
-    return p->out;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     计算角速度增量式环，累积输出限幅防饱和
-// 参数说明     p/cfg           PID 实例与增益，measurement/target 为反馈与目标
-// 返回参数     float           限幅后的累积输出，不是单次增量
-// 使用示例     out = control_rate_stage(&s_fore_aft_rate_pid, &cfg->angular_rate, rate, target);
-//-------------------------------------------------------------------------------------------------------------------
-static float control_rate_stage(pid_t *p, const control_pid_config_t *cfg,
-                                float measurement, float target)
-{
-    (void)pid_inc_calc(p, target - measurement);
-    p->out = constrain_float(p->out, -cfg->out_limit, cfg->out_limit);
-    return p->out;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     浮点控制量限幅并截断为整数占空比
-// 参数说明     value/limit     控制量与限幅值
-// 返回参数     int32           限幅后的整数占空比
-// 使用示例     drive = control_to_output(out, CONTROL_DRIVE_OUTPUT_LIMIT);
-//-------------------------------------------------------------------------------------------------------------------
-static int32 control_to_output(float value, float limit)
-{
-    return (int32)constrain_float(value, -limit, limit);    // 向零截断，不足 1 个单位自然归零
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     校验单个执行器方向符号
-// 参数说明     sign            待校验符号
-// 返回参数     uint8           1=合法(±1) 0=非法
-// 使用示例     if (!control_sign_valid(signs->drive_motor_sign)) return 0;
-//-------------------------------------------------------------------------------------------------------------------
-static uint8 control_sign_valid(int8 sign)
-{
-    return (uint8)((sign == 1) || (sign == -1));
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     校验五个执行器方向符号是否都已实测确认
-// 参数说明     void
-// 返回参数     uint8           1=全部合法 0=存在未确认项
-// 使用示例     if (!control_signs_ready()) return 0;
-//-------------------------------------------------------------------------------------------------------------------
-static uint8 control_signs_ready(void)
-{
-    return (uint8)(control_sign_valid(s_actuator_signs.drive_motor_sign) &&
-                   control_sign_valid(s_actuator_signs.flywheel_balance_sign_1) &&
-                   control_sign_valid(s_actuator_signs.flywheel_balance_sign_2) &&
-                   control_sign_valid(s_actuator_signs.flywheel_turn_sign_1) &&
-                   control_sign_valid(s_actuator_signs.flywheel_turn_sign_2));
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     检查俯仰与横滚是否都在防倒角以内
-// 参数说明     pitch/roll      当前俯仰角与横滚角(°)
-// 返回参数     uint8           1=安全 0=超过防倒角
-// 使用示例     if (!control_angle_safe(att.pitch, att.roll)) Control_EmergencyStop(...);
-//-------------------------------------------------------------------------------------------------------------------
-static uint8 control_angle_safe(float pitch, float roll)
-{
-    float pitch_limit = (PITCH_PROTECT_ANGLE < CONTROL_FALL_ANGLE_LIMIT_DEG)
-                      ? PITCH_PROTECT_ANGLE : CONTROL_FALL_ANGLE_LIMIT_DEG;
-    float roll_limit  = (ROLL_PROTECT_ANGLE  < CONTROL_FALL_ANGLE_LIMIT_DEG)
-                      ? ROLL_PROTECT_ANGLE  : CONTROL_FALL_ANGLE_LIMIT_DEG;
-
-    return (uint8)((control_fabs(pitch - s_pitch_zero) <= pitch_limit) &&
-                   (control_fabs(roll  - s_roll_zero)  <= roll_limit));
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     清空六个 PID 的历史状态与分频计数
-// 参数说明     void
-// 返回参数     void
-// 使用示例     control_cascade_clear();
-//-------------------------------------------------------------------------------------------------------------------
-static void control_cascade_clear(void)
-{
-    pid_reset(&s_fore_aft_speed_pid);
-    pid_reset(&s_fore_aft_angle_pid);
-    pid_reset(&s_fore_aft_rate_pid);
-    pid_reset(&s_left_right_speed_pid);
-    pid_reset(&s_left_right_angle_pid);
-    pid_reset(&s_left_right_rate_pid);
-    s_angle_divider = 0;
-    s_speed_divider = 0;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     把公开增益结构装载进六个 PID 实例
-// 参数说明     void
-// 返回参数     void
-// 使用示例     control_cascade_load();
-//-------------------------------------------------------------------------------------------------------------------
-static void control_cascade_load(void)
-{
-    pid_set(&s_fore_aft_speed_pid,   control_fore_aft_config.speed.kp,
-            control_fore_aft_config.speed.ki, control_fore_aft_config.speed.kd,
-            control_fore_aft_config.speed.imax);
-    pid_set(&s_fore_aft_angle_pid,   control_fore_aft_config.angle.kp,
-            control_fore_aft_config.angle.ki, control_fore_aft_config.angle.kd,
-            control_fore_aft_config.angle.imax);
-    pid_set(&s_fore_aft_rate_pid,    control_fore_aft_config.angular_rate.kp,
-            control_fore_aft_config.angular_rate.ki, control_fore_aft_config.angular_rate.kd,
-            control_fore_aft_config.angular_rate.imax);
-
-    pid_set(&s_left_right_speed_pid, control_left_right_config.speed.kp,
-            control_left_right_config.speed.ki, control_left_right_config.speed.kd,
-            control_left_right_config.speed.imax);
-    pid_set(&s_left_right_angle_pid, control_left_right_config.angle.kp,
-            control_left_right_config.angle.ki, control_left_right_config.angle.kd,
-            control_left_right_config.angle.imax);
-    pid_set(&s_left_right_rate_pid,  control_left_right_config.angular_rate.kp,
-            control_left_right_config.angular_rate.ki, control_left_right_config.angular_rate.kd,
-            control_left_right_config.angular_rate.imax);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     初始化直立串级控制器，不使能任何电机输出
-// 参数说明     void
-// 返回参数     void
-// 使用示例     Control_Init();   // control_init() 内调用
-//-------------------------------------------------------------------------------------------------------------------
-static void Control_Init(void)
-{
-    y_motor_encoder_data_t encoder;
-
-    memset((void *)&s_cascade_state, 0, sizeof(control_state_t));
-    memset(&s_actuator_signs, 0, sizeof(control_actuator_sign_t));
-
-    s_cascade_ready = 1;
-    s_cascade_enabled = 0;
-    s_cascade_fault = CONTROL_FAULT_MANUAL_STOP;
-
-    s_forward_speed_target = 0.0f;
-    s_lateral_speed_target = 0.0f;
-    s_lateral_speed_feedback = 0.0f;
-    s_turn_output_target = 0.0f;
-    s_pitch_zero = PITCH_ZERO_INIT;                 // 与菜单 Zero 页同源
-    s_roll_zero = ROLL_ZERO_INIT;
-
-    control_cascade_load();
-    control_cascade_clear();
-
-    Y_Motor_GetEncoder(&encoder);
-    s_previous_encoder_total = encoder.total_count;
-
-    s_cascade_state.initialized = 1;
-    s_cascade_state.fault = s_cascade_fault;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     在控制器失能时把公开增益装载进 PID 实例
-// 参数说明     void
-// 返回参数     uint8           1=已装载 0=控制器正在运行，拒绝更新
-// 使用示例     if (!Control_ApplyPidConfig()) menu_status("DISABLE FIRST");
-//-------------------------------------------------------------------------------------------------------------------
-uint8 Control_ApplyPidConfig(void)
-{
-    uint32 interrupt_state;
-
-    if (!s_cascade_ready || s_cascade_enabled) return 0;
-
-    // 增益被菜单逐字段改，装载时关中断防止读到一半新一半旧
-    interrupt_state = interrupt_global_disable();
-    control_cascade_load();
-    interrupt_global_enable(interrupt_state);
-    return 1;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     设置前进速度、横向速度与转弯三个运动目标
-// 参数说明     forward_speed_counts_per_s/lateral_speed/turn_output 三个运动目标
-// 返回参数     void
-// 使用示例     Control_SetMotionTarget(0.0f, 0.0f, 0.0f);
-//-------------------------------------------------------------------------------------------------------------------
-void Control_SetMotionTarget(float forward_speed_counts_per_s,
-                             float lateral_speed,
-                             float turn_output)
-{
-    uint32 interrupt_state = interrupt_global_disable();
-
-    s_forward_speed_target = forward_speed_counts_per_s;
-    s_lateral_speed_target = lateral_speed;
-    s_turn_output_target = constrain_float(turn_output,
-                                           -CONTROL_TURN_OUTPUT_LIMIT,
-                                           CONTROL_TURN_OUTPUT_LIMIT);
-    interrupt_global_enable(interrupt_state);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     写入左右通道速度反馈，未写入时保持 0
-// 参数说明     lateral_speed   横向速度反馈
-// 返回参数     void
-// 使用示例     Control_SetLateralSpeedFeedback(0.0f);
-//-------------------------------------------------------------------------------------------------------------------
-void Control_SetLateralSpeedFeedback(float lateral_speed)
-{
-    s_lateral_speed_feedback = lateral_speed;       // 单个 32 位标量，写入本身原子
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     设置直立机械零点，只允许在失能状态下修改
-// 参数说明     pitch_zero_deg/roll_zero_deg 俯仰与横滚机械零点(°)
-// 返回参数     void
-// 使用示例     Control_SetBalanceZero(PITCH_ZERO_INIT, ROLL_ZERO_INIT);
-//-------------------------------------------------------------------------------------------------------------------
-void Control_SetBalanceZero(float pitch_zero_deg, float roll_zero_deg)
-{
-    uint32 interrupt_state;
-
-    if (s_cascade_enabled) return;                  // 运行中改零点会产生目标阶跃
-
-    interrupt_state = interrupt_global_disable();
-    s_pitch_zero = pitch_zero_deg;
-    s_roll_zero = roll_zero_deg;
-    interrupt_global_enable(interrupt_state);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     设置五个执行器方向符号，必须全部为 ±1
-// 参数说明     signs           符号结构指针
-// 返回参数     uint8           1=已生效 0=有非法符号或控制器正在运行
-// 使用示例     Control_SetActuatorSigns(&signs);
-//-------------------------------------------------------------------------------------------------------------------
-uint8 Control_SetActuatorSigns(const control_actuator_sign_t *signs)
-{
-    uint32 interrupt_state;
-
-    if (signs == NULL || s_cascade_enabled) return 0;
-    if (!control_sign_valid(signs->drive_motor_sign) ||
-        !control_sign_valid(signs->flywheel_balance_sign_1) ||
-        !control_sign_valid(signs->flywheel_balance_sign_2) ||
-        !control_sign_valid(signs->flywheel_turn_sign_1) ||
-        !control_sign_valid(signs->flywheel_turn_sign_2)) return 0;
-
-    interrupt_state = interrupt_global_disable();
-    s_actuator_signs = *signs;
-    interrupt_global_enable(interrupt_state);
-    return 1;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     紧急停止：清零三电机输出并记录故障原因
-// 参数说明     fault           故障原因
-// 返回参数     void
-// 使用示例     Control_EmergencyStop(CONTROL_FAULT_FALL_ANGLE);
-//-------------------------------------------------------------------------------------------------------------------
-void Control_EmergencyStop(control_fault_t fault)
-{
-    uint32 interrupt_state = interrupt_global_disable();
-
-    s_cascade_enabled = 0;
-    s_cascade_fault = fault;
-    control_cascade_clear();
-
-    s_cascade_state.enabled = 0;
-    s_cascade_state.fault = fault;
-    s_cascade_state.drive_balance_output = 0.0f;
-    s_cascade_state.flywheel_balance_output = 0.0f;
-    s_cascade_state.drive_output = 0;
-    s_cascade_state.flywheel_output_1 = 0;
-    s_cascade_state.flywheel_output_2 = 0;
-    interrupt_global_enable(interrupt_state);
-
-    control_motor_stop();
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     正常失能：清零三电机输出并清空 PID 历史
-// 参数说明     void
-// 返回参数     void
-// 使用示例     Control_Disable();
-//-------------------------------------------------------------------------------------------------------------------
-void Control_Disable(void)
-{
-    Control_EmergencyStop(CONTROL_FAULT_MANUAL_STOP);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     清空 PID 历史与编码器基准后使能直立控制
-// 参数说明     void
-// 返回参数     uint8           1=已使能 0=安全条件不满足，原因见 Control_GetState()
-// 使用示例     if (!Control_Enable()) menu_status("BALANCE BLOCKED");
-//-------------------------------------------------------------------------------------------------------------------
-uint8 Control_Enable(void)
-{
-    y_motor_encoder_data_t encoder;
-    uint32 interrupt_state;
-
-    if (!s_cascade_ready) return 0;
-    if (balance_test_running() || s_jog_target != MOTOR_JOG_NONE) return 0;
-
-    if (!control_signs_ready())
-    {
-        Control_EmergencyStop(CONTROL_FAULT_NOT_CONFIGURED);
-        return 0;
-    }
-    if (control_attitude_block_reason() != CTRL_BLOCK_NONE ||
-        !control_is_finite(att.pitch) || !control_is_finite(att.roll) ||
-        !control_is_finite(att.pitch_rate) || !control_is_finite(att.roll_rate))
-    {
-        Control_EmergencyStop(CONTROL_FAULT_ATTITUDE_INVALID);
-        return 0;
-    }
-    if (W_Motor_LinkLost())
-    {
-        Control_EmergencyStop(CONTROL_FAULT_BLDC_LINK);
-        return 0;
-    }
-    if (!control_angle_safe(att.pitch, att.roll))
-    {
-        Control_EmergencyStop(CONTROL_FAULT_FALL_ANGLE);
-        return 0;
-    }
-
-    Y_Motor_GetEncoder(&encoder);
-
-    interrupt_state = interrupt_global_disable();
-    control_cascade_clear();
-    s_previous_encoder_total = encoder.total_count;
-
-    // 速度外环首次执行要等 10ms，先把目标放在机械零点，避免中环用到未初始化值
-    s_cascade_state.forward_speed_measurement = 0.0f;
-    s_cascade_state.lateral_speed_measurement = s_lateral_speed_feedback;
-    s_cascade_state.pitch_target = s_pitch_zero;
-    s_cascade_state.roll_target = s_roll_zero;
-    s_cascade_state.pitch_rate_target = 0.0f;
-    s_cascade_state.roll_rate_target = 0.0f;
-
-    s_cascade_fault = CONTROL_FAULT_NONE;
-    s_cascade_enabled = 1;
-    s_cascade_state.enabled = 1;
-    s_cascade_state.fault = CONTROL_FAULT_NONE;
-    interrupt_global_enable(interrupt_state);
-
-    W_Motor_Release();                              // 解除软件刹车闩
-    return 1;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     查询直立控制器是否处于使能状态
-// 参数说明     void
-// 返回参数     uint8           1=运行中 0=已失能
-// 使用示例     if (Control_IsEnabled()) menu_status("BALANCING");
-//-------------------------------------------------------------------------------------------------------------------
-uint8 Control_IsEnabled(void)
-{
-    return s_cascade_enabled;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     执行一拍直立串级控制并下发三电机，由 1ms 控制中断调用
-// 参数说明     void
-// 返回参数     void
-// 使用示例     control_cascade_run();
-//-------------------------------------------------------------------------------------------------------------------
-static void control_cascade_run(void)
-{
-    float pitch = att.pitch;
-    float roll = att.roll;
-    float pitch_rate = att.pitch_rate;
-    float roll_rate = att.roll_rate;
-    float drive_balance;
-    float flywheel_balance;
-    float turn;
-    int32 drive_out;
-    int32 fly_out_1;
-    int32 fly_out_2;
-
-    // NaN 判据必须排在防倒角之前，fabsf(NaN) > 阈值 恒假，角度判据拦不住 NaN
-    if (!control_is_finite(pitch) || !control_is_finite(roll) ||
-        !control_is_finite(pitch_rate) || !control_is_finite(roll_rate) ||
-        control_attitude_block_reason() != CTRL_BLOCK_NONE)
-    {
-        Control_EmergencyStop(CONTROL_FAULT_ATTITUDE_INVALID);
-        return;
-    }
-    if (W_Motor_LinkLost())
-    {
-        Control_EmergencyStop(CONTROL_FAULT_BLDC_LINK);
-        return;
-    }
-    if (!control_angle_safe(pitch, roll))
-    {
-        Control_EmergencyStop(CONTROL_FAULT_FALL_ANGLE);
-        return;
-    }
-
-    // 速度外环，输出叠加到机械零点得到角度目标
-    // 前进速度取累计编码器的 10ms 差分，不用单次 5ms 采样
-    s_speed_divider++;
-    if (s_speed_divider >= (CONTROL_SPEED_PERIOD_MS / CONTROL_RATE_PERIOD_MS))
-    {
-        y_motor_encoder_data_t encoder;
-        int32 delta;
-
-        s_speed_divider = 0;
-        Y_Motor_GetEncoder(&encoder);
-        delta = encoder.total_count - s_previous_encoder_total;
-        s_previous_encoder_total = encoder.total_count;
-
-        s_cascade_state.forward_speed_measurement = (float)delta / CONTROL_SPEED_DT_S;
-        s_cascade_state.lateral_speed_measurement = s_lateral_speed_feedback;
-
-        s_cascade_state.pitch_target = s_pitch_zero +
-            control_pos_stage(&s_fore_aft_speed_pid, &control_fore_aft_config.speed,
-                              s_cascade_state.forward_speed_measurement,
-                              s_forward_speed_target);
-        s_cascade_state.roll_target = s_roll_zero +
-            control_pos_stage(&s_left_right_speed_pid, &control_left_right_config.speed,
-                              s_cascade_state.lateral_speed_measurement,
-                              s_lateral_speed_target);
-        s_cascade_state.speed_update_count++;
-    }
-
-    // 角度中环，输出角速度目标
-    s_angle_divider++;
-    if (s_angle_divider >= (CONTROL_ANGLE_PERIOD_MS / CONTROL_RATE_PERIOD_MS))
-    {
-        s_angle_divider = 0;
-        s_cascade_state.pitch_rate_target =
-            control_pos_stage(&s_fore_aft_angle_pid, &control_fore_aft_config.angle,
-                              pitch, s_cascade_state.pitch_target);
-        s_cascade_state.roll_rate_target =
-            control_pos_stage(&s_left_right_angle_pid, &control_left_right_config.angle,
-                              roll, s_cascade_state.roll_target);
-        s_cascade_state.angle_update_count++;
-    }
-
-    // 角速度内环，增量式返回值已是累计总输出，外部不许再累加
-    drive_balance = control_rate_stage(&s_fore_aft_rate_pid,
-                                       &control_fore_aft_config.angular_rate,
-                                       pitch_rate, s_cascade_state.pitch_rate_target);
-    flywheel_balance = control_rate_stage(&s_left_right_rate_pid,
-                                          &control_left_right_config.angular_rate,
-                                          roll_rate, s_cascade_state.roll_rate_target);
-    turn = constrain_float(s_turn_output_target,
-                           -CONTROL_TURN_OUTPUT_LIMIT, CONTROL_TURN_OUTPUT_LIMIT);
-
-    // 混控，行进轮只承担前后平衡，两只动量轮叠加左右平衡与转弯分量
-    // 不写死同向/反向，由五个实测符号分配
-    drive_out = control_to_output((float)s_actuator_signs.drive_motor_sign * drive_balance,
-                                  CONTROL_DRIVE_OUTPUT_LIMIT);
-    fly_out_1 = control_to_output((float)s_actuator_signs.flywheel_balance_sign_1 * flywheel_balance +
-                                  (float)s_actuator_signs.flywheel_turn_sign_1 * turn,
-                                  CONTROL_FLYWHEEL_OUTPUT_LIMIT);
-    fly_out_2 = control_to_output((float)s_actuator_signs.flywheel_balance_sign_2 * flywheel_balance +
-                                  (float)s_actuator_signs.flywheel_turn_sign_2 * turn,
-                                  CONTROL_FLYWHEEL_OUTPUT_LIMIT);
-
-    // 三环算完再统一下发
-    Y_Motor_SetDuty(drive_out);
-    W_Motor_SetDuty(fly_out_1, fly_out_2);
-
-    g_motor_a = (int16)fly_out_1;       // 复用现有波形与菜单显示通道
-    g_motor_b = (int16)fly_out_2;
-    g_motor_c = (int16)drive_out;
-
-    s_cascade_state.forward_speed_target = s_forward_speed_target;
-    s_cascade_state.lateral_speed_target = s_lateral_speed_target;
-    s_cascade_state.turn_output_target = turn;
-    s_cascade_state.pitch_measurement = pitch;
-    s_cascade_state.roll_measurement = roll;
-    s_cascade_state.pitch_rate_measurement = pitch_rate;
-    s_cascade_state.roll_rate_measurement = roll_rate;
-    s_cascade_state.drive_balance_output = drive_balance;
-    s_cascade_state.flywheel_balance_output = flywheel_balance;
-    s_cascade_state.drive_output = drive_out;
-    s_cascade_state.flywheel_output_1 = fly_out_1;
-    s_cascade_state.flywheel_output_2 = fly_out_2;
-    s_cascade_state.rate_update_count++;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     原子读取完整控制状态快照
-// 参数说明     state           状态输出地址
-// 返回参数     void
-// 使用示例     Control_GetState(&state);
-//-------------------------------------------------------------------------------------------------------------------
-void Control_GetState(control_state_t *state)
-{
-    uint32 interrupt_state;
-
-    if (state == NULL) return;
-
-    // 快照是多字结构，复制期间关中断，避免前台读到两个周期拼出来的状态
-    interrupt_state = interrupt_global_disable();
-    memcpy(state, (const void *)&s_cascade_state, sizeof(control_state_t));
-    interrupt_global_enable(interrupt_state);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     启动指定轴和级联层级的 Test/Wave
+// 函数简介     启动指定轴与最高启用环的 Test/Wave
 // 参数说明     axis/ring       测试轴与最高启用环
-// 返回参数     uint8           1=启动成功 0=启动被安全条件阻止
+// 返回参数     uint8           1=已启动 0=被安全条件阻止
 // 使用示例     control_test_start(TUNE_AXIS_PITCH, TUNE_RING_RATE);
 //-------------------------------------------------------------------------------------------------------------------
 uint8 control_test_start(tune_axis_t axis, tune_ring_t ring)
@@ -904,7 +911,6 @@ uint8 control_test_start(tune_axis_t axis, tune_ring_t ring)
 
     control_test_stop();
     control_jog_stop();
-    if (s_cascade_enabled) Control_EmergencyStop(CONTROL_FAULT_MANUAL_STOP);
     if (axis >= TUNE_AXIS_MAX || ring >= TUNE_RING_MAX ||
         (axis == TUNE_AXIS_YAW && ring == TUNE_RING_VEL))
     {
@@ -912,7 +918,7 @@ uint8 control_test_start(tune_axis_t axis, tune_ring_t ring)
         return 0;
     }
 
-    // Pitch 只驱动 DRV8701E 的 C 轮, 不要求无刷驱动在线; Roll/Yaw 动飞轮则必须在线。
+    // Pitch 只驱动 DRV8701E 的 C 轮，不要求无刷驱动在线；Roll/Yaw 动飞轮则必须在线
     block = control_attitude_block_reason();
     if (block == CTRL_BLOCK_NONE && axis != TUNE_AXIS_PITCH && W_Motor_LinkLost())
         block = CTRL_BLOCK_BLDC_LOST;
@@ -922,7 +928,7 @@ uint8 control_test_start(tune_axis_t axis, tune_ring_t ring)
         return 0;
     }
 
-    if (!balance_test_start(axis, ring))
+    if (!test_start(axis, ring))
     {
         s_test_status = CTRL_TEST_STATUS_INVALID;
         return 0;
@@ -940,27 +946,27 @@ uint8 control_test_start(tune_axis_t axis, tune_ring_t ring)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     立即停止 Test/Wave 并清除控制状态
+// 函数简介     立即停止 Test/Wave 并关闭波形输出
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_test_stop();
 //-------------------------------------------------------------------------------------------------------------------
 void control_test_stop(void)
 {
-    if (balance_test_running()) balance_test_stop();
+    if (s_test_running) test_stop();
     s_control_test_active = 0;
     g_vofa_mode = VOFA_OFF;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     查询 Test/Wave 是否正在运行
+// 函数简介     查询 Test/Wave 是否正在运行，顺带识别被安全闸停掉的情况
 // 参数说明     void
 // 返回参数     uint8           1=运行中 0=已停止
 // 使用示例     if (control_test_running()) { ... }
 //-------------------------------------------------------------------------------------------------------------------
 uint8 control_test_running(void)
 {
-    if (s_control_test_active && !balance_test_running())
+    if (s_control_test_active && !s_test_running)
     {
         s_control_test_active = 0;
         s_test_status = CTRL_TEST_STATUS_SAFETY;
@@ -969,9 +975,9 @@ uint8 control_test_running(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     读取最近一次 Test/Wave 启动结果
+// 函数简介     读取最近一次 Test/Wave 的启动结果或停止原因
 // 参数说明     void
-// 返回参数     control_test_status_t 启动结果或阻断原因
+// 返回参数     control_test_status_t 状态码
 // 使用示例     status = control_test_last_status();
 //-------------------------------------------------------------------------------------------------------------------
 control_test_status_t control_test_last_status(void)
@@ -981,15 +987,15 @@ control_test_status_t control_test_last_status(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     发布普通图像参数并接收 CPU1 图像调试结果
-// 参数说明     publish_feedback 1=本拍发布反馈 0=仅接收结果
+// 函数简介     向 CPU1 发布视觉参数并接收上一帧循迹结果
+// 参数说明     publish_feedback 1=本拍发布参数 0=只接收结果
 // 返回参数     void
 // 使用示例     control_vision_exchange(run5);
 //-------------------------------------------------------------------------------------------------------------------
 static void control_vision_exchange(uint8 publish_feedback)
 {
-    static uint32 input_seq;
-    static uint32 last_frame_seq;
+    static uint32 input_seq;            // 本核发布序号，用于给结果配对
+    static uint32 last_frame_seq;       // 上次已处理的视觉帧序号
     vision_feedback_t feedback;
     vision_result_t result;
 
@@ -998,21 +1004,28 @@ static void control_vision_exchange(uint8 publish_feedback)
         feedback.input_seq = ++input_seq;
         feedback.uptime_ms = g_control_uptime_ms;
         feedback.param_revision = g_param_revision;
-//      feedback.drive_count_total = Y_Motor_GetTotalCount();
-//      feedback.element_yaw = imu_get_angle_element();
-//      feedback.pitch = att.pitch;
-//      feedback.pitch_rate = att.pitch_rate;
+        feedback.drive_count_total = Y_Motor_GetTotalCount();
+        feedback.element_yaw = imu_get_angle_element();
+        feedback.pitch = att.pitch;
+        feedback.pitch_rate = att.pitch_rate;
         feedback.err_offset = g_param.err_offset;
-//      feedback.speed_ramp_gain = g_param.speed_ramp_gain;
-//      feedback.speed_ring_gain = g_param.speed_ring_gain;
-//      feedback.obs_narrow_ratio = g_param.obs_narrow_ratio;
-//      feedback.zebra_jump_cnt = g_param.zebra_jump_cnt;
-//      feedback.cross_lost_cnt = g_param.cross_lost_cnt;
-//      feedback.ring_angle = g_param.ring_angle;
-//      feedback.ring_s2_cnt_l = g_param.ring_s2_cnt_l;
-//      feedback.ring_s2_cnt_r = g_param.ring_s2_cnt_r;
-//      feedback.ring_side_offset = g_param.ring_side_offset;
-//      feedback.obs_line_offset = g_param.obs_line_offset;
+        feedback.speed_ramp_gain = g_param.speed_ramp_gain;
+        feedback.speed_ring_gain = g_param.speed_ring_gain;
+        feedback.obs_narrow_ratio = g_param.obs_narrow_ratio;
+        feedback.elem_en_zebra = (uint8)g_param.elem_en_zebra;
+        feedback.elem_en_cross = (uint8)g_param.elem_en_cross;
+        feedback.elem_en_ring = (uint8)g_param.elem_en_ring;
+        feedback.elem_en_ramp = (uint8)g_param.elem_en_ramp;
+        feedback.elem_en_obstacle = (uint8)g_param.elem_en_obstacle;
+        feedback.zebra_jump_cnt = g_param.zebra_jump_cnt;
+        feedback.cross_lost_cnt = g_param.cross_lost_cnt;
+        feedback.ring_angle = g_param.ring_angle;
+        feedback.ring_s2_cnt_l = g_param.ring_s2_cnt_l;
+        feedback.ring_s2_cnt_r = g_param.ring_s2_cnt_r;
+        feedback.ring_side_offset = g_param.ring_side_offset;
+        feedback.ring_timeout_cnt = g_param.ring_timeout_cnt;
+        feedback.elem_guard_cnt = g_param.elem_guard_cnt;
+        feedback.obs_line_offset = g_param.obs_line_offset;
         feedback.cam_exposure = (uint16)g_param.cam_exposure;
         feedback.reserved = 0;
         vision_feedback_publish(&feedback);
@@ -1032,53 +1045,52 @@ static void control_vision_exchange(uint8 publish_feedback)
         g_vision_left_lost = result.left_lost;
         g_vision_right_lost = result.right_lost;
         g_vision_both_lost = result.both_lost;
-//      g_vision_active_elem = (uint8)result.active_elem;
+        g_vision_active_elem = (uint8)result.active_elem;
+        g_vision_island_state = result.island_state;
+        g_vision_speed_scale = result.speed_scale;
+        g_vision_stop_request = result.stop_request;
         g_track_valid = result.track_valid;
 
+        // 丢线不等于居中：偏差回 0 的同时丢线计数往上走，控制层据此判断视觉是否可信
         if (result.track_valid)
         {
             g_track_lost_frames = 0;
             g_dbg_error = result.track_error;
-//          视觉驱动 Yaw、速度及失联恢复逻辑在完整跑车阶段恢复。
         }
         else
         {
-//          s_vision_recover_count = 0;
             if (g_track_lost_frames < 60000u) g_track_lost_frames++;
             g_dbg_error = 0.0f;
-//          丢线停车与航向保持在完整跑车阶段恢复。
         }
     }
-
-//  if (start_flag != START_BALANCE) { ... }
-//  else if (g_vision_age_ms >= VISION_TIMEOUT_MS) { ... }
-//  视觉看门狗只属于完整跑车流程，当前不参与电机控制。
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     执行 1ms 姿态更新、Test/Wave 控制与波形快照
+// 函数简介     执行一拍 1ms 控制周期，由 CCU60_CH0 中断调用
 // 参数说明     void
 // 返回参数     void
-// 使用示例     control_loop();   // 在 isr.c 的 cc60_pit_ch0_isr 内调用(1ms)
+// 使用示例     control_loop();
 //-------------------------------------------------------------------------------------------------------------------
 void control_loop(void)
 {
-    static uint8 key_tick;
-    static uint8 tick;                      // 5ms 分频计数
+    static uint8 key_tick;              // 按键扫描分频计数
+    static uint8 tick;                  // 5ms 分频计数
 
     g_control_uptime_ms++;
     if (g_vision_age_ms < 0xFFFFu) g_vision_age_ms++;
-    W_Motor_Tick1ms();                  // 刷新无刷驱动通讯超时并按需补发转速请求
+    W_Motor_Tick1ms();                  // 刷新驱动通信超时并按需补发转速请求
+
     key_tick++;
     if (key_tick >= CTRL_DIV_KEY)
     {
         key_tick = 0;
         key_scanner();
     }
+
     tick++;
     if (tick >= CTRL_DIV_ATT) tick = 0;
     if (tick == 0)
-        Y_Motor_EncoderUpdate5ms();      // C 轮编码器唯一硬件读取点
+        Y_Motor_EncoderUpdate5ms();     // C 轮编码器唯一硬件读取点
 
     if (g_imu_ok)
     {
@@ -1098,10 +1110,11 @@ void control_loop(void)
 
     control_vision_exchange((uint8)(tick == 0));
 
-    if (balance_test_running())
+    // 三个输出分支互斥，每拍必有一个给 W_Motor 下发帧，喂住驱动侧失控保护看门狗
+    if (s_test_running)
     {
-        balance_test_run();
-        if (!balance_test_running())
+        test_run();
+        if (!s_test_running)
         {
             s_control_test_active = 0;
             s_test_status = CTRL_TEST_STATUS_SAFETY;
@@ -1111,21 +1124,17 @@ void control_loop(void)
     {
         control_jog_run();
     }
-    else if (s_cascade_enabled)
-    {
-        control_cascade_run();          // 直立串级闭环, 与下面的 balance_run 互斥
-    }
     else
     {
-        balance_run();
+        cascade_run();
     }
     vofa_snapshot();
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     查询 CPU1 摄像头状态并在失败时请求重新初始化
+// 函数简介     查询 CPU1 摄像头状态，失败时请求重新初始化
 // 参数说明     void
-// 返回参数     uint8           1=初始化成功 0=初始化失败
+// 返回参数     uint8           1=摄像头就绪 0=未就绪
 // 使用示例     control_camera_debug_start();
 //-------------------------------------------------------------------------------------------------------------------
 uint8 control_camera_debug_start(void)
@@ -1139,25 +1148,14 @@ uint8 control_camera_debug_start(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     读取行进轮 C 的 20ms 增量速度
+// 函数简介     查询 CPU1 是否发布了新的视觉帧
 // 参数说明     void
-// 返回参数     int             行进轮 C 速度(counts/20ms)
-// 使用示例     g_island.state2_count += control_get_enc_speed();
-//-------------------------------------------------------------------------------------------------------------------
-// int control_get_enc_speed(void)
-// {
-//     return (int)Y_Motor_GetSpeed20ms();
-// }
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     查询 CPU1 是否发布了新的视觉调试帧
-// 参数说明     void
-// 返回参数     uint8           1=处理了新帧 0=无新帧
+// 返回参数     uint8           1=有新帧 0=无新帧
 // 使用示例     if (control_vision_debug()) display_track_view();
 //-------------------------------------------------------------------------------------------------------------------
 uint8 control_vision_debug(void)
 {
-    static uint32 last_frame_seq;
+    static uint32 last_frame_seq;       // 上次已提交显示的视觉帧序号
 
     if (g_vision_frame_seq == 0u || g_vision_frame_seq == last_frame_seq) return 0;
     last_frame_seq = g_vision_frame_seq;

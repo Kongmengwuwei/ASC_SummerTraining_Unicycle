@@ -3,7 +3,18 @@
 
 #include "zf_common_headfile.h"
 
-// 控制调度：1 ms 角速度环，5 ms 姿态/角度环/编码器，10 ms 按键，20 ms 速度环。
+// 硬件常量与各模块的默认值。
+// 本文件里的量是编译期常量；能在线整定的量在 param.h 里有对应的运行参数，
+// 菜单和 UART0 改的是运行参数，本文件的 *_DEFAULT 只是上电初值。
+//
+// MCU  TC264D          IMU IMU660RB(LSM6DSR, SPI0)   Camera MT9V03X   Display IPS200(SPI)
+// A/B  动量轮          CYT2BL3 双路无刷驱动，霍尔六步换相，UART3 @460800
+// C    行进轮          DRV8701E 通道 1，PWM=P21_3 DIR=P21_2，编码器 TIM2(P33_7 脉冲 / P33_6 方向)
+// Roll 车体 X 左右倾   A/B 动量轮差动
+// Pitch 车体 Y 前后倾  C 行进轮
+// Yaw  车体 Z 航向     A/B 动量轮同向
+
+// 控制调度：1ms 角速度环，5ms 姿态与角度环、编码器，10ms 按键，20ms 速度环。
 #define CTRL_PERIOD_MS          (1)            // 控制中断周期(ms)
 #define CTRL_DT                 (0.001f)       // 陀螺仪积分步长(s)
 #define CTRL_PIT_CH             (CCU60_CH0)    // 控制定时器通道
@@ -14,12 +25,6 @@
 #define CTRL_DIV_SPEED          (20)           // 速度环与飞轮回收环分频
 
 // W_Motor：动量轮 A/B 使用 CYT2BL3 双路无刷驱动，霍尔六步换相模式。
-// 驱动固件 MOTOR_DRIVER_MODE = HALL_SIX_STEP_MODE，转子位置来自电机三路霍尔，
-// 经霍尔信号转接板接到驱动板；主控这边看不到霍尔，只收驱动算好的转速。
-// 主控与驱动之间只有 UART3 两根信号线，占空比下发、转速回读、刹车全部走串口，
-// 接线：单片机 P15_6(TX) -> 驱动 RX；单片机 P15_7(RX) <- 驱动 TX。
-// 霍尔一个电周期只有 6 个状态，回传转速在低转速段是量化的阶梯值，
-// 飞轮回收环的 D 项会把这些阶梯放大，R_RCY_KD 保持 0。
 #define W_MOTOR_UART                    (UART_3)
 #define W_MOTOR_UART_BAUDRATE           (460800)
 #define W_MOTOR_UART_TX_PIN             (UART3_TX_P15_6)
@@ -100,6 +105,7 @@
 #define LEAN_K2_DEFAULT         (0.0001f)      // 速度相关限幅系数
 #define LEAN_LIMIT_DEFAULT      (10.0f)        // 固定限幅(°)
 #define LEAN_LIMIT_MODE_DEFAULT (0)            // 0=固定限幅，1=动态限幅
+#define LEAN_SLEW_DEFAULT       (0.08f)        // 零点变化速率(°/5ms 拍)，0=不限速率
 #define LEAN_TURN_DEAD          (1.0f)         // 转向死区
 #define LEAN_DECAY              (0.98f)        // 回零衰减系数
 #define LEAN_LIMIT_MAX          (15.0f)        // 最大限幅(°)
@@ -118,9 +124,6 @@
 #define MOTOR_JOG_FLY_DUTY      (800)           // A/B 点动占空比
 #define MOTOR_JOG_DRIVE_DUTY    (600)           // C 点动占空比
 #define MOTOR_JOG_MS            (1500)          // 单次点动时长(ms)
-
-// 完整跑赛道流程暂不接入。
-// #define RUN_FLOW_ENABLE         (0)
 
 // 姿态保护阈值
 #define ROLL_PROTECT_ANGLE_DEFAULT  (20.0f)    // 横滚误差阈值(°)
@@ -157,11 +160,21 @@
 #define ROAD_WIDE_MIN_RATIO     (0.45f)        // 最小有效宽度比例
 #define ROAD_WIDE_MAX_RATIO     (1.90f)        // 最大有效宽度比例
 #define TRACK_MIN_VALID_ROWS    12             // 最少有效中线行数
-// #define TRACK_LOST_FRAME_STOP   5           // 完整跑车流程启用后恢复
 
 // 中线偏差取样
 #define ERR_FRONT_ROW           27             // 起始行
 #define ERR_AVG_ROWS            7              // 平均行数
+
+// 元素使能默认值。全关，普通循迹跑稳后在 Params -> Element 页一次只开一个
+#define ELEM_EN_ZEBRA_DEFAULT    0
+#define ELEM_EN_CROSS_DEFAULT    0
+#define ELEM_EN_RING_DEFAULT     0
+#define ELEM_EN_RAMP_DEFAULT     0
+#define ELEM_EN_OBSTACLE_DEFAULT 0
+
+// 元素通用保护。摄像头约 50 帧/秒，帧数换算成时间除以 50
+#define RING_TIMEOUT_CNT_DEFAULT 250           // 环岛单个状态最长停留帧数，约 5 秒
+#define ELEM_GUARD_CNT_DEFAULT   40            // 元素退出后的屏蔽帧数，约 0.8 秒
 
 // 斑马线
 #define ZEBRA_JUMP_CNT_DEFAULT  8              // 黑白跳变阈值
@@ -181,7 +194,7 @@
 #define RING_LOST_MIN           12             // 丢线计数下界
 #define RING_LOST_MAX           50             // 丢线计数上界
 #define RING_OPP_LOST           5              // 对侧丢线阈值
-#define RING_VIEW               79             // 环岛有效视野行
+#define RING_VIEW               (IMG_H - EN_ROW_TOP_LIMIT) // 环岛要求边线提取到当前可达最远行
 #define RING_S2_CNT_R_DEFAULT   400            // 状态2 右环编码器累计阈值
 #define RING_S2_CNT_L_DEFAULT   300            // 状态2 左环编码器累计阈值
 #define RING_ANGLE_DEFAULT      340            // 元素积分角阈值(°)
@@ -199,29 +212,17 @@
 
 // 循迹速度与转向
 #define TRACK_BASE_SPEED_DEFAULT 0            // 基准速度目标
+
+#define SPEED_UP_RATE_DEFAULT   (1.2f)         // 加速速率
+#define SPEED_DOWN_RATE_DEFAULT (1.9f)         // 减速速率
 #define SPEED_RAMP_GAIN_DEFAULT (0.8f)         // 坡道速度倍率
 #define SPEED_RING_GAIN_DEFAULT (0.8f)         // 环岛降速倍率
 #define TRACK_ERR_GAIN_DEFAULT  (1.0f)         // 中线偏差转向增益
 #define CAM_EXPOSURE_DEFAULT    (512)          // 摄像头曝光时间
 
-// 元素识别暂不接入，不使用编译开关。
-// #define ELEM_EN_ZEBRA           0
-// #define ELEM_EN_CROSS           0
-// #define ELEM_EN_RING            0
-// #define ELEM_EN_RAMP            0
-// #define ELEM_EN_OBSTACLE        0
-
-// 视觉看门狗
-// #define VISION_TIMEOUT_MS       100         // 完整跑车流程启用后恢复
-// #define VISION_RECOVER_FRAMES   3
-
-// IPS200 图像显示兼容参数
-#define DISP_IMG_X              ((240 - IMG_W) / 2)   // 图像区横坐标
-#define DISP_IMG_Y              (32)                  // 图像区纵坐标
-#define DISP_TEXT_Y             (DISP_IMG_Y + IMG_H + 6)  // 文本区纵坐标
-// #define DISP_RUN_DIV            (6)                // Run 页面恢复后启用
-#define DISP_TEXT_DIV           (16)                  // 文本刷新分频
+// 斑马线、十字、环岛、坡道和路障均在 CPU1 每个有效图像帧中执行。
+// Run 尚未接入，因此元素结果当前只发布给 CPU0，不直接改变电机输出。
 
 #include "param.h"
 
-#endif
+#endif 

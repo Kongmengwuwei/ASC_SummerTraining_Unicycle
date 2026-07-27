@@ -6,10 +6,10 @@
 #include "W_Motor.h"
 #include "Y_Motor.h"
 #include "attitude.h"
-#include "balance.h"
 #include "board_config.h"
 #include "control.h"
 #include "display.h"
+#include "element.h"
 #include "imu.h"
 #include "param.h"
 #include "vision_core.h"
@@ -34,10 +34,11 @@
 #define UI_PAGE_X              (176u)
 #define UI_FOOTER_Y            (302u)
 #define UI_STATUS_Y            (277u)
-#define UI_VISIBLE_ROWS        (17u)
+#define UI_VISIBLE_ROWS        (13u)
 #define UI_LONG_REPEAT_MS      (120u)
 #define UI_LIVE_PERIOD_MS      (100u)
 #define UI_IMAGE_PERIOD_MS     (100u)    // 横屏整帧刷新周期
+#define UI_CAM_FRAME_TIMEOUT_MS (100u)   // 超过该时间没有新帧视为摄像头帧失联
 
 typedef enum
 {
@@ -46,36 +47,38 @@ typedef enum
     MENU_PAGE_ATTITUDE,
     MENU_PAGE_GROUP,
     MENU_PAGE_IMAGE,
-//  MENU_PAGE_RUN,                     // 完整跑车流程启用后恢复
     MENU_PAGE_COUNT
 } menu_page_t;
 
-// 参数组的动作类型，决定组内 Action 行的语义与实时显示内容。
+// 参数组的动作类型，决定组内 Action 行的语义与实时显示内容
 typedef enum
 {
     GROUP_KIND_AXIS = 0,    // 分环 Test/Wave，闭环驱动对应轴
     GROUP_KIND_CAMERA,      // 循迹波形，只出数据不动电机
-    GROUP_KIND_MOTOR,       // 架空点动，验证转向与转速反馈符号
-    GROUP_KIND_PLAIN,       // 只有参数，没有动作行
+    GROUP_KIND_MOTOR,       // 架空点动，验证转向与转速回读符号
+    GROUP_KIND_ZERO,        // 在线抓当前姿态角当机械零点
+    GROUP_KIND_ELEMENT,     // 元素使能与阈值，实时显示识别到的元素
 } group_kind_t;
 
+// 一个可编辑参数行
 typedef struct
 {
-    const char *label;
-    const char *name;
-    float       step;
-    uint8       decimals;
+    const char *label;      // 屏幕上显示的名字
+    const char *name;       // 对应 g_param_table 里的参数名
+    float       step;       // 单次按键的调整步长
+    uint8       decimals;   // 显示小数位数
 } menu_param_item_t;
 
+// 一个参数组，对应 Params 下的一页
 typedef struct
 {
-    const char              *title;
-    const menu_param_item_t *items;
-    uint8                    item_count;
-    vofa_mode_t              wave_mode;
-    tune_axis_t              axis;
-    uint8                    action_count;
-    group_kind_t             kind;
+    const char              *title;         // 页标题
+    const menu_param_item_t *items;         // 参数行数组
+    uint8                    item_count;    // 参数行数量
+    vofa_mode_t              wave_mode;     // 该页动作行开启的波形
+    tune_axis_t              axis;          // 该页对应的调参轴
+    uint8                    action_count;  // 动作行数量
+    group_kind_t             kind;          // 动作行语义
 } menu_group_t;
 
 static const menu_param_item_t s_roll_items[] =
@@ -116,10 +119,35 @@ static const menu_param_item_t s_yaw_items[] =
 
 static const menu_param_item_t s_camera_items[] =
 {
-    { "Exposure",  "cam_exposure",     16.0f, 0 },
-    { "Track Gain", "track_err_gain",   0.05f, 2 },
+    { "Exposure",   "cam_exposure",     16.0f, 0 },
     { "Error Zero", "err_offset",        0.1f,  2 },
-    { "Base Speed", "track_base_speed",  1.0f,  0 }
+    { "Track Gain", "track_err_gain",    0.05f, 2 },
+    { "Base Speed", "track_base_speed",  1.0f,  0 },
+    { "Spd Up",     "speed_up_rate",     0.1f,  2 },
+    { "Spd Down",   "speed_down_rate",   0.1f,  2 }
+};
+
+// 元素页。前五行是使能，步长 2 大于取值范围，所以上键一定开、下键一定关。
+// 默认全 0，普通循迹跑稳后一次只开一个。
+static const menu_param_item_t s_element_items[] =
+{
+    { "En Zebra",   "elem_en_zebra",    2.0f, 0 },
+    { "En Cross",   "elem_en_cross",    2.0f, 0 },
+    { "En Ring",    "elem_en_ring",     2.0f, 0 },
+    { "En Ramp",    "elem_en_ramp",     2.0f, 0 },
+    { "En Obst",    "elem_en_obstacle", 2.0f, 0 },
+    { "Zebra Jump", "zebra_jump_cnt",   1.0f, 0 },
+    { "Cross Lost", "cross_lost_cnt",   1.0f, 0 },
+    { "Ring Angle", "ring_angle",       5.0f, 0 },
+    { "Ring CntL",  "ring_s2_cnt_l",   10.0f, 0 },
+    { "Ring CntR",  "ring_s2_cnt_r",   10.0f, 0 },
+    { "Ring Ofs",   "ring_side_offset", 1.0f, 0 },
+    { "Ring TmO",   "ring_timeout_cnt",10.0f, 0 },
+    { "Guard Cnt",  "elem_guard_cnt",   5.0f, 0 },
+    { "Ramp Gain",  "speed_ramp_gain",  0.05f, 2 },
+    { "Ring Gain",  "speed_ring_gain",  0.05f, 2 },
+    { "Obs Ratio",  "obs_narrow_ratio", 0.02f, 2 },
+    { "Obs Ofs",    "obs_line_offset",  1.0f, 0 }
 };
 
 // 极性取值只有 ±1，步长给 2 保证一次按键就翻符号。
@@ -152,9 +180,10 @@ static const menu_group_t s_groups[] =
     { "Roll",   s_roll_items,   9, VOFA_ROLL,  TUNE_AXIS_ROLL,  3, GROUP_KIND_AXIS   },
     { "Pitch",  s_pitch_items,  9, VOFA_PITCH, TUNE_AXIS_PITCH, 3, GROUP_KIND_AXIS   },
     { "Yaw",    s_yaw_items,    6, VOFA_YAW,   TUNE_AXIS_YAW,   2, GROUP_KIND_AXIS   },
-    { "Camera", s_camera_items, 4, VOFA_TRACK, TUNE_AXIS_YAW,   1, GROUP_KIND_CAMERA },
-    { "Motor",  s_motor_items,  4, VOFA_MOTOR, TUNE_AXIS_ROLL,  6, GROUP_KIND_MOTOR  },
-    { "Zero",   s_zero_items,   4, VOFA_OFF,   TUNE_AXIS_ROLL,  0, GROUP_KIND_PLAIN  }
+    { "Camera",  s_camera_items,  6, VOFA_TRACK, TUNE_AXIS_YAW,   1, GROUP_KIND_CAMERA  },
+    { "Element", s_element_items, 17, VOFA_TRACK, TUNE_AXIS_YAW,  1, GROUP_KIND_ELEMENT },
+    { "Motor",   s_motor_items,   4, VOFA_MOTOR, TUNE_AXIS_ROLL,  6, GROUP_KIND_MOTOR   },
+    { "Zero",    s_zero_items,    4, VOFA_OFF,   TUNE_AXIS_ROLL,  1, GROUP_KIND_ZERO    }
 };
 
 static const char * const s_param_page_names[] =
@@ -164,6 +193,7 @@ static const char * const s_param_page_names[] =
     "Pitch",
     "Yaw",
     "Camera",
+    "Element",
     "Motor",
     "Zero",
     "Save",
@@ -173,29 +203,29 @@ static const char * const s_param_page_names[] =
 #define PARAM_PAGE_COUNT ((uint8)(sizeof(s_param_page_names) / sizeof(s_param_page_names[0])))
 #define GROUP_COUNT      ((uint8)(sizeof(s_groups) / sizeof(s_groups[0])))
 
-static menu_page_t s_page;
-static uint8       s_group_index;
-static uint8       s_cursor;
-static uint8       s_top;
-static uint8       s_editing;
-static uint8       s_test_on;
-static uint8       s_active_test;
-static uint8       s_dirty;
-static uint8       s_image_ok;
-static uint8       s_page_cursor[MENU_PAGE_COUNT];
-static uint8       s_page_top[MENU_PAGE_COUNT];
-static uint8       s_group_cursor[GROUP_COUNT];
-static uint8       s_group_top[GROUP_COUNT];
-static uint8       s_long_active[KEY_NUMBER];
-static uint32      s_last_repeat_ms[KEY_NUMBER];
-static uint32      s_last_live_ms;
-static uint32      s_last_image_draw_ms;       // 上次横屏刷新时刻
-static uint32      s_last_image_frame_seq;      // 上次提交显示的视觉帧
-static uint32      s_last_param_revision;
-static uint32      s_status_until_ms;
-static uint8       s_image_redraw_pending;     // 待刷新标志
-static uint8       s_last_image_state;          // 上次显示的 CPU1 状态
-static char        s_status[30];
+static menu_page_t s_page;                          // 当前页面
+static uint8       s_group_index;                   // 当前参数组下标
+static uint8       s_cursor;                        // 当前光标行
+static uint8       s_top;                           // 当前滚动窗口的首行
+static uint8       s_editing;                       // 正在编辑参数值
+static uint8       s_test_on;                       // 当前页开着 Test/Wave
+static uint8       s_active_test;                   // 开着的是哪一个动作行，0xFF 表示没有
+static uint8       s_dirty;                         // 1=重绘本页 2=先整屏清再重绘
+static uint8       s_image_ok;                      // 图像页看到的摄像头就绪状态
+static uint8       s_page_cursor[MENU_PAGE_COUNT];  // 各页面记住的光标位置
+static uint8       s_page_top[MENU_PAGE_COUNT];     // 各页面记住的滚动位置
+static uint8       s_group_cursor[GROUP_COUNT];     // 各参数组记住的光标位置
+static uint8       s_group_top[GROUP_COUNT];        // 各参数组记住的滚动位置
+static uint8       s_long_active[KEY_NUMBER];       // 该键正处于长按状态
+static uint32      s_last_repeat_ms[KEY_NUMBER];    // 该键上次长按连发的时刻
+static uint32      s_last_live_ms;                  // 上次刷新实时行的时刻
+static uint32      s_last_image_draw_ms;            // 上次刷新横屏图像的时刻
+static uint32      s_last_image_frame_seq;          // 上次提交显示的视觉帧序号
+static uint32      s_last_param_revision;           // 上次看到的参数修订号
+static uint32      s_status_until_ms;               // 状态行到期时刻
+static uint8       s_image_redraw_pending;          // 图像页有新内容待刷
+static uint8       s_last_image_state;              // 上次显示的 CPU1 摄像头状态
+static char        s_status[30];                    // 限时状态行文本
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     在指定位置绘制一段菜单文本
@@ -356,10 +386,9 @@ static uint8 key_event(key_index_enum key, uint8 repeat)
 //-------------------------------------------------------------------------------------------------------------------
 static uint8 current_count(void)
 {
-    if (s_page == MENU_PAGE_MAIN)            return 2;
+    if (s_page == MENU_PAGE_MAIN)            return 3;
     if (s_page == MENU_PAGE_PARAMS)          return PARAM_PAGE_COUNT;
     if (s_page == MENU_PAGE_ATTITUDE)        return 2;
-//  if (s_page == MENU_PAGE_RUN)             return 3;
     if (s_page == MENU_PAGE_GROUP)
         return (uint8)(s_groups[s_group_index].item_count +
                        s_groups[s_group_index].action_count + 2u);
@@ -376,13 +405,31 @@ static void stop_local_test(void)
 {
     // control_jog_stop() 会锁刹车, 平衡运行中翻页不能误触发, 所以先确认确实在点动。
     if (control_jog_running() != MOTOR_JOG_NONE) control_jog_stop();
-    if (s_test_on)
+    if (s_test_on || control_test_running())
     {
         control_test_stop();
         g_vofa_mode = VOFA_OFF;
         s_test_on = 0;
         s_active_test = 0xFFu;
     }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     在电机与闭环全部停止时保存当前参数
+// 参数说明     void
+// 返回参数     void
+// 使用示例     save_params_action();
+//-------------------------------------------------------------------------------------------------------------------
+static void save_params_action(void)
+{
+    if (control_test_running() ||
+        control_jog_running() != MOTOR_JOG_NONE ||
+        start_flag != START_STOP)
+    {
+        menu_status("SAVE BLOCKED: RUNNING");
+        return;
+    }
+    menu_status(param_save() ? "SAVED TO FLASH" : "SAVE FAILED");
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -510,6 +557,41 @@ static void draw_param_row(uint8 row, uint8 absolute_index, const menu_param_ite
 }
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     刷新主菜单上 IMU、摄像头与无刷驱动的在线状态
+// 参数说明     void
+// 返回参数     void
+// 使用示例     render_main_live();
+//-------------------------------------------------------------------------------------------------------------------
+static void render_main_live(void)
+{
+    vision_core_state_t camera_state = vision_core_state();
+
+    if (!g_imu_ok)                                      ui_line(120, "IMU  INIT FAILED", UI_RED);
+    else if (imu_link_lost())                           ui_line(120, "IMU  LINK LOST", UI_RED);
+    else if (imu_calib_state() == IMU_CALIB_MOVED)      ui_line(120, "IMU  CALIB MOVED", UI_RED);
+    else if (imu_calib_state() != IMU_CALIB_OK)         ui_line(120, "IMU  CALIB WAIT", UI_YELLOW);
+    else if (attitude_diverged())                       ui_line(120, "IMU  ATT DIVERGED", UI_RED);
+    else if (!attitude_converged())                     ui_line(120, "IMU  CONVERGING", UI_YELLOW);
+    else                                                ui_line(120, "IMU  READY", UI_GREEN);
+
+    if (W_Motor_LinkLost())         ui_line(144, "BLDC LINK LOST", UI_RED);
+    else                            ui_line(144, "BLDC ONLINE", UI_GREEN);
+
+    if (camera_state == VISION_CORE_OFF)
+        ui_line(168, "CAM  NOT INITIALIZED", UI_YELLOW);
+    else if (camera_state == VISION_CORE_STARTING)
+        ui_line(168, "CAM  STARTING", UI_YELLOW);
+    else if (camera_state == VISION_CORE_FAILED)
+        ui_line(168, "CAM  INIT FAILED", UI_RED);
+    else if (g_vision_frame_seq == 0u)
+        ui_line(168, "CAM  WAITING FRAME", UI_YELLOW);
+    else if (g_vision_age_ms > UI_CAM_FRAME_TIMEOUT_MS)
+        ui_line(168, "CAM  FRAME LOST", UI_RED);
+    else
+        ui_line(168, "CAM  READY", UI_GREEN);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     绘制主菜单
 // 参数说明     void
 // 返回参数     void
@@ -517,10 +599,12 @@ static void draw_param_row(uint8 row, uint8 absolute_index, const menu_param_ite
 //-------------------------------------------------------------------------------------------------------------------
 static void render_main(void)
 {
-    ui_header("MENU", s_cursor, 2);
+    ui_header("MENU", s_cursor, 3);
     draw_action_row(0, 0, "Params");
     draw_action_row(1, 1, "Image");
-//  draw_action_row(2, 2, "Run");
+    draw_action_row(2, 2, "Run");
+    render_main_live();
+    draw_status();
     ui_footer();
 }
 
@@ -562,10 +646,18 @@ static void render_attitude_live(void)
         ui_line(152, "IMU INIT FAILED", UI_RED);
     else if (imu_link_lost())
         ui_line(152, "IMU LINK LOST", UI_RED);
+    else if (attitude_diverged())
+        ui_line(152, "ATTITUDE DIVERGED", UI_RED);
     else if (attitude_converged())
         ui_line(152, "ATTITUDE READY", UI_GREEN);
     else
         ui_line(152, "ATTITUDE CONVERGING", UI_YELLOW);
+
+    // 上电标定期间车动过，零偏不可信，必须断电静置重来
+    if (imu_calib_state() == IMU_CALIB_MOVED)
+        ui_line(176, "CALIB MOVED / REBOOT", UI_RED);
+    else
+        ui_clear_line(176);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -619,13 +711,27 @@ static void render_group_live(void)
         return;
     }
 
-    if (group->kind == GROUP_KIND_PLAIN)
+    // Zero 页一直显示当前姿态角和已保存的零点，方便对比后再抓零点
+    if (group->kind == GROUP_KIND_ZERO)
     {
-        (void)snprintf(line, sizeof(line), "R%8.2f  P%8.2f",
+        (void)snprintf(line, sizeof(line), "NOW  R%7.2f P%7.2f",
                        (double)att.roll, (double)att.pitch);
         ui_line(245, line, UI_CYAN);
-        (void)snprintf(line, sizeof(line), "RCY%7.0f  ENC C%5d",
-                       (double)g_bal_dbg.r_rcy_fb, (int)Y_Motor_GetSpeed20ms());
+        (void)snprintf(line, sizeof(line), "ZERO R%7.2f P%7.2f",
+                       (double)g_roll_zero, (double)g_pitch_zero);
+        ui_line(261, line, UI_CYAN);
+        return;
+    }
+
+    // Element 页一直显示识别到的元素与环岛状态，不用先开波形。
+    // 两行停在 261 以上，把 UI_STATUS_Y 留给 draw_status()
+    if (group->kind == GROUP_KIND_ELEMENT)
+    {
+        (void)snprintf(line, sizeof(line), "ELEM %s   RING %d",
+                       element_name(g_vision_active_elem), (int)g_vision_island_state);
+        ui_line(245, line, UI_CYAN);
+        (void)snprintf(line, sizeof(line), "SCALE%5.2f  STOP %d",
+                       (double)g_vision_speed_scale, (int)g_vision_stop_request);
         ui_line(261, line, UI_CYAN);
         return;
     }
@@ -641,10 +747,13 @@ static void render_group_live(void)
     ui_line(245, "TEST ACTIVE / BACK STOP", UI_YELLOW);
     if (group->kind == GROUP_KIND_CAMERA)
     {
-        (void)snprintf(line, sizeof(line), "TH %d  VALID %d",
-                       (int)g_vision_threshold, (int)g_track_valid);
+        (void)snprintf(line, sizeof(line), "TH %3d VALID %d LOST%4u",
+                       (int)g_vision_threshold, (int)g_track_valid,
+                       (unsigned)g_track_lost_frames);
         ui_line(261, line, UI_CYAN);
-        (void)snprintf(line, sizeof(line), "ERR %9.3f", (double)g_dbg_error);
+        (void)snprintf(line, sizeof(line), "ERR %8.3f  L%3u R%3u",
+                       (double)g_dbg_error,
+                       (unsigned)g_vision_left_lost, (unsigned)g_vision_right_lost);
         ui_line(277, line, UI_CYAN);
         return;
     }
@@ -689,6 +798,8 @@ static const char *action_name(uint8 action_index)
 
     if (group->kind == GROUP_KIND_MOTOR) return s_motor_action_names[action_index];
     if (group->kind == GROUP_KIND_CAMERA) return "Vision";
+    if (group->kind == GROUP_KIND_ELEMENT) return "Elem";
+    if (group->kind == GROUP_KIND_ZERO) return "Capture Zero";
     if (action_index == 0u) return "Rate";
     if (action_index == 1u) return "Angle";
     return "Speed";
@@ -706,6 +817,7 @@ static const char *test_status_text(control_test_status_t status)
     {
         case CTRL_TEST_STATUS_INVALID:        return "INVALID TEST";
         case CTRL_TEST_STATUS_IMU_FAIL:       return "IMU INIT FAILED";
+        case CTRL_TEST_STATUS_IMU_CALIB:      return "IMU CALIB INVALID";
         case CTRL_TEST_STATUS_ATT_CONVERGING: return "ATTITUDE NOT READY";
         case CTRL_TEST_STATUS_ATT_DIVERGED:   return "ATTITUDE DIVERGED";
         case CTRL_TEST_STATUS_IMU_LOST:       return "IMU LINK LOST";
@@ -714,25 +826,6 @@ static const char *test_status_text(control_test_status_t status)
         default:                              return "TEST BLOCKED";
     }
 }
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     获取发车被拒原因的显示文本
-// 参数说明     reason           发车阻断原因
-// 返回参数     const char*      菜单提示文本
-// 使用示例     menu_status(block_text(control_start_block_reason()));
-//-------------------------------------------------------------------------------------------------------------------
-// static const char *block_text(control_block_t reason)
-// {
-//     switch (reason)
-//     {
-//         case CTRL_BLOCK_IMU_FAIL:       return "IMU INIT FAILED";
-//         case CTRL_BLOCK_ATT_CONVERGING: return "ATTITUDE NOT READY";
-//         case CTRL_BLOCK_ATT_DIVERGED:   return "ATTITUDE DIVERGED";
-//         case CTRL_BLOCK_IMU_LOST:       return "IMU LINK LOST";
-//         case CTRL_BLOCK_BLDC_LOST:      return "BLDC LINK LOST";
-//         default:                        return "START BLOCKED";
-//     }
-// }
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     绘制当前轴的参数与分环测试入口
@@ -744,83 +837,54 @@ static void render_group(void)
 {
     const menu_group_t *group = &s_groups[s_group_index];
     char label[28];
-    uint8 i;
-    uint8 action;
+    uint8 row;
+    uint8 index;
+    uint8 action_begin = group->item_count;
+    uint8 save_index   = (uint8)(action_begin + group->action_count);
+    uint8 total        = (uint8)(save_index + 2u);
 
-    ui_header(group->title, s_cursor,
-              (uint8)(group->item_count + group->action_count + 2u));
-    for (i = 0; i < group->item_count; i++)
-        draw_param_row(i, i, &group->items[i]);
+    ui_header(group->title, s_cursor, total);
 
-    action = group->item_count;
-    for (i = 0; i < group->action_count; i++)
+    // 只画 s_top 开始的一屏，Element 页有十几个参数，装不下要滚动
+    for (row = 0; row < UI_VISIBLE_ROWS; row++)
     {
-        if (group->kind == GROUP_KIND_MOTOR)
-            (void)snprintf(label, sizeof(label), "%s", action_name(i));
+        index = (uint8)(s_top + row);
+        if (index >= total)
+        {
+            ui_clear_line((uint16)(UI_LIST_Y + (uint16)row * UI_ROW_H));
+            continue;
+        }
+
+        if (index < action_begin)
+        {
+            draw_param_row(row, index, &group->items[index]);
+        }
+        else if (index < save_index)
+        {
+            uint8 action = (uint8)(index - action_begin);
+
+            if (group->kind == GROUP_KIND_MOTOR || group->kind == GROUP_KIND_ZERO)
+                (void)snprintf(label, sizeof(label), "%s", action_name(action));
+            else
+                (void)snprintf(label, sizeof(label), "%s %s Test/Wave",
+                               (s_test_on && s_active_test == action) ? "Stop" : "Start",
+                               action_name(action));
+            draw_action_row(row, index, label);
+        }
+        else if (index == save_index)
+        {
+            draw_action_row(row, index, "Save");
+        }
         else
-            (void)snprintf(label, sizeof(label), "%s %s Test/Wave",
-                           (s_test_on && s_active_test == i) ? "Stop" : "Start",
-                           action_name(i));
-        draw_action_row((uint8)(action + i), (uint8)(action + i), label);
+        {
+            draw_action_row(row, index, "Back");
+        }
     }
-    action = (uint8)(action + group->action_count);
-    draw_action_row(action, action, "Save");
-    draw_action_row((uint8)(action + 1u), (uint8)(action + 1u), "Back");
+
     render_group_live();
-    if (!s_test_on) draw_status();
+    if (!s_test_on || s_status[0] != '\0') draw_status();
     ui_footer();
 }
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     刷新发车页的实时姿态、视觉与驱动状态
-// 参数说明     void
-// 返回参数     void
-// 使用示例     render_run_live();
-//-------------------------------------------------------------------------------------------------------------------
-// static void render_run_live(void)
-// {
-//     control_block_t block = control_start_block_reason();
-//     char line[30];
-//
-//     (void)snprintf(line, sizeof(line), "R%7.2f P%7.2f Y%7.1f",
-//                    (double)att.roll, (double)att.pitch, (double)att.yaw);
-//     ui_line(96, line, UI_CYAN);
-//     (void)snprintf(line, sizeof(line), "SPD %5d  ERR %7.2f",
-//                    (int)Y_Motor_GetSpeed20ms(), (double)g_dbg_error);
-//     ui_line(120, line, UI_CYAN);
-//     (void)snprintf(line, sizeof(line), "TRACK %d  LOST %5u",
-//                    (int)g_track_valid, (unsigned)g_track_lost_frames);
-//     ui_line(144, line, UI_CYAN);
-//
-//     if (start_flag == START_BALANCE)
-//         ui_line(184, "RUNNING / BACK STOP", UI_GREEN);
-//     else if (block != CTRL_BLOCK_NONE)
-//         ui_line(184, block_text(block), UI_RED);
-//     else if (!RUN_FLOW_ENABLE)
-//         ui_line(184, "RUN FLOW DISABLED", UI_YELLOW);
-//     else if (vision_core_state() != VISION_CORE_READY)
-//         ui_line(184, "CAMERA NOT READY", UI_YELLOW);
-//     else
-//         ui_line(184, "READY TO START", UI_GREEN);
-// }
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     绘制发车页
-// 参数说明     void
-// 返回参数     void
-// 使用示例     render_run();
-//-------------------------------------------------------------------------------------------------------------------
-// static void render_run(void)
-// {
-//     ui_header("Run", s_cursor, 3);
-//     draw_action_row(0, 0, "Start Track Run");
-//     draw_action_row(1, 1, "Stop");
-//     draw_action_row(2, 2, "Back");
-//     render_run_live();
-//     draw_status();
-//     ui_line(224, "Airborne checks first!", UI_GRAY);
-//     ui_footer();
-// }
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     根据当前页面绘制完整菜单
@@ -839,7 +903,6 @@ static void render_page(void)
         case MENU_PAGE_PARAMS:          render_params(); break;
         case MENU_PAGE_ATTITUDE:        render_attitude(); break;
         case MENU_PAGE_GROUP:           render_group(); break;
-//      case MENU_PAGE_RUN:             render_run(); break;
         case MENU_PAGE_IMAGE:           break;
         default:                        break;
     }
@@ -870,10 +933,47 @@ static void motor_jog_action(uint8 action_index)
     forward = (uint8)((action_index % 2u) == 0u);
     if (control_jog_start(target, forward))
         menu_status("JOG RUNNING");
-    else if (W_Motor_LinkLost())
-        menu_status("BLDC LINK LOST");
     else
-        menu_status("JOG BLOCKED");
+    {
+        if (g_vofa_mode == VOFA_MOTOR) g_vofa_mode = VOFA_OFF;
+        menu_status(test_status_text(control_test_last_status()));
+    }
+    s_dirty = 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     把当前横滚角与俯仰角写进机械零点，车必须先按平衡姿态摆好并静止
+// 参数说明     void
+// 返回参数     void
+// 使用示例     zero_capture_action();
+//-------------------------------------------------------------------------------------------------------------------
+static void zero_capture_action(void)
+{
+    if (!g_imu_ok || imu_link_lost() || attitude_diverged())
+    {
+        menu_status("IMU NOT READY");
+        return;
+    }
+    if (imu_calib_state() != IMU_CALIB_OK)
+    {
+        menu_status("CALIB MOVED / REBOOT");
+        return;
+    }
+    if (!attitude_converged())
+    {
+        menu_status("ATTITUDE NOT READY");
+        return;
+    }
+    if (start_flag != START_STOP || control_test_running() ||
+        control_jog_running() != MOTOR_JOG_NONE)
+    {
+        menu_status("STOP MOTORS FIRST");     // 电机在动时姿态不是静态零点
+        return;
+    }
+
+    (void)param_set_by_name("roll_zero_init", att.roll);
+    (void)param_set_by_name("pitch_zero_init", att.pitch);   // 内部会调 param_sync_zero()
+    menu_status("ZERO CAPTURED");
     s_dirty = 1;
 }
 
@@ -893,8 +993,13 @@ static void toggle_group_action(uint8 action_index)
 
     if (group->kind == GROUP_KIND_MOTOR)
     {
-        g_vofa_mode = group->wave_mode;         // 点动全程出波形, 方便对指令与转速的符号
         motor_jog_action(action_index);
+        return;
+    }
+
+    if (group->kind == GROUP_KIND_ZERO)
+    {
+        zero_capture_action();
         return;
     }
 
@@ -904,9 +1009,14 @@ static void toggle_group_action(uint8 action_index)
         menu_status("TEST OFF");
         return;
     }
+    if (group->kind == GROUP_KIND_AXIS && control_test_running())
+    {
+        menu_status("STOP TEST FIRST");
+        return;
+    }
 
     stop_local_test();
-    if (group->kind == GROUP_KIND_CAMERA)
+    if (group->kind == GROUP_KIND_CAMERA || group->kind == GROUP_KIND_ELEMENT)
     {
         (void)control_camera_debug_start();
         if (vision_core_state() == VISION_CORE_FAILED)
@@ -951,6 +1061,22 @@ static void edit_current_parameter(float direction)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     判断测试运行时当前参数行是否属于已启用串级
+// 参数说明     group/item_index 参数组与组内参数行
+// 返回参数     uint8           1=允许编辑 0=会与真实测试环脱节
+// 使用示例     if (!group_param_edit_allowed(group, s_cursor)) return;
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 group_param_edit_allowed(const menu_group_t *group, uint8 item_index)
+{
+    uint8 item_ring;
+
+    if (group->kind != GROUP_KIND_AXIS || !control_test_running()) return 1;
+    if (group->axis != g_tune_axis) return 0;
+    item_ring = (uint8)(item_index / 3u);
+    return (uint8)(item_ring <= (uint8)g_tune_ring);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     处理主菜单按键
 // 参数说明     up/down/enter    上移/下移/确认事件
 // 返回参数     void
@@ -966,11 +1092,7 @@ static void handle_main(uint8 up, uint8 down, uint8 enter)
     {
         set_page(MENU_PAGE_PARAMS);
     }
-//  else if (s_cursor == 2)
-//  {
-//      set_page(MENU_PAGE_RUN);
-//  }
-    else
+    else if (s_cursor == 1u)
     {
         set_page(MENU_PAGE_IMAGE);
         (void)control_camera_debug_start();
@@ -984,6 +1106,10 @@ static void handle_main(uint8 up, uint8 down, uint8 enter)
         g_vofa_mode = VOFA_TRACK;
         s_test_on = 1;
         s_active_test = 0u;
+    }
+    else
+    {
+        menu_status("RUN NOT ENABLED");
     }
 }
 
@@ -1015,7 +1141,7 @@ static void handle_params(uint8 up, uint8 down, uint8 enter, uint8 back)
     }
     else if (s_cursor == (uint8)(GROUP_COUNT + 1u))
     {
-        menu_status(param_save() ? "SAVED TO FLASH" : "SAVE FAILED");
+        save_params_action();
     }
     else
     {
@@ -1103,6 +1229,11 @@ static void handle_group(uint8 up, uint8 down, uint8 enter, uint8 back)
 
     if (s_cursor < group->item_count)
     {
+        if (!group_param_edit_allowed(group, s_cursor))
+        {
+            menu_status("PARAM NOT IN TEST");
+            return;
+        }
         s_editing = 1;
         s_dirty = 1;
     }
@@ -1112,55 +1243,13 @@ static void handle_group(uint8 up, uint8 down, uint8 enter, uint8 back)
     }
     else if (s_cursor == save_index)
     {
-        menu_status(param_save() ? "SAVED TO FLASH" : "SAVE FAILED");
+        save_params_action();
     }
     else
     {
         set_page(MENU_PAGE_PARAMS);
     }
 }
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     处理发车页面按键
-// 参数说明     up/down/enter/back 上移/下移/确认/返回事件
-// 返回参数     void
-// 使用示例     handle_run(up, down, enter, back);
-//-------------------------------------------------------------------------------------------------------------------
-// static void handle_run(uint8 up, uint8 down, uint8 enter, uint8 back)
-// {
-//     if (back)
-//     {
-//         set_page(MENU_PAGE_MAIN);
-//         return;
-//     }
-//     if (up) move_cursor(-1);
-//     if (down) move_cursor(1);
-//     if (!enter) return;
-//
-//     if (s_cursor == 0)
-//     {
-//         control_block_t block = control_start_block_reason();
-//
-//         if (block != CTRL_BLOCK_NONE)
-//             menu_status(block_text(block));
-//         else if (control_start_run())
-//             menu_status("RUNNING");
-//         else if (!RUN_FLOW_ENABLE)
-//             menu_status("RUN FLOW DISABLED");
-//         else
-//             menu_status("CAMERA NOT READY");
-//     }
-//     else if (s_cursor == 1)
-//     {
-//         control_stop();
-//         menu_status("STOPPED");
-//     }
-//     else
-//     {
-//         set_page(MENU_PAGE_MAIN);
-//     }
-//     s_dirty = 1;
-// }
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     处理横屏图像页面按键和刷新
@@ -1215,8 +1304,7 @@ static void handle_image(uint8 up, uint8 down, uint8 enter, uint8 back)
     if (!s_image_ok)
         return;
 
-    if (!display_is_frozen() &&
-        g_vision_frame_seq != 0u &&
+    if (g_vision_frame_seq != 0u &&
         g_vision_frame_seq != s_last_image_frame_seq)
     {
         s_last_image_frame_seq = g_vision_frame_seq;
@@ -1331,9 +1419,6 @@ void menu_run(void)
         case MENU_PAGE_GROUP:
             handle_group(up, down, enter, back);
             break;
-//      case MENU_PAGE_RUN:
-//          handle_run(up, down, enter, back);
-//          break;
         case MENU_PAGE_IMAGE:
             handle_image(up, down, enter, back);
             return;
@@ -1342,13 +1427,19 @@ void menu_run(void)
             break;
     }
 
-    if ((s_page == MENU_PAGE_ATTITUDE || s_page == MENU_PAGE_GROUP) &&
+    if ((s_page == MENU_PAGE_MAIN ||
+         s_page == MENU_PAGE_ATTITUDE ||
+         s_page == MENU_PAGE_GROUP) &&
         (uint32)(now - s_last_live_ms) >= UI_LIVE_PERIOD_MS)
     {
         s_last_live_ms = now;
-        if (s_page == MENU_PAGE_ATTITUDE)      render_attitude_live();
-//      else if (s_page == MENU_PAGE_RUN)      render_run_live();
-        else                                   render_group_live();
+        if (s_page == MENU_PAGE_MAIN)          render_main_live();
+        else if (s_page == MENU_PAGE_ATTITUDE) render_attitude_live();
+        else
+        {
+            render_group_live();
+            if (s_status[0] != '\0') draw_status();
+        }
     }
 
     if (s_dirty)

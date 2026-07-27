@@ -5,14 +5,14 @@
 
 typedef struct
 {
-    float roll;
-    float pitch;
-    float yaw;          // 连续航向角，单位 deg
+    float roll;         // 横滚角，车体左右倾，单位 deg
+    float pitch;        // 俯仰角，车体前后倾，单位 deg
+    float yaw;          // 连续航向角，永不清零，单位 deg
     float yaw_wrapped;  // 显示用航向角，范围 (-180, 180]
 
-    float roll_rate;
-    float pitch_rate;
-    float yaw_rate;     // 车体系角速度，单位 deg/s
+    float roll_rate;    // 横滚角速度，单位 deg/s
+    float pitch_rate;   // 俯仰角速度，单位 deg/s
+    float yaw_rate;     // 航向角速度，单位 deg/s
 } attitude_t;
 
 extern attitude_t att;
@@ -65,21 +65,5 @@ uint8 attitude_converged(void);
 // 使用示例     uint8 fault = attitude_diverged();
 //-------------------------------------------------------------------------------------------------------------------
 uint8 attitude_diverged(void);
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将连续航向角归零
-// 参数说明     void
-// 返回参数     void
-// 使用示例     attitude_yaw_zero();
-//-------------------------------------------------------------------------------------------------------------------
-void attitude_yaw_zero(void);
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     设置连续航向角
-// 参数说明     value_degrees 目标航向角，单位 deg
-// 返回参数     void
-// 使用示例     attitude_yaw_set(90.0f);
-//-------------------------------------------------------------------------------------------------------------------
-void attitude_yaw_set(float value_degrees);
 
 #endif

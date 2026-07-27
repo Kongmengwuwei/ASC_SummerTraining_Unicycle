@@ -1,50 +1,43 @@
 #include "imu.h"
 #include "board_config.h"
 
-imu_data_t imu;
+imu_data_t imu;                         // 车体系加速度(g)与角速度(°/s)
 
-static float gyro_bias_x, gyro_bias_y, gyro_bias_z;
-static float gyro_sum_x, gyro_sum_y, gyro_sum_z;
-static uint8 gyro_sum_count;
+static float gyro_bias_x, gyro_bias_y, gyro_bias_z;     // 静止标定得到的陀螺零偏
+static float gyro_sum_x, gyro_sum_y, gyro_sum_z;        // 1ms 采样累加，供 5ms 取平均
+static uint8 gyro_sum_count;                            // 累加样本数
 
-static float yaw_angle;
-// static float element_angle;          // 元素状态机启用后恢复
+static float yaw_angle;                 // 转向外环用的连续航向角，永不清零
+static float element_angle;             // 元素状态机使用的独立连续转角
 
-static float static_acc_x = 0.0f;
+static float static_acc_x = 0.0f;       // 标定期间的重力方向，供姿态冷启动对齐
 static float static_acc_y = 0.0f;
 static float static_acc_z = 1.0f;
-static imu_calib_state_t calib_state = IMU_CALIB_NONE;
+static imu_calib_state_t calib_state = IMU_CALIB_NONE;  // 静止标定结果
 
-static uint16 acc_zero_run;
-static uint16 gyro_zero_run;
-static uint8  link_lost;
+static uint16 acc_zero_run;             // 加计连续读到全 0 的次数
+static uint16 gyro_zero_run;            // 陀螺连续读到全 0 的次数
+static uint8  link_lost;                // 链路失效标志，一旦置位不再自动恢复
 
+#define IMU_SETTLE_MS           (150)   // 改完 ODR 后等数字滤波器稳定的时间(ms)
 
-#define IMU_SETTLE_MS           (150)
+#define IMU_ACC_ZERO_LIMIT      (20)    // 加计连续全 0 多少次判定断链
+#define IMU_GYRO_ZERO_LIMIT     (100)   // 陀螺连续全 0 多少次判定断链
+#define IMU_CALIB_SAMPLES       (600)   // 单次静止标定采样点数
+#define IMU_CALIB_RETRY         (3)     // 检测到晃动后的重试次数
+#define IMU_CALIB_MOVE_DPS      (3.0f)  // 标定期间陀螺峰峰值超过它判定为动过
+#define IMU_CALIB_MOVE_G        (0.15f) // 标定期间加计峰峰值超过它判定为动过
 
-
-#define IMU_ACC_ZERO_LIMIT      (20)
-#define IMU_GYRO_ZERO_LIMIT     (100)
-#define IMU_CALIB_SAMPLES       (600)
-#define IMU_CALIB_RETRY         (3)
-#define IMU_CALIB_MOVE_DPS      (3.0f)
-#define IMU_CALIB_MOVE_G        (0.15f)
-
-
-#define IMU660RB_CTRL8_XL       (0x17)
-#define IMU_ODR_XL_416HZ        (0x60)
-#define IMU_ODR_G_1667HZ        (0x80)
-#define IMU_LPF2_XL_EN          (0x02)
-
-
-#define IMU_CTRL6_C_FTYPE       (0x01)
-
-
-#define IMU_CTRL8_XL_HPCF       (0x20)
-
+// LSM6DSR 寄存器与配置字，库头文件里没有的在这里补
+#define IMU660RB_CTRL8_XL       (0x17)  // 加计滤波配置寄存器
+#define IMU_ODR_XL_416HZ        (0x60)  // 加计 ODR 提到 416Hz
+#define IMU_ODR_G_1667HZ        (0x80)  // 陀螺 ODR 提到 1667Hz
+#define IMU_LPF2_XL_EN          (0x02)  // 使能加计二级低通
+#define IMU_CTRL6_C_FTYPE       (0x01)  // 陀螺低通带宽档位
+#define IMU_CTRL8_XL_HPCF       (0x20)  // 加计二级低通截止频率档位
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将 IMU660RB 传感器坐标转换为车体坐标
+// 函数简介     把传感器轴换到车体轴，加速度与陀螺必须用同一套交换和同一套符号
 // 参数说明     sx/sy/sz 传感器轴输入；bx/by/bz 车体轴输出
 // 返回参数     void
 // 使用示例     imu_sensor_to_body(sx, sy, sz, &bx, &by, &bz);
@@ -52,9 +45,9 @@ static uint8  link_lost;
 static void imu_sensor_to_body(float sx, float sy, float sz,
                                float *bx, float *by, float *bz)
 {
-    *bx = sy;
-    *by = sz;
-    *bz = sx;
+    *bx = sy;       // 车体 X：左右倾，对应 Roll
+    *by = sz;       // 车体 Y：前后倾，对应 Pitch
+    *bz = sx;       // 车体 Z：航向，对应 Yaw
 }
 
 #if (IMU660RB_USE_SOFT_IIC == 0)
@@ -102,7 +95,7 @@ static uint8 imu_tune_sensor(void)
     imu_write_reg(IMU660RB_CTRL8_XL, IMU_CTRL8_XL_HPCF);
     imu_write_reg(IMU660RB_CTRL2_G,  g);
     imu_write_reg(IMU660RB_CTRL6_C,  IMU_CTRL6_C_FTYPE);
-    system_delay_ms(5);
+    system_delay_ms(5);                                 
 
     return (uint8)(imu_read_reg(IMU660RB_CTRL1_XL) != xl ||
                    imu_read_reg(IMU660RB_CTRL2_G)  != g);
@@ -153,15 +146,17 @@ uint8 imu_init(void)
     acc_zero_run  = 0;
     gyro_zero_run = 0;
     link_lost     = 0;
+    yaw_angle     = 0.0f;
+    element_angle = 0.0f;
 
-    state = imu660rb_init();
+    state = imu660rb_init();          
     if (state != 0)
         return state;
 
     if (imu_tune_sensor() != 0)
         return 1;
 
-
+    
     system_delay_ms(IMU_SETTLE_MS);
     return 0;
 }
@@ -225,7 +220,7 @@ void imu_calibrate(void)
             calib_state = IMU_CALIB_OK;
             break;
         }
-        calib_state = IMU_CALIB_MOVED;
+        calib_state = IMU_CALIB_MOVED;      
     }
 
     gyro_sum_x = gyro_sum_y = gyro_sum_z = 0.0f;
@@ -304,13 +299,6 @@ void imu_update_acc(void)
     else acc_zero_run = 0;
 }
 
-
-
-
-
-
-
-
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     检查 IMU660RB 通信链路状态
 // 参数说明     void
@@ -349,8 +337,7 @@ void imu_get_gyro_avg(float *gx, float *gy, float *gz)
 void imu_publish_attitude_yaw(float yaw_continuous, float yaw_delta)
 {
     yaw_angle = yaw_continuous;
-//  element_angle += yaw_delta;
-    (void)yaw_delta;
+    element_angle += yaw_delta;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -370,10 +357,10 @@ float imu_get_angle_yaw(void)
 // 返回参数     float           元素累计转角，单位 deg
 // 使用示例     float angle = imu_get_angle_element();
 //-------------------------------------------------------------------------------------------------------------------
-// float imu_get_angle_element(void)
-// {
-//     return element_angle;
-// }
+float imu_get_angle_element(void)
+{
+    return element_angle;
+}
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     清零元素处理使用的独立累计转角
@@ -381,7 +368,7 @@ float imu_get_angle_yaw(void)
 // 返回参数     void
 // 使用示例     imu_clear_angle_element();
 //-------------------------------------------------------------------------------------------------------------------
-// void imu_clear_angle_element(void)
-// {
-//     element_angle = 0.0f;
-// }
+void imu_clear_angle_element(void)
+{
+    element_angle = 0.0f;
+}

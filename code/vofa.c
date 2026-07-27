@@ -5,7 +5,6 @@
 #include "param.h"
 #include "imu.h"
 #include "attitude.h"
-#include "balance.h"
 #include "control.h"
 #include "display.h"
 #include <stdio.h>
@@ -17,7 +16,7 @@ volatile tune_axis_t g_tune_axis = TUNE_AXIS_ROLL;  // 当前调参轴
 volatile tune_ring_t g_tune_ring = TUNE_RING_RATE;  // 当前调参环
 
 // 波形快照
-#define VOFA_CH_MAX     (10)                    // 单帧最大通道数
+#define VOFA_CH_MAX     (13)                    // 单帧最大通道数
 
 static volatile uint32      s_seq = 0;          // 快照序号
 static volatile float       s_ch[VOFA_CH_MAX];  // 通道值
@@ -113,6 +112,161 @@ static int cmd_icmp(const char *a, const char *b)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     判断单精度浮点数是否为有限值
+// 参数说明     value           待检查数值
+// 返回参数     uint8           1 为有限值, 0 为 NaN 或正负无穷
+// 使用示例     if (!cmd_float_is_finite(value)) return 0;
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 cmd_float_is_finite(float value)
+{
+    union
+    {
+        float  f;
+        uint32 u;
+    } bits;
+
+    bits.f = value;
+    return (uint8)((bits.u & 0x7F800000u) != 0x7F800000u);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     严格解析一个十进制浮点参数
+// 参数说明     text/value      输入字符串与解析结果地址
+// 返回参数     uint8           1 解析成功, 0 表示格式或数值非法
+// 使用示例     if (!cmd_parse_float_strict(tok[1], &value)) cmd_ack(0);
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 cmd_parse_float_strict(const char *text, float *value)
+{
+    const char *p = text;
+    float result = 0.0f;
+    float fraction = 0.1f;
+    int sign = 1;
+    int exponent_sign = 1;
+    uint8 digit_seen = 0;
+    uint8 exponent_seen = 0;
+    uint16 exponent = 0;
+
+    if (p == 0 || value == 0 || *p == '\0') return 0;
+    if (*p == '-' || *p == '+')
+    {
+        if (*p == '-') sign = -1;
+        p++;
+    }
+
+    while (*p >= '0' && *p <= '9')
+    {
+        digit_seen = 1;
+        result = result * 10.0f + (float)(*p - '0');
+        if (!cmd_float_is_finite(result)) return 0;
+        p++;
+    }
+    if (*p == '.')
+    {
+        p++;
+        while (*p >= '0' && *p <= '9')
+        {
+            digit_seen = 1;
+            result += (float)(*p - '0') * fraction;
+            fraction *= 0.1f;
+            p++;
+        }
+    }
+    if (!digit_seen) return 0;
+
+    if (*p == 'e' || *p == 'E')
+    {
+        p++;
+        if (*p == '-' || *p == '+')
+        {
+            if (*p == '-') exponent_sign = -1;
+            p++;
+        }
+        while (*p >= '0' && *p <= '9')
+        {
+            exponent_seen = 1;
+            if (exponent > 38u) return 0;
+            exponent = (uint16)(exponent * 10u + (uint16)(*p - '0'));
+            if (exponent > 38u) return 0;
+            p++;
+        }
+        if (!exponent_seen) return 0;
+    }
+    if (*p != '\0') return 0;
+
+    while (exponent > 0u)
+    {
+        result = (exponent_sign > 0) ? result * 10.0f : result * 0.1f;
+        if (!cmd_float_is_finite(result)) return 0;
+        exponent--;
+    }
+    result = (sign < 0) ? -result : result;
+    if (!cmd_float_is_finite(result)) return 0;
+    *value = result;
+    return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将命令行严格拆分为不超过三个字段
+// 参数说明     line/tokens      可写命令行与字段指针数组
+// 返回参数     int             字段数, -1 表示字段过多
+// 使用示例     ntok = cmd_tokenize(line, tok);
+//-------------------------------------------------------------------------------------------------------------------
+static int cmd_tokenize(char *line, char **tokens)
+{
+    char *p = line;
+    int count = 0;
+
+    while (*p)
+    {
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0') break;
+        if (count >= 3) return -1;
+        tokens[count++] = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        if (*p) *p++ = '\0';
+    }
+    return count;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     判断点动或完整发车流程是否正在占用电机
+// 参数说明     void
+// 返回参数     uint8           1 表示禁止改变调参对象
+// 使用示例     if (cmd_motion_active()) cmd_ack(0);
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 cmd_motion_active(void)
+{
+    return (uint8)(start_flag != START_STOP ||
+                   control_jog_running() != MOTOR_JOG_NONE);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     判断参数名是否属于当前测试轴已启用的串级范围
+// 参数说明     name            参数名
+// 返回参数     uint8           1 表示测试中允许在线修改
+// 使用示例     if (!cmd_test_param_allowed(tok[1])) cmd_ack(0);
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 cmd_test_param_allowed(const char *name)
+{
+    uint8 ring;
+    uint8 gain;
+
+    if (name == 0 || g_tune_axis >= TUNE_AXIS_MAX ||
+        g_tune_ring >= TUNE_RING_MAX)
+        return 0;
+
+    for (ring = 0; ring <= (uint8)g_tune_ring; ring++)
+    {
+        for (gain = 0; gain < 3u; gain++)
+        {
+            const char *allowed = s_tune_tbl[g_tune_axis][ring][gain];
+            if (allowed != 0 && cmd_icmp(name, allowed) == 0) return 1;
+        }
+    }
+    return 0;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     将一行 ASCII 数据写入 UART0 发送队列
 // 参数说明     line            以 '\0' 结尾且包含换行符的字符串
 // 返回参数     void
@@ -182,43 +336,60 @@ static void cmd_report_param(uint16 index)
 static void cmd_execute(char *line)
 {
     char *tok[3];
-    int   ntok = 0;
-    char *p = line;
+    int ntok = cmd_tokenize(line, tok);
 
-    // 按空白分割为最多三个字段
-    while (*p && ntok < 3)
-    {
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '\0') break;
-        tok[ntok++] = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        if (*p) { *p = '\0'; p++; }
-    }
+    if (ntok < 0) { cmd_ack(0); return; }
     if (ntok == 0) return;
 
     // 切换调参轴
     if (cmd_icmp(tok[0], "axis") == 0)
     {
-        if (ntok < 2) { cmd_ack(0); return; }
-        if      (cmd_icmp(tok[1], "roll")  == 0) g_tune_axis = TUNE_AXIS_ROLL;
-        else if (cmd_icmp(tok[1], "pitch") == 0) g_tune_axis = TUNE_AXIS_PITCH;
-        else if (cmd_icmp(tok[1], "yaw")   == 0) g_tune_axis = TUNE_AXIS_YAW;
+        tune_axis_t axis;
+
+        if (ntok != 2 || cmd_motion_active() || control_test_running())
+        {
+            cmd_ack(0);
+            return;
+        }
+        if      (cmd_icmp(tok[1], "roll")  == 0) axis = TUNE_AXIS_ROLL;
+        else if (cmd_icmp(tok[1], "pitch") == 0) axis = TUNE_AXIS_PITCH;
+        else if (cmd_icmp(tok[1], "yaw")   == 0) axis = TUNE_AXIS_YAW;
         else if (cmd_icmp(tok[1], "next")  == 0)
-            g_tune_axis = (tune_axis_t)(((int)g_tune_axis + 1) % (int)TUNE_AXIS_MAX);
+            axis = (tune_axis_t)(((int)g_tune_axis + 1) % (int)TUNE_AXIS_MAX);
         else { cmd_ack(0); return; }
+
+        if (axis == TUNE_AXIS_YAW && g_tune_ring == TUNE_RING_VEL)
+        {
+            cmd_ack(0);
+            return;
+        }
+        g_tune_axis = axis;
         cmd_report_pid(); cmd_ack(1); return;
     }
 
     // 切换调参环
     if (cmd_icmp(tok[0], "ring") == 0)
     {
-        if (ntok < 2) { cmd_ack(0); return; }
-        if      (cmd_icmp(tok[1], "rate")  == 0) g_tune_ring = TUNE_RING_RATE;
-        else if (cmd_icmp(tok[1], "angle") == 0) g_tune_ring = TUNE_RING_ANGLE;
-        else if (cmd_icmp(tok[1], "vel")   == 0) g_tune_ring = TUNE_RING_VEL;
+        tune_ring_t ring;
+
+        if (ntok != 2 || cmd_motion_active() || control_test_running())
+        {
+            cmd_ack(0);
+            return;
+        }
+        if      (cmd_icmp(tok[1], "rate")  == 0) ring = TUNE_RING_RATE;
+        else if (cmd_icmp(tok[1], "angle") == 0) ring = TUNE_RING_ANGLE;
+        else if (cmd_icmp(tok[1], "vel")   == 0) ring = TUNE_RING_VEL;
         else if (cmd_icmp(tok[1], "next")  == 0)
-            g_tune_ring = (tune_ring_t)(((int)g_tune_ring + 1) % (int)TUNE_RING_MAX);
+            ring = (tune_ring_t)(((int)g_tune_ring + 1) % (int)TUNE_RING_MAX);
         else { cmd_ack(0); return; }
+
+        if (g_tune_axis == TUNE_AXIS_YAW && ring == TUNE_RING_VEL)
+        {
+            cmd_ack(0);
+            return;
+        }
+        g_tune_ring = ring;
         cmd_report_pid(); cmd_ack(1); return;
     }
 
@@ -227,17 +398,35 @@ static void cmd_execute(char *line)
         cmd_icmp(tok[0], "ki")  == 0 || cmd_icmp(tok[0], "kd")  == 0)
     {
         int which = (cmd_icmp(tok[0], "ki") == 0) ? 1 : ((cmd_icmp(tok[0], "kd") == 0) ? 2 : 0);
-        const char *name = s_tune_tbl[g_tune_axis][g_tune_ring][which];
-        if (ntok < 2 || name == 0) { cmd_ack(0); return; }
-        if (!param_set_by_name(name, func_str_to_float(tok[1]))) { cmd_ack(0); return; }
+        const char *name;
+        float value;
+
+        if (ntok != 2 || cmd_motion_active() ||
+            g_tune_axis >= TUNE_AXIS_MAX || g_tune_ring >= TUNE_RING_MAX ||
+            !cmd_parse_float_strict(tok[1], &value))
+        {
+            cmd_ack(0);
+            return;
+        }
+        name = s_tune_tbl[g_tune_axis][g_tune_ring][which];
+        if (name == 0 || !param_set_by_name(name, value)) { cmd_ack(0); return; }
         cmd_report_pid(); cmd_ack(1); return;
     }
 
     // 按名称修改参数
     if (cmd_icmp(tok[0], "set") == 0)
     {
-        if (ntok < 3) { cmd_ack(0); return; }
-        if (param_set_by_name(tok[1], func_str_to_float(tok[2])))
+        float value;
+        uint8 test_active = control_test_running();
+
+        if (ntok != 3 || cmd_motion_active() ||
+            (test_active && !cmd_test_param_allowed(tok[1])) ||
+            !cmd_parse_float_strict(tok[2], &value))
+        {
+            cmd_ack(0);
+            return;
+        }
+        if (param_set_by_name(tok[1], value))
         {
             if (cmd_icmp(tok[1], "cam_exposure") == 0)
                 display_set_exposure((uint16)g_param.cam_exposure);
@@ -254,7 +443,7 @@ static void cmd_execute(char *line)
     if (cmd_icmp(tok[0], "get") == 0)
     {
         uint16 i;
-        if (ntok < 2) { cmd_ack(0); return; }
+        if (ntok != 2) { cmd_ack(0); return; }
         for (i = 0; i < param_table_count(); i++)
             if (cmd_icmp(tok[1], g_param_table[i].name) == 0) { cmd_report_param(i); cmd_ack(1); return; }
         cmd_ack(0); return;
@@ -264,18 +453,32 @@ static void cmd_execute(char *line)
     if (cmd_icmp(tok[0], "list") == 0)
     {
         uint16 i;
+        if (ntok != 1) { cmd_ack(0); return; }
         for (i = 0; i < param_table_count(); i++) cmd_report_param(i);
         cmd_ack(1); return;
     }
 
     // 保存参数
-    if (cmd_icmp(tok[0], "save") == 0) { cmd_ack(param_save()); return; }
+    if (cmd_icmp(tok[0], "save") == 0)
+    {
+        if (ntok != 1 || cmd_motion_active() || control_test_running())
+        {
+            cmd_ack(0);
+            return;
+        }
+        cmd_ack(param_save());
+        return;
+    }
 
     // 切换波形模式
     if (cmd_icmp(tok[0], "wave") == 0)
     {
         int m;
-        if (ntok < 2) { cmd_ack(0); return; }
+        if (ntok != 2 || cmd_motion_active() || control_test_running())
+        {
+            cmd_ack(0);
+            return;
+        }
         if      (cmd_icmp(tok[1], "off")   == 0) m = (int)VOFA_OFF;
         else if (cmd_icmp(tok[1], "imu")   == 0) m = (int)VOFA_IMU_RAW;
         else if (cmd_icmp(tok[1], "att")   == 0) m = (int)VOFA_ATT;
@@ -285,18 +488,20 @@ static void cmd_execute(char *line)
         else if (cmd_icmp(tok[1], "yaw")   == 0) m = (int)VOFA_YAW;
         else if (cmd_icmp(tok[1], "track") == 0 ||
                  cmd_icmp(tok[1], "trk")   == 0) m = (int)VOFA_TRACK;
+        else if (cmd_icmp(tok[1], "motor") == 0 ||
+                 cmd_icmp(tok[1], "mot")   == 0) m = (int)VOFA_MOTOR;
         else if (cmd_icmp(tok[1], "dash")  == 0) m = (int)VOFA_DASH;
-        else if ((tok[1][0] >= '0' && tok[1][0] <= '9') ||
-                 tok[1][0] == '-' || tok[1][0] == '+')
-            m = (int)func_str_to_float(tok[1]);
         else { cmd_ack(0); return; }
-        if (m < 0 || m > (int)VOFA_DASH) { cmd_ack(0); return; }
         g_vofa_mode = (vofa_mode_t)m;
         cmd_ack(1); return;
     }
 
     // 通信心跳
-    if (cmd_icmp(tok[0], "ping") == 0) { cmd_ack(1); return; }
+    if (cmd_icmp(tok[0], "ping") == 0)
+    {
+        cmd_ack((uint8)(ntok == 1));
+        return;
+    }
 
     cmd_ack(0);
 }
@@ -347,17 +552,21 @@ void vofa_snapshot(void)
         s_ch[3] = g_bal_dbg.y_rate_fb;  s_ch[4] = g_bal_dbg.y_pwm;     s_ch[5] = g_lean_offset;
         break;
     case VOFA_TRACK:
-        s_tag = "trk"; s_n = 9;
-        s_ch[0] = g_dbg_error;
-        s_ch[1] = (float)g_track_valid;
-        s_ch[2] = (float)g_vision_search_stop;
-        s_ch[3] = (float)g_vision_left_lost;
-        s_ch[4] = (float)g_vision_right_lost;
-        s_ch[5] = (float)g_vision_threshold;
-        s_ch[6] = (float)g_vision_frame_seq;
-        s_ch[7] = (float)g_vision_heartbeat;
-        s_ch[8] = (float)g_vision_age_ms;
-//      s_ch[9] = (float)g_vision_active_elem;
+        // track_valid=0 时 err 被强制回 0，看 err 必须同时看 valid 和 both_lost
+        s_tag = "trk"; s_n = 13;
+        s_ch[0] = g_dbg_error;                  // 中线偏差，右偏为正
+        s_ch[1] = (float)g_track_valid;         // 本帧循迹是否有效
+        s_ch[2] = (float)g_vision_search_stop;  // 有效前瞻行数
+        s_ch[3] = (float)g_vision_left_lost;    // 左边线丢线行数
+        s_ch[4] = (float)g_vision_right_lost;   // 右边线丢线行数
+        s_ch[5] = (float)g_vision_both_lost;    // 双边丢线行数
+        s_ch[6] = (float)g_vision_threshold;    // 大津阈值
+        s_ch[7] = (float)g_track_lost_frames;   // 连续无效帧计数
+        s_ch[8] = (float)g_vision_heartbeat;    // CPU1 心跳
+        s_ch[9] = (float)g_vision_age_ms;       // 距上一帧的时间(ms)
+        s_ch[10] = (float)g_vision_active_elem; // 元素编号
+        s_ch[11] = g_vision_speed_scale;        // 元素建议速度倍率
+        s_ch[12] = (float)g_vision_stop_request;// 元素停车请求
         break;
     case VOFA_MOTOR:
         // 架空验方向用: 指令与回传转速同号才说明 MOTOR_DIR 配对，
@@ -399,7 +608,7 @@ void vofa_poll(void)
 {
     static uint32 last_seq = 0;                 // 上次已发送的快照序号
     float  ch[VOFA_CH_MAX];
-    char   line[160];
+    char   line[256];
     uint32 seq1, seq2;
     uint8  n, i;
     const char *tag;

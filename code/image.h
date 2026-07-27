@@ -4,10 +4,12 @@
 #include "zf_common_headfile.h"
 #include "board_config.h"
 
+// 循迹算法：大津二值化 -> 八邻域提左右边线 -> 单边补线出中线 -> 多行平均取偏差
+
 #define IMG_WHITE   255                 // 白色像素
 #define IMG_BLACK   0                   // 黑色像素
 
-// 裁剪图像行号: 0 为远端，IMG_H-1 为近端
+// 一帧的全部中间结果。行号 0 为远端，IMG_H-1 为近端；列号 0 在左，IMG_W-1 在右
 typedef struct
 {
     uint8 image_two_value[IMG_H][IMG_W];        // 二值图像
@@ -25,8 +27,8 @@ typedef struct
     int Left_Lost_Counter;                      // 左边线丢失行数
     int Right_Lost_Counter;                     // 右边线丢失行数
     int Both_Lost_Counter;                      // 双边丢失行数
-    int Boundry_Start_Left;                     // 左边线近端起始行
-    int Boundry_Start_Right;                    // 右边线近端起始行
+    int Boundry_Start_Left;                     // 左边线向远端延伸到的最小行号
+    int Boundry_Start_Right;                    // 右边线向远端延伸到的最小行号
 
     int Threshold;                              // 本帧大津阈值
     int Contrast;                               // 本帧灰度对比度

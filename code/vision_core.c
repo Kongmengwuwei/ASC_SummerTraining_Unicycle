@@ -87,17 +87,25 @@ static void vision_feedback_defaults(vision_feedback_t *feedback)
 {
     memset(feedback, 0, sizeof(*feedback));
     feedback->err_offset = 0.0f;
-//  feedback->speed_ramp_gain = SPEED_RAMP_GAIN_DEFAULT;
-//  feedback->speed_ring_gain = SPEED_RING_GAIN_DEFAULT;
-//  feedback->obs_narrow_ratio = OBS_NARROW_RATIO_DEFAULT;
-//  feedback->zebra_jump_cnt = ZEBRA_JUMP_CNT_DEFAULT;
-//  feedback->cross_lost_cnt = CROSS_LOST_CNT_DEFAULT;
-//  feedback->ring_angle = RING_ANGLE_DEFAULT;
-//  feedback->ring_s2_cnt_l = RING_S2_CNT_L_DEFAULT;
-//  feedback->ring_s2_cnt_r = RING_S2_CNT_R_DEFAULT;
-//  feedback->ring_side_offset = RING_SIDE_OFFSET_DEFAULT;
-//  feedback->obs_line_offset = OBS_LINE_OFFSET_DEFAULT;
+    feedback->speed_ramp_gain = SPEED_RAMP_GAIN_DEFAULT;
+    feedback->speed_ring_gain = SPEED_RING_GAIN_DEFAULT;
+    feedback->obs_narrow_ratio = OBS_NARROW_RATIO_DEFAULT;
+    feedback->zebra_jump_cnt = ZEBRA_JUMP_CNT_DEFAULT;
+    feedback->cross_lost_cnt = CROSS_LOST_CNT_DEFAULT;
+    feedback->ring_angle = RING_ANGLE_DEFAULT;
+    feedback->ring_s2_cnt_l = RING_S2_CNT_L_DEFAULT;
+    feedback->ring_s2_cnt_r = RING_S2_CNT_R_DEFAULT;
+    feedback->ring_side_offset = RING_SIDE_OFFSET_DEFAULT;
+    feedback->ring_timeout_cnt = RING_TIMEOUT_CNT_DEFAULT;
+    feedback->elem_guard_cnt = ELEM_GUARD_CNT_DEFAULT;
+    feedback->obs_line_offset = OBS_LINE_OFFSET_DEFAULT;
     feedback->cam_exposure = CAM_EXPOSURE_DEFAULT;
+    // 元素使能默认全关，CPU0 的首份快照到达前 CPU1 不跑任何元素
+    feedback->elem_en_zebra = ELEM_EN_ZEBRA_DEFAULT;
+    feedback->elem_en_cross = ELEM_EN_CROSS_DEFAULT;
+    feedback->elem_en_ring = ELEM_EN_RING_DEFAULT;
+    feedback->elem_en_ramp = ELEM_EN_RAMP_DEFAULT;
+    feedback->elem_en_obstacle = ELEM_EN_OBSTACLE_DEFAULT;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -157,6 +165,7 @@ static void vision_display_publish(vision_display_mode_t mode)
     s_display_frame.search_stop_line = (uint16)my_image.Search_Stop_Line;
     s_display_frame.mode = (uint8)mode;
     s_display_frame.track_valid = (uint8)my_image.Track_Valid;
+    s_display_frame.active_elem = (uint8)g_elem_action.active_elem;
 
     if (mode == VISION_DISPLAY_GRAY)
         image_copy_gray(&s_display_frame.pixels[0][0]);
@@ -191,7 +200,7 @@ static uint8 vision_camera_start(void)
 
     s_core_state = VISION_CORE_STARTING;
     image_init();
-//  element_init();                     // 元素识别暂不初始化
+    element_init();
     ok = (uint8)(mt9v03x_init() == 0u);
     if (ok)
     {
@@ -264,8 +273,8 @@ void vision_core_run(void)
 {
     vision_feedback_t feedback;
     vision_result_t result;
-//  element_motion_t motion;             // 元素识别启用后恢复
-//  float base_error = 0.0f;
+    element_motion_t motion;
+    float base_error = 0.0f;
     float final_error = 0.0f;
 
     s_heartbeat++;
@@ -277,28 +286,35 @@ void vision_core_run(void)
         s_feedback_cache = feedback;
     feedback = s_feedback_cache;
     image_process();
-//  if (my_image.Track_Valid)
-//      base_error = err_sum_average(ERR_FRONT_ROW, ERR_FRONT_ROW + ERR_AVG_ROWS) - feedback.err_offset;
-//
-//  motion.drive_count_total = feedback.drive_count_total;
-//  motion.element_yaw = feedback.element_yaw;
-//  motion.pitch = feedback.pitch;
-//  motion.pitch_rate = feedback.pitch_rate;
-//  motion.track_error = base_error;
-//  motion.speed_ramp_gain = feedback.speed_ramp_gain;
-//  motion.speed_ring_gain = feedback.speed_ring_gain;
-//  motion.obs_narrow_ratio = feedback.obs_narrow_ratio;
-//  motion.uptime_ms = feedback.uptime_ms;
-//  motion.zebra_jump_cnt = (int)feedback.zebra_jump_cnt;
-//  motion.cross_lost_cnt = (int)feedback.cross_lost_cnt;
-//  motion.ring_angle = (int)feedback.ring_angle;
-//  motion.ring_s2_cnt_l = (int)feedback.ring_s2_cnt_l;
-//  motion.ring_s2_cnt_r = (int)feedback.ring_s2_cnt_r;
-//  motion.ring_side_offset = (int)feedback.ring_side_offset;
-//  motion.obs_line_offset = (int)feedback.obs_line_offset;
-//  element_set_motion(&motion);
-//  element_process();
-//  Image_Build_Mid_Line();
+    if (my_image.Track_Valid)
+        base_error = err_sum_average(ERR_FRONT_ROW, ERR_FRONT_ROW + ERR_AVG_ROWS) - feedback.err_offset;
+
+    motion.drive_count_total = feedback.drive_count_total;
+    motion.element_yaw = feedback.element_yaw;
+    motion.pitch = feedback.pitch;
+    motion.pitch_rate = feedback.pitch_rate;
+    motion.track_error = base_error;
+    motion.speed_ramp_gain = feedback.speed_ramp_gain;
+    motion.speed_ring_gain = feedback.speed_ring_gain;
+    motion.obs_narrow_ratio = feedback.obs_narrow_ratio;
+    motion.uptime_ms = feedback.uptime_ms;
+    motion.zebra_jump_cnt = (int)feedback.zebra_jump_cnt;
+    motion.cross_lost_cnt = (int)feedback.cross_lost_cnt;
+    motion.ring_angle = (int)feedback.ring_angle;
+    motion.ring_s2_cnt_l = (int)feedback.ring_s2_cnt_l;
+    motion.ring_s2_cnt_r = (int)feedback.ring_s2_cnt_r;
+    motion.ring_side_offset = (int)feedback.ring_side_offset;
+    motion.ring_timeout_cnt = (int)feedback.ring_timeout_cnt;
+    motion.elem_guard_cnt = (int)feedback.elem_guard_cnt;
+    motion.obs_line_offset = (int)feedback.obs_line_offset;
+    motion.en_zebra = feedback.elem_en_zebra;
+    motion.en_cross = feedback.elem_en_cross;
+    motion.en_ring = feedback.elem_en_ring;
+    motion.en_ramp = feedback.elem_en_ramp;
+    motion.en_obstacle = feedback.elem_en_obstacle;
+    element_set_motion(&motion);
+    element_process();
+    Image_Build_Mid_Line();
 
     if (my_image.Track_Valid)
         final_error = err_sum_average(ERR_FRONT_ROW, ERR_FRONT_ROW + ERR_AVG_ROWS) - feedback.err_offset;
@@ -309,16 +325,17 @@ void vision_core_run(void)
     result.input_seq = feedback.input_seq;
     result.heartbeat = s_heartbeat;
     result.track_error = final_error;
-//  result.speed_scale = g_elem_action.speed_scale;
+    result.speed_scale = g_elem_action.speed_scale;
     result.threshold = (uint16)my_image.Threshold;
     result.search_stop_line = (uint16)my_image.Search_Stop_Line;
     result.left_lost = (uint16)my_image.Left_Lost_Counter;
     result.right_lost = (uint16)my_image.Right_Lost_Counter;
     result.both_lost = (uint16)my_image.Both_Lost_Counter;
-//  result.active_elem = g_elem_action.active_elem;
+    result.active_elem = g_elem_action.active_elem;
+    result.island_state = (uint8)g_island.island_state;
     result.camera_ok = 1;
     result.track_valid = (uint8)my_image.Track_Valid;
-//  result.stop_request = g_elem_action.stop_request;
+    result.stop_request = g_elem_action.stop_request;
     vision_result_publish(&result);
 
     vision_display_publish((vision_display_mode_t)s_display_mode);

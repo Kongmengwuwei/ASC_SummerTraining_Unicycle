@@ -3,18 +3,19 @@
 
 #include "zf_common_headfile.h"
 
-// 波形模式
+// UART0 上行波形，VOFA+ FireWater 格式 <tag>:v0,v1,...\n，通道按位置对应。
+// 同一模式下通道数必须恒定，否则 FireWater 会错位。
 typedef enum
 {
     VOFA_OFF = 0,       // 关闭波形输出
-    VOFA_IMU_RAW,       // IMU 原始数据，6 通道
-    VOFA_ATT,           // Roll、Pitch、Yaw，3 通道
-    VOFA_ROLL,          // Roll 串级数据，7 通道
-    VOFA_PITCH,         // Pitch 串级数据，7 通道
-    VOFA_YAW,           // Yaw 串级数据，6 通道
-    VOFA_TRACK,         // 循迹数据，10 通道
-    VOFA_MOTOR,         // 电机指令与转速反馈，5 通道
-    VOFA_DASH,          // 综合面板数据，9 通道
+    VOFA_IMU_RAW,       // imu  : IMU 原始六轴，6 通道
+    VOFA_ATT,           // att  : Roll、Pitch、Yaw，3 通道
+    VOFA_ROLL,          // roll : Roll 串级各环，7 通道
+    VOFA_PITCH,         // pit  : Pitch 串级各环，7 通道
+    VOFA_YAW,           // yaw  : Yaw 串级各环，6 通道
+    VOFA_TRACK,         // trk  : 循迹偏差与丢线统计，10 通道
+    VOFA_MOTOR,         // mot  : 三电机指令与转速回读，5 通道
+    VOFA_DASH,          // dash : 综合面板，9 通道
 } vofa_mode_t;
 
 // 调参轴
@@ -72,13 +73,20 @@ void vofa_snapshot(void);
 //-------------------------------------------------------------------------------------------------------------------
 void vofa_poll(void);
 
-// 下行命令以 ASCII 行传输，使用 '\n' 或 '\r' 结束。
-// axis roll|pitch|yaw|next：切换调参轴。
-// ring rate|angle|vel|next：切换调参环。
-// kp|kpm|ki|kd <value>：修改当前调参环增益。
-// set <name> <value>、get <name>、list：修改或读取参数。
-// save：保存参数；wave <mode>：切换波形；ping：通信检测。
-// 应答格式为 pid:<...>、par:<...> 和 ack:<code>。
+// UART0 下行命令，ASCII 行，'\n' 或 '\r' 结束：
+//   axis roll|pitch|yaw|next      切换调参轴
+//   ring rate|angle|vel|next      切换调参环
+//   kp|ki|kd <value>              改当前轴当前环的增益
+//   set <name> <value>            按名字改参数
+//   get <name>                    读单个参数
+//   list                          回传全部参数
+//   save                          写 Flash
+//   wave off|imu|att|roll|pit|yaw|trk|mot|dash 切波形
+//   ping                          通信检测
+// 应答格式为 pid:<...>、par:<...> 和 ack:<0|1>。
+// 数值字段必须完整合法；电机测试、点动或发车期间禁止切轴、切环、切波形和保存。
+// 闭环测试期间仅允许修改当前轴已启用串级范围内的增益。
+// 本协议只做看波形和调参，不提供任何电机启停命令，发车与停车只能用车上的实体键。
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     接收并执行 UART0 下行调参命令

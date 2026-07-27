@@ -1,24 +1,25 @@
 #include "W_Motor.h"
 
 #include "board_config.h"
-#include "pid.h"
 
-#define W_MOTOR_FRAME_HEAD       (0xA5u)
-#define W_MOTOR_SET_DUTY_CMD     (0x01u)
-#define W_MOTOR_GET_SPEED_CMD    (0x02u)
-#define W_MOTOR_FRAME_SIZE       (7u)
-#define W_MOTOR_TX_FIFO_DEPTH    (16u)
+// CYT2BL3 双路无刷驱动的 UART3 协议层
+
+#define W_MOTOR_FRAME_HEAD       (0xA5u)    // 帧头
+#define W_MOTOR_SET_DUTY_CMD     (0x01u)    // 设占空比功能字
+#define W_MOTOR_GET_SPEED_CMD    (0x02u)    // 请求/回传转速功能字
+#define W_MOTOR_FRAME_SIZE       (7u)       // 定长帧字节数
+#define W_MOTOR_TX_FIFO_DEPTH    (16u)      // ASCLIN 发送 FIFO 深度
 
 #pragma section all "cpu0_dsram"
-static uint8  w_motor_rx_buffer[W_MOTOR_FRAME_SIZE];
-static uint8  w_motor_rx_length;
-static volatile int16  w_motor_speed_1;
-static volatile int16  w_motor_speed_2;
-static volatile uint32 w_motor_rx_frames;
-static uint32 w_motor_seen_frames;
-static uint16 w_motor_link_age_ms;
-static uint16 w_motor_request_age_ms;
-static uint8  w_motor_brake_locked;
+static uint8  w_motor_rx_buffer[W_MOTOR_FRAME_SIZE];    // 接收拼帧缓冲，只由 UART3 中断写
+static uint8  w_motor_rx_length;                        // 接收拼帧长度，只由 UART3 中断写
+static volatile int16  w_motor_speed_1;                 // 动量轮 A 转速(RPM)，UART3 中断写
+static volatile int16  w_motor_speed_2;                 // 动量轮 B 转速(RPM)，UART3 中断写
+static volatile uint32 w_motor_rx_frames;               // 合法转速帧计数，UART3 中断写
+static uint32 w_motor_seen_frames;                      // 1ms 中断上次看到的帧计数
+static uint16 w_motor_link_age_ms;                      // 距上一帧回传的时间(ms)
+static uint16 w_motor_request_age_ms;                   // 断链后补发转速请求的计时(ms)
+static volatile uint8 w_motor_brake_locked;             // 软件刹车闩，前台与中断都会读写
 #pragma section all restore
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -269,15 +270,4 @@ int16 W_Motor_GetSpeed2(void)
 uint8 W_Motor_LinkLost(void)
 {
     return (uint8)(w_motor_link_age_ms >= W_MOTOR_LINK_TIMEOUT_MS);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     读取 UART3 已收到的合法转速回传帧数
-// 参数说明     void
-// 返回参数     uint32          合法转速帧累计数
-// 使用示例     uint32 frames = W_Motor_GetRxFrames();
-//-------------------------------------------------------------------------------------------------------------------
-uint32 W_Motor_GetRxFrames(void)
-{
-    return w_motor_rx_frames;
 }

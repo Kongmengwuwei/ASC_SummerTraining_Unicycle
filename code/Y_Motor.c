@@ -3,7 +3,10 @@
 #include <stddef.h>
 
 #include "board_config.h"
-#include "pid.h"
+
+// 行进轮 C：DRV8701E 通道 1，PWM = P21_3，DIR = P21_2。
+// 编码器是 TIM2 的脉冲方向模式，P33_7 收脉冲、P33_6 收方向。
+// 5ms 读一次硬件计数并清零，内部再累计成 20ms 速度窗口供 Pitch 速度环使用。
 
 #define Y_MOTOR_SPEED_WINDOW_SAMPLES  (CTRL_DIV_SPEED / Y_MOTOR_ENCODER_PERIOD_MS)
 
@@ -12,11 +15,12 @@
 #endif
 
 #pragma section all "cpu0_dsram"
-static volatile int16 y_motor_count_5ms;
-static volatile int16 y_motor_count_20ms;
-static volatile int32 y_motor_total_count;
-static int32 y_motor_window_count;
-static uint8 y_motor_window_samples;
+static volatile int16 y_motor_count_5ms;        // 最近一次 5ms 采样的计数
+static volatile int16 y_motor_count_20ms;       // 最近一个完整 20ms 窗口的计数
+static volatile int32 y_motor_total_count;      // 自上次清零以来的累计计数
+static int32 y_motor_window_count;              // 当前 20ms 窗口的累加值
+static uint8 y_motor_window_samples;            // 当前 20ms 窗口已累加的 5ms 采样数
+static uint8 y_motor_dir_level;                 // 当前 DIR 电平，换向时才重写
 #pragma section all restore
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -43,6 +47,7 @@ void Y_Motor_Init(void)
     y_motor_total_count = 0;
     y_motor_window_count = 0;
     y_motor_window_samples = 0;
+    y_motor_dir_level = (uint8)Y_MOTOR_FORWARD_DIR_LEVEL;
 
     gpio_init(Y_MOTOR_DIR_PIN,
               GPO,
@@ -58,40 +63,39 @@ void Y_Motor_Init(void)
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     设置行进轮 C 的有符号占空比并执行方向、限幅和死区补偿
-// 参数说明     duty            行进轮控制量
+// 参数说明     duty            行进轮控制量，符号决定转向
 // 返回参数     void
 // 使用示例     Y_Motor_SetDuty(g_motor_c);
 //-------------------------------------------------------------------------------------------------------------------
 void Y_Motor_SetDuty(int32 duty)
 {
-    uint32 pwm_duty;
+    uint8 level;
 
     duty = Y_Motor_LimitDuty(duty);
     duty *= MOTOR_DIR_C;
     if (duty > 0)
-        duty += DRIVE_DEAD_ZONE;
+        duty += DRIVE_DEAD_ZONE;        // 补掉起转死区，输出直接从 0 跳到 DRIVE_DEAD_ZONE
     else if (duty < 0)
         duty -= DRIVE_DEAD_ZONE;
+    duty = Y_Motor_LimitDuty(duty);     // 死区补偿后仍不得越过 C 轮控制安全限幅
     duty = func_limit_ab(duty, -Y_MOTOR_PWM_MAX_DUTY, Y_MOTOR_PWM_MAX_DUTY);
 
-    pwm_set_duty(Y_MOTOR_PWM_PIN, 0);
-    if (duty > 0)
+    if (duty == 0)
     {
-        gpio_set_level(Y_MOTOR_DIR_PIN, Y_MOTOR_FORWARD_DIR_LEVEL);
-        pwm_duty = (uint32)duty;
-    }
-    else if (duty < 0)
-    {
-        gpio_set_level(Y_MOTOR_DIR_PIN,
-                       (uint8)((Y_MOTOR_FORWARD_DIR_LEVEL == GPIO_HIGH) ? GPIO_LOW : GPIO_HIGH));
-        pwm_duty = (uint32)(-duty);
-    }
-    else
-    {
-        return;
+        pwm_set_duty(Y_MOTOR_PWM_PIN, 0);
+        return;                         // 保持当前 DIR 电平，下次同向时不用再翻
     }
 
-    pwm_set_duty(Y_MOTOR_PWM_PIN, pwm_duty);
+    level = (uint8)((duty > 0) ? Y_MOTOR_FORWARD_DIR_LEVEL
+                               : ((Y_MOTOR_FORWARD_DIR_LEVEL == GPIO_HIGH) ? GPIO_LOW : GPIO_HIGH));
+    if (level != y_motor_dir_level)
+    {
+        pwm_set_duty(Y_MOTOR_PWM_PIN, 0);   // 只在换向这一拍卸载，避免 H 桥直通
+        gpio_set_level(Y_MOTOR_DIR_PIN, level);
+        y_motor_dir_level = level;
+    }
+
+    pwm_set_duty(Y_MOTOR_PWM_PIN, (uint32)((duty > 0) ? duty : -duty));
 }
 
 //-------------------------------------------------------------------------------------------------------------------

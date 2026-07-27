@@ -4,7 +4,7 @@
 #include "zf_common_headfile.h"
 
 #define PARAM_MAGIC             (0x51435452u)   // 参数区魔数
-#define PARAM_VERSION           (7u)            // 参数结构版本
+#define PARAM_VERSION           (10u)
 
 // 参数结构
 typedef struct
@@ -14,6 +14,8 @@ typedef struct
 
     // 速度与循迹
     int   track_base_speed;             // 基准速度
+    float speed_up_rate;                // 速度目标加速斜坡(counts/20ms 每 20ms 拍)
+    float speed_down_rate;              // 速度目标减速斜坡(counts/20ms 每 20ms 拍)
     float track_err_gain;               // 循迹误差增益
     float speed_ramp_gain;              // 坡道降速倍率
     float speed_ring_gain;              // 环岛降速倍率
@@ -54,6 +56,14 @@ typedef struct
     float lean_k2;                      // 压弯系数 K2
     float lean_limit;                   // 压弯角限幅
     int   lean_limit_mode;              // 压弯限幅模式
+    float lean_slew;                    // 压弯零点变化速率(°/5ms 拍)
+
+    // 元素使能，0=关 1=开。默认全关，普通循迹跑稳后一次只开一个
+    int   elem_en_zebra;                // 斑马线
+    int   elem_en_cross;                // 十字
+    int   elem_en_ring;                 // 环岛
+    int   elem_en_ramp;                 // 坡道
+    int   elem_en_obstacle;             // 路障
 
     // 元素阈值
     int   zebra_jump_cnt;               // 斑马线底行跳变阈值
@@ -62,6 +72,8 @@ typedef struct
     int   ring_s2_cnt_l;                // 左环编码器阈值
     int   ring_s2_cnt_r;                // 右环编码器阈值
     int   ring_side_offset;             // 环岛单边巡线横向补偿
+    int   ring_timeout_cnt;             // 环岛单状态超时帧数，超时强制回空闲
+    int   elem_guard_cnt;               // 元素退出后的屏蔽帧数
     float obs_narrow_ratio;             // 路障路宽收窄判据比例
     int   obs_line_offset;              // 路障避障横向补偿
 
@@ -85,6 +97,8 @@ extern volatile uint32 g_param_revision;// 参数修订号
 // 运行参数映射
 // 速度与循迹
 #define TRACK_BASE_SPEED        (g_param.track_base_speed)
+#define SPEED_UP_RATE           (g_param.speed_up_rate)
+#define SPEED_DOWN_RATE         (g_param.speed_down_rate)
 #define TRACK_ERR_GAIN          (g_param.track_err_gain)
 #define SPEED_RAMP_GAIN         (g_param.speed_ramp_gain)
 #define SPEED_RING_GAIN         (g_param.speed_ring_gain)
@@ -125,14 +139,22 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define LEAN_K2                 (g_param.lean_k2)
 #define LEAN_LIMIT              (g_param.lean_limit)
 #define LEAN_LIMIT_MODE         (g_param.lean_limit_mode)
+#define LEAN_SLEW               (g_param.lean_slew)
 
 // 元素阈值
+#define ELEM_EN_ZEBRA           (g_param.elem_en_zebra)
+#define ELEM_EN_CROSS           (g_param.elem_en_cross)
+#define ELEM_EN_RING            (g_param.elem_en_ring)
+#define ELEM_EN_RAMP            (g_param.elem_en_ramp)
+#define ELEM_EN_OBSTACLE        (g_param.elem_en_obstacle)
 #define ZEBRA_JUMP_CNT          (g_param.zebra_jump_cnt)
 #define CROSS_LOST_CNT          (g_param.cross_lost_cnt)
 #define RING_ANGLE              (g_param.ring_angle)
 #define RING_S2_CNT_L           (g_param.ring_s2_cnt_l)
 #define RING_S2_CNT_R           (g_param.ring_s2_cnt_r)
 #define RING_SIDE_OFFSET        (g_param.ring_side_offset)
+#define RING_TIMEOUT_CNT        (g_param.ring_timeout_cnt)
+#define ELEM_GUARD_CNT          (g_param.elem_guard_cnt)
 #define OBS_NARROW_RATIO        (g_param.obs_narrow_ratio)
 #define OBS_LINE_OFFSET         (g_param.obs_line_offset)
 
@@ -224,4 +246,4 @@ uint8 param_save(void);
 //-------------------------------------------------------------------------------------------------------------------
 void param_sync_zero(void);
 
-#endif /* PARAM_H_ */
+#endif

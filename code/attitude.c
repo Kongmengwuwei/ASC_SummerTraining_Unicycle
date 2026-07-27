@@ -1,7 +1,7 @@
 #include "attitude.h"
 #include "imu.h"
 #include "board_config.h"
-#include "pid.h"
+#include "pid.h"                
 #include <math.h>
 
 #define ATT_RAD_TO_DEG                 (57.29577951308232f)
@@ -19,13 +19,13 @@
 #define PY_GYRO_YAW_DEAD_ZONE_DPS      (1.5f)
 
 
-#define ATT_BOOST_TICKS                (400u)
-#define ATT_RAMP_TICKS                 (200u)
-#define ATT_BOOST_KP                   (8.0f)
-#define ATT_BOOST_KP_MIN               (4.0f)
+#define ATT_BOOST_TICKS                (400u)      
+#define ATT_RAMP_TICKS                 (200u)      
+#define ATT_BOOST_KP                   (8.0f)      
+#define ATT_BOOST_KP_MIN               (4.0f)      
 
 attitude_t att;
-att_diag_t att_diag;
+att_diag_t att_diag;         
 
 // Mahony 四元数状态
 static float q0 = 1.0f;
@@ -42,8 +42,8 @@ static float yaw_continuous_raw = 0.0f;
 static float yaw_zero_offset = 0.0f;
 static uint8 yaw_has_previous = 0;
 
-static uint16 boost_ticks = 0;
-static uint8  quat_diverged = 0;
+static uint16 boost_ticks = 0;      
+static uint8  quat_diverged = 0;    
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     将角度限制到 (-180, 180] 范围
@@ -76,7 +76,7 @@ static void quaternion_normalize(void)
 
     if (norm < 1.0e-10f || norm != norm)
     {
-
+        
         q0 = 1.0f;
         q1 = 0.0f;
         q2 = 0.0f;
@@ -144,7 +144,7 @@ static void mahony_update(float gyro_x_dps,
     float kp;
     uint8 acc_valid;
 
-
+    
     float w         = boost_weight();
     float kp_base   = PY_MAHONY_KP     + w * (ATT_BOOST_KP     - PY_MAHONY_KP);
     float kp_min    = PY_MAHONY_KP_MIN + w * (ATT_BOOST_KP_MIN - PY_MAHONY_KP_MIN);
@@ -191,18 +191,22 @@ static void mahony_update(float gyro_x_dps,
         ey = az * predicted_x - ax * predicted_z;
         ez = ax * predicted_y - ay * predicted_x;
 
+        // 零偏估计走 Mahony 原式 b_dot = -Ki * e，下面再用 gyro - b 扣掉，两处一负一负才是负反馈。
+        // 这里与 imu.py 有意不同：imu.py 用的是 b += Ki*e 再减，I 路与 P 路反号，
+        // 闭环是鞍点，零偏会以约 250s 的时间常数单向跑到钳位。
+        // imu.py 只输出 yaw，而六轴下 ez≈0，X/Y 这条路在那边从未被激励，所以没暴露出来。
         if (PY_MAHONY_KI > 0.0f)
         {
             gyro_bias_x = constrain_float(
-                gyro_bias_x + PY_MAHONY_KI * ex * ATT_DT,
+                gyro_bias_x - PY_MAHONY_KI * ex * ATT_DT,
                 -PY_MAHONY_GYRO_BIAS_MAX,
                 PY_MAHONY_GYRO_BIAS_MAX);
             gyro_bias_y = constrain_float(
-                gyro_bias_y + PY_MAHONY_KI * ey * ATT_DT,
+                gyro_bias_y - PY_MAHONY_KI * ey * ATT_DT,
                 -PY_MAHONY_GYRO_BIAS_MAX,
                 PY_MAHONY_GYRO_BIAS_MAX);
             gyro_bias_z = constrain_float(
-                gyro_bias_z + PY_MAHONY_KI * ez * ATT_DT,
+                gyro_bias_z - PY_MAHONY_KI * ez * ATT_DT,
                 -PY_MAHONY_GYRO_BIAS_MAX,
                 PY_MAHONY_GYRO_BIAS_MAX);
         }
@@ -214,11 +218,12 @@ static void mahony_update(float gyro_x_dps,
 
     att_diag.bias_z = gyro_bias_z;
 
+    // Kp 项拉当前误差，减去零偏估计扣掉常值漂移，两项同为负反馈
     gx = gx + kp * ex - gyro_bias_x;
     gy = gy + kp * ey - gyro_bias_y;
     gz = gz + kp * ez - gyro_bias_z;
 
-
+    
     if (fabsf(gz) * ATT_RAD_TO_DEG < PY_GYRO_YAW_DEAD_ZONE_DPS)
     {
         gz = 0.0f;
@@ -268,7 +273,7 @@ static void mahony_update(float gyro_x_dps,
         }
 
         att.yaw         = yaw_continuous_raw - yaw_zero_offset;
-        att.yaw_wrapped = attitude_normalize_180(att.yaw);
+        att.yaw_wrapped = attitude_normalize_180(att.yaw);   
         imu_publish_attitude_yaw(att.yaw, yaw_delta);
     }
 }
@@ -285,11 +290,11 @@ static void attitude_align_from_gravity(void)
     float norm;
 
     if (!imu_get_static_acc(&ax, &ay, &az))
-        return;
+        return;                                 
 
     norm = sqrtf(ax * ax + ay * ay + az * az);
     if (norm < 0.5f || norm > 1.5f)
-        return;
+        return;                                 
 
     {
         float inv    = 1.0f / norm;
@@ -309,7 +314,7 @@ static void attitude_align_from_gravity(void)
         q3 = -sr * sp;
         quaternion_normalize();
 
-
+        
         att.roll  = roll0  * ATT_RAD_TO_DEG;
         att.pitch = pitch0 * ATT_RAD_TO_DEG;
     }
@@ -345,10 +350,10 @@ void attitude_init(void)
     yaw_zero_offset = 0.0f;
     yaw_has_previous = 0;
 
-    boost_ticks   = 0;
+    boost_ticks   = 0;                  
     quat_diverged = 0;
 
-    attitude_align_from_gravity();
+    attitude_align_from_gravity();      
 
     imu_publish_attitude_yaw(0.0f, 0.0f);
 }
@@ -402,10 +407,10 @@ void attitude_update(void)
 
     imu_update_acc();
 
-
+    
     if (imu_link_lost())
     {
-        imu_get_gyro_avg(&gyro_x_average, &gyro_y_average, &gyro_z_average);
+        imu_get_gyro_avg(&gyro_x_average, &gyro_y_average, &gyro_z_average);  
         return;
     }
 
@@ -418,32 +423,4 @@ void attitude_update(void)
         gyro_x_average,
         gyro_y_average,
         gyro_z_average);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将连续航向角归零
-// 参数说明     void
-// 返回参数     void
-// 使用示例     attitude_yaw_zero();
-//-------------------------------------------------------------------------------------------------------------------
-void attitude_yaw_zero(void)
-{
-    yaw_continuous_raw = 0.0f;
-    yaw_zero_offset    = 0.0f;
-    att.yaw            = 0.0f;
-    imu_publish_attitude_yaw(0.0f, 0.0f);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     设置连续航向角
-// 参数说明     value_degrees 目标航向角，单位 deg
-// 返回参数     void
-// 使用示例     attitude_yaw_set(90.0f);
-//-------------------------------------------------------------------------------------------------------------------
-void attitude_yaw_set(float value_degrees)
-{
-    yaw_continuous_raw = 0.0f;
-    yaw_zero_offset    = -value_degrees;
-    att.yaw            = value_degrees;
-    imu_publish_attitude_yaw(att.yaw, 0.0f);
 }

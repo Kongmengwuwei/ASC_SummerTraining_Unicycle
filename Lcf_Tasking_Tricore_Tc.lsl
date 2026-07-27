@@ -40,8 +40,8 @@
 #define LCF_CPU1            1
 
 /*Un comment one of the below statements to enable CpuX DMI RAM to hold global variables*/
-/*#define LCF_DEFAULT_HOST  LCF_CPU0*/
-#define LCF_DEFAULT_HOST    LCF_CPU1
+#define LCF_DEFAULT_HOST    LCF_CPU0
+/*#define LCF_DEFAULT_HOST  LCF_CPU1*/
 
 #define LCF_DSPR1_START     0x60000000
 #define LCF_DSPR1_SIZE      120k
@@ -230,6 +230,24 @@ derivative tc26B
     /*Near data sections*/
     section_layout :vtc:abs18
     {   
+        group (ordered, contiguous, align = 32, attributes=rw, run_addr = mem:dsram1)
+        {
+            select "(.zdata.vision_shared|.zdata.vision_shared.*)";
+            select "(.zbss.vision_shared|.zbss.vision_shared.*)";
+        }
+
+        group (ordered, contiguous, align = 4, attributes=rw, run_addr = mem:dsram1)
+        {
+            select "(.zdata.cpu1_dsram|.zdata.cpu1_dsram.*)";
+            select "(.zbss.cpu1_dsram|.zbss.cpu1_dsram.*)";
+        }
+
+        group (ordered, contiguous, align = 4, attributes=rw, run_addr = mem:dsram0)
+        {
+            select "(.zdata.cpu0_dsram|.zdata.cpu0_dsram.*)";
+            select "(.zbss.cpu0_dsram|.zbss.cpu0_dsram.*)";
+        }
+
         group (ordered, contiguous, align = 4, attributes=rw, run_addr = mem:dsram1)
         {
             select "(.zdata.zdata_cpu1|.zdata.zdata_cpu1*)";
@@ -273,6 +291,12 @@ derivative tc26B
             select "(.data.edmemdata|.data.edmemdata*)";
             select "(.bss.edmembss|.bss.edmembss*)";
         }
+
+        group (ordered, contiguous, align = 32, attributes=rw, run_addr = mem:dsram1)
+        {
+            select "(.data.vision_shared|.data.vision_shared.*)";
+            select "(.bss.vision_shared|.bss.vision_shared.*)";
+        }
         
         group (ordered, contiguous, align = 4, run_addr = mem:dsram1)
         {
@@ -281,7 +305,6 @@ derivative tc26B
                     
             select ".bss.cpu1_dsram|.bss.cpu1_dsram.*";
             select ".data.cpu1_dsram|.data.cpu1_dsram.*";
-            select ".zdata.cpu1_dsram|.zdata.cpu1_dsram.*";
         }
         
         group (ordered, contiguous, align = 4, run_addr = mem:dsram0)
@@ -291,7 +314,6 @@ derivative tc26B
                     
             select ".bss.cpu0_dsram|.bss.cpu0_dsram.*";
             select ".data.cpu0_dsram|.data.cpu0_dsram.*";
-            select ".zdata.cpu0_dsram|.zdata.cpu0_dsram.*";
         }
 
 #       if LCF_DEFAULT_HOST == LCF_CPU1

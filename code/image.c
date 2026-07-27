@@ -1,5 +1,5 @@
 #include "image.h"
-// #include "element.h"                 // 元素识别暂不接入
+#include "element.h"
 
 #pragma section all "cpu1_dsram"
 
@@ -62,6 +62,8 @@ void image_init(void)
         my_image.Mid_Lost_Flag[i]   = 1;
     }
     my_image.Search_Stop_Line = 0;
+    my_image.Boundry_Start_Left = 0;
+    my_image.Boundry_Start_Right = 0;
     my_image.Mid_Valid_Rows   = 0;
     my_image.Valid_Row_Bottom = -1;
     my_image.Valid_Row_Top    = -1;
@@ -287,6 +289,8 @@ static void image_get_edge(void)
         my_image.Right_Lost_Flag[i] = 1;
     }
     my_image.Search_Stop_Line = 0;
+    my_image.Boundry_Start_Left = 0;
+    my_image.Boundry_Start_Right = 0;
 
     side = en_get_start(s_seed_col, sl, sr);
     if (side)
@@ -321,6 +325,13 @@ static void image_get_edge(void)
             }
         }
 
+        // 记录两侧向远端跟踪到的最小行号，供环岛状态机判断边界延伸位置
+        for (i = 0; i < IMG_H && my_image.Left_Lost_Flag[i]; i++) { }
+        if (i < IMG_H) my_image.Boundry_Start_Left = i;
+
+        for (i = 0; i < IMG_H && my_image.Right_Lost_Flag[i]; i++) { }
+        if (i < IMG_H) my_image.Boundry_Start_Right = i;
+
         // 使用最近有效边线补齐起点以下各行
         for (last = IMG_H - 1; last >= 0 && my_image.Left_Lost_Flag[last]; last--) { }
         for (i = last + 1; last >= 0 && i < IMG_H; i++)
@@ -337,12 +348,11 @@ static void image_get_edge(void)
         my_image.Search_Stop_Line = IMG_H - top;
     }
 
-//  if (g_island.island_state == 3 && my_image.Search_Stop_Line > 70)
-//      my_image.Search_Stop_Line = 70;         // 环岛启用后恢复
+    if (g_island.island_state == 3 && my_image.Search_Stop_Line > 70)
+        my_image.Search_Stop_Line = 70;
 
     // 汇总前瞻区赛宽与丢线状态
     my_image.Left_Lost_Counter = 0; my_image.Right_Lost_Counter = 0; my_image.Both_Lost_Counter = 0;
-    my_image.Boundry_Start_Left = 0; my_image.Boundry_Start_Right = 0;
     top = IMG_H - iclip(my_image.Search_Stop_Line, 0, IMG_H);
 
     for (i = IMG_H - 1; i >= top; i--)
@@ -351,8 +361,6 @@ static void image_get_edge(void)
         if (my_image.Left_Lost_Flag[i])  my_image.Left_Lost_Counter++;
         if (my_image.Right_Lost_Flag[i]) my_image.Right_Lost_Counter++;
         if (my_image.Left_Lost_Flag[i] && my_image.Right_Lost_Flag[i]) my_image.Both_Lost_Counter++;
-        if (my_image.Boundry_Start_Left  == 0 && !my_image.Left_Lost_Flag[i])  my_image.Boundry_Start_Left  = i;
-        if (my_image.Boundry_Start_Right == 0 && !my_image.Right_Lost_Flag[i]) my_image.Boundry_Start_Right = i;
     }
 
     // 更新下一帧起点种子列
@@ -544,19 +552,18 @@ float err_sum_average(int start_point, int end_point)
     }
     n = end_point - start_point;
 
-//  环岛单边偏差计算暂不接入，后续恢复元素识别时再启用。
-//  if (g_island.detect && g_island.island_state != 0 && g_island.island_state != 5)
-//  {
-//      int inner = (g_island.island_state == 3) ? g_elem_action.ring_side_offset : 0;
-//      if ((g_island.detect == 1) == (g_island.island_state == 3))
-//          for (i = start_point; i < end_point; i++)
-//              err += (float)(IMG_MID_COL - Standard_Road_Wide[i] / 2 - my_image.Left_Line[i] - inner);
-//      else
-//          for (i = start_point; i < end_point; i++)
-//              err += (float)(IMG_MID_COL + Standard_Road_Wide[i] / 2 - my_image.Right_Line[i] + inner);
-//      g_mid_error = err / (float)n;
-//      return g_mid_error;
-//  }
+    if (g_island.detect && g_island.island_state != 0 && g_island.island_state != 5)
+    {
+        int inner = (g_island.island_state == 3) ? g_elem_action.ring_side_offset : 0;
+        if ((g_island.detect == 1) == (g_island.island_state == 3))
+            for (i = start_point; i < end_point; i++)
+                err += (float)(IMG_MID_COL - Standard_Road_Wide[i] / 2 - my_image.Left_Line[i] - inner);
+        else
+            for (i = start_point; i < end_point; i++)
+                err += (float)(IMG_MID_COL + Standard_Road_Wide[i] / 2 - my_image.Right_Line[i] + inner);
+        g_mid_error = err / (float)n;
+        return g_mid_error;
+    }
 
     for (i = start_point; i < end_point; i++)
         err += (float)(IMG_MID_COL - my_image.Mid_Line[i]);
