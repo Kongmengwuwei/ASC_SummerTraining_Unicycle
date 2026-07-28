@@ -20,6 +20,8 @@ static uint32 w_motor_seen_frames;                      // 1ms 中断上次看�
 static uint16 w_motor_link_age_ms;                      // 距上一帧回传的时间(ms)
 static uint16 w_motor_request_age_ms;                   // 断链后补发转速请求的计时(ms)
 static volatile uint8 w_motor_brake_locked;             // 软件刹车闩，前台与中断都会读写
+static int16  w_motor_last_duty_1;                      // 上一拍实际下发的 A 占空比，斜坡用
+static int16  w_motor_last_duty_2;                      // 上一拍实际下发的 B 占空比，斜坡用
 #pragma section all restore
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -31,6 +33,24 @@ static volatile uint8 w_motor_brake_locked;             // 软件刹车闩，前
 static int16 W_Motor_LimitDuty(int32 duty)
 {
     return (int16)func_limit_ab(duty, -W_MOTOR_DUTY_MAX, W_MOTOR_DUTY_MAX);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     按每拍变化率上限逼近目标占空比，避免零转速下的阶跃电流被驱动误判成堵转
+// 参数说明     last/target     上一拍实际下发值与本拍目标值
+// 返回参数     int16           本拍允许下发的占空比
+// 使用示例     duty = W_Motor_Slew(w_motor_last_duty_1, target);
+//-------------------------------------------------------------------------------------------------------------------
+static int16 W_Motor_Slew(int16 last, int16 target)
+{
+    int32 step = FLY_SLEW;
+    int32 delta;
+
+    if (step <= 0) return target;               // 0 表示不限变化率
+    delta = (int32)target - (int32)last;
+    if (delta >  step) return (int16)((int32)last + step);
+    if (delta < -step) return (int16)((int32)last - step);
+    return target;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -99,6 +119,8 @@ void W_Motor_Init(void)
     w_motor_link_age_ms = W_MOTOR_LINK_TIMEOUT_MS;
     w_motor_request_age_ms = 0;
     w_motor_brake_locked = 1;
+    w_motor_last_duty_1 = 0;
+    w_motor_last_duty_2 = 0;
 
     uart_init(W_MOTOR_UART,
               W_MOTOR_UART_BAUDRATE,
@@ -124,8 +146,19 @@ void W_Motor_SetDuty(int32 motor1_duty, int32 motor2_duty)
 
     if (w_motor_brake_locked)
     {
+        // 刹车是安全动作，必须立即到 0，不走斜坡
         motor1_duty = 0;
         motor2_duty = 0;
+        w_motor_last_duty_1 = 0;
+        w_motor_last_duty_2 = 0;
+    }
+    else
+    {
+        // 斜坡在极性之前做，这样限的是"实际加在电机上的"变化率
+        motor1_duty = W_Motor_Slew(w_motor_last_duty_1, W_Motor_LimitDuty(motor1_duty));
+        motor2_duty = W_Motor_Slew(w_motor_last_duty_2, W_Motor_LimitDuty(motor2_duty));
+        w_motor_last_duty_1 = (int16)motor1_duty;
+        w_motor_last_duty_2 = (int16)motor2_duty;
     }
 
     motor1_duty = (int32)W_Motor_LimitDuty(motor1_duty) * MOTOR_DIR_A;
@@ -221,21 +254,17 @@ void W_Motor_Tick1ms(void)
         w_motor_link_age_ms++;
     }
 
-    if (w_motor_link_age_ms >= W_MOTOR_LINK_TIMEOUT_MS)
+    // 转速请求无条件周期补发：驱动收到一次 0x02 后是否持续 10ms 一帧取决于固件版本，
+    // 只在断链时补发的话，一旦第一帧请求发早于驱动上电就再也要不回转速了。
+    // 0x02 不喂失控保护看门狗，占空比帧由 control_loop 每 1ms 单独下发。
+    if (w_motor_request_age_ms < W_MOTOR_SPEED_REQUEST_MS)
     {
-        if (w_motor_request_age_ms < W_MOTOR_SPEED_REQUEST_MS)
-        {
-            w_motor_request_age_ms++;
-        }
-        else
-        {
-            w_motor_request_age_ms = 0;
-            W_Motor_SendFrame(W_MOTOR_GET_SPEED_CMD, 0, 0, 0, 0);
-        }
+        w_motor_request_age_ms++;
     }
     else
     {
         w_motor_request_age_ms = 0;
+        W_Motor_SendFrame(W_MOTOR_GET_SPEED_CMD, 0, 0, 0, 0);
     }
 }
 

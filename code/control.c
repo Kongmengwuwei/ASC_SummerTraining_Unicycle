@@ -40,6 +40,16 @@ uint8  g_vision_active_elem = 0;                // 最新元素编号
 uint8  g_vision_island_state = 0;               // 最新环岛状态号，0=空闲
 float  g_vision_speed_scale = 1.0f;             // 元素建议速度倍率，Run 尚未使用
 uint8  g_vision_stop_request = 0;               // 元素停车请求，Run 尚未使用
+float  g_vision_fps = 0.0f;                     // CPU1 出帧率(帧/s)，1ms 中断每 VISION_FPS_WIN_MS 结算一次
+float  g_vision_vsync_fps = 0.0f;               // 摄像头 VSYNC 频率(帧/s)
+float  g_vision_dma_fps = 0.0f;                 // DMA 完整帧频率(帧/s)
+float  g_vision_drop_fps = 0.0f;                // CPU1 忙导致的丢帧频率(帧/s)
+uint32 g_vision_grab_us = 0;                    // 最近一帧 ROI 复制耗时
+uint32 g_vision_binarize_us = 0;                // 最近一帧大津与二值化耗时
+uint32 g_vision_edge_us = 0;                    // 最近一帧八邻域提边耗时
+uint32 g_vision_element_us = 0;                 // 最近一帧元素处理耗时
+uint32 g_vision_process_us = 0;                 // 最近一帧 CPU1 总处理耗时
+uint32 g_vision_process_max_us = 0;             // 本次摄像头启动后的最大处理耗时
 
 // ====================== 内部状态 ======================
 
@@ -50,19 +60,18 @@ static pid_t y_angle_pid, y_rate_pid;               // Yaw  ：转向外环 / �
 static float s_speed_ramp;                      // 斜坡后的速度环实际目标(counts/20ms)
 static float s_lean_raw;                        // 压弯零点累加值，g_lean_offset 限速率跟随它
 
-// Test/Wave 状态，前台启停、1ms 中断读
+// Test 状态，前台启停、1ms 中断读
 static volatile uint8 s_test_running;           // 单轴测试运行标志
 static tune_axis_t s_test_axis;                 // 当前测试轴
 static tune_ring_t s_test_ring;                 // 当前测试的最高启用环
 static uint16 s_test_tick;                      // 测试用 1ms 分频计数
 static int16  s_test_speed_c;                   // 测试用行进轮速度快照
-static volatile uint8 s_control_test_active;    // 菜单看到的 Test/Wave 运行标志
+static volatile uint8 s_control_test_active;    // 菜单看到的 Test 运行标志
 static volatile control_test_status_t s_test_status;    // 最近一次启动结果
 
-// 架空点动状态，倒计时在 1ms 中断里跑，菜单卡死也会自动停
+// 架空点动状态，没有时限，靠再按一次动作行、返回键或驱动掉线停
 static volatile motor_jog_t s_jog_target;       // 点动目标电机
 static volatile int16       s_jog_duty;         // 点动占空比，带符号
-static volatile uint16      s_jog_left_ms;      // 点动剩余时间(ms)
 
 // 姿态与驱动通信的阻断原因，只在本文件内用来生成菜单提示
 typedef enum
@@ -115,6 +124,27 @@ static uint8 ctrl_is_finite(float v)
     if (v != v) return 0;                               // NaN
     if (v > 3.0e38f || v < -3.0e38f) return 0;          // ±Inf 或量级异常
     return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     判断动量轮是否已经跑飞。回收环旁路时输出会停在非零值上，飞轮一路加速到极速，
+//              触发 CYT2BL3 堵转保护后必须重启驱动，所以抢在它之前停
+// 参数说明     void
+// 返回参数     uint8           1=已超 FLY_SPEED_LIMIT 0=正常或保护关闭
+// 使用示例     if (fly_overspeed()) control_jog_stop();
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 fly_overspeed(void)
+{
+    int32 limit = FLY_SPEED_LIMIT;
+    int32 speed_a;
+    int32 speed_b;
+
+    if (limit <= 0) return 0;               // 0 表示关掉这道保护
+    speed_a = (int32)W_Motor_GetSpeed1();
+    speed_b = (int32)W_Motor_GetSpeed2();
+    if (speed_a < 0) speed_a = -speed_a;
+    if (speed_b < 0) speed_b = -speed_b;
+    return (uint8)(speed_a > limit || speed_b > limit);
 }
 
 // ====================== 串级公共部分 ======================
@@ -238,8 +268,8 @@ static float roll_cascade_ctrl(float zero, uint8 run5, uint8 run20)
     // 回收环把飞轮差速拉回 0，防止动量轮越转越快最后饱和、失去可用力矩
     if (run20) pid_loc_calc(&r_rcy_pid, -(float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1()));
     if (run5)  pid_loc_calc(&r_angle_pid, r_rcy_pid.out + att.roll - zero);                    // 角度环，位置式
-    pid_inc_calc(&r_rate_pid, att.roll_rate + r_angle_pid.out);                                // 角速度环，增量式
-    r_rate_pid.out = constrain_float(r_rate_pid.out, -FLYWHEEL_OUT_LIMIT, FLYWHEEL_OUT_LIMIT); // 增量累积限幅防饱和
+    pid_inc_calc_limited(&r_rate_pid, att.roll_rate + r_angle_pid.out,
+                         -FLYWHEEL_OUT_LIMIT, FLYWHEEL_OUT_LIMIT);                              // 角速度环，增量式
 
     g_bal_dbg.r_rcy_set  = 0.0f;
     g_bal_dbg.r_rcy_fb   = (float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1());
@@ -263,8 +293,8 @@ static float pitch_cascade_ctrl(float zero, uint8 run5, uint8 run20)
     // 目标用斜坡后的 s_speed_ramp，不用 g_target_distance，避免目标阶跃踹速度环
     if (run20) pid_loc_calc(&p_vel_pid, (float)Y_Motor_GetSpeed20ms() - s_speed_ramp);
     if (run5)  pid_loc_calc(&p_angle_pid, p_vel_pid.out - att.pitch + zero);             // 角度环，位置式
-    pid_inc_calc(&p_rate_pid, -att.pitch_rate + p_angle_pid.out);                        // 角速度环，增量式
-    p_rate_pid.out = constrain_float(p_rate_pid.out, -DRIVE_OUT_LIMIT, DRIVE_OUT_LIMIT); // 增量累积限幅
+    pid_inc_calc_limited(&p_rate_pid, -att.pitch_rate + p_angle_pid.out,
+                         -DRIVE_OUT_LIMIT, DRIVE_OUT_LIMIT);                             // 角速度环，增量式
 
     g_bal_dbg.p_vel_set  = s_speed_ramp;
     g_bal_dbg.p_vel_fb   = (float)Y_Motor_GetSpeed20ms();
@@ -405,7 +435,7 @@ static void cascade_run(void)
     }
 }
 
-// ====================== 单轴 Test/Wave ======================
+// ====================== 单轴 Test ======================
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     按测试限幅驱动行进轮 C，动量轮保持软件刹车锁死
@@ -422,21 +452,35 @@ static void test_drive_c_output(float command)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     检查 Test/Wave 的输入是否可信：IMU、标定、驱动通信、NaN 和保护角
+// 函数简介     检查 Test 的输入是否可信：IMU、标定、驱动通信、NaN 和保护角
 // 参数说明     void
-// 返回参数     uint8           1=可以继续 0=必须立即停止测试
-// 使用示例     if (!test_input_valid()) test_stop();
+// 返回参数     control_test_status_t OK 表示可以继续，其余为具体的停机原因
+// 使用示例     if (test_input_reason() != CTRL_TEST_STATUS_OK) test_stop();
 //-------------------------------------------------------------------------------------------------------------------
-static uint8 test_input_valid(void)
+static control_test_status_t test_input_reason(void)
 {
-    if (!g_imu_ok || imu_link_lost() || attitude_diverged() || !attitude_converged()) return 0;
-    if (imu_calib_state() != IMU_CALIB_OK) return 0;
-    if (s_test_axis != TUNE_AXIS_PITCH && W_Motor_LinkLost()) return 0;  // 动飞轮就要求驱动在线
+    // 逐条分开判，菜单要显示到底是哪一条把测试停掉的
+    if (!g_imu_ok)                          return CTRL_TEST_STATUS_IMU_FAIL;
+    if (imu_link_lost())                    return CTRL_TEST_STATUS_IMU_LOST;
+    if (attitude_diverged())                return CTRL_TEST_STATUS_ATT_DIVERGED;
+    if (!attitude_converged())              return CTRL_TEST_STATUS_ATT_CONVERGING;
+    if (imu_calib_state() != IMU_CALIB_OK)  return CTRL_TEST_STATUS_IMU_CALIB;
+
+    // 动飞轮就要求驱动在线，Pitch 只驱动 C 轮不受此限
+    if (s_test_axis != TUNE_AXIS_PITCH && W_Motor_LinkLost())
+        return CTRL_TEST_STATUS_BLDC_LOST;
+
+    // NaN/Inf 必须排在保护角之前，fabsf(NaN) > 阈值 恒假
     if (!ctrl_is_finite(att.roll) || !ctrl_is_finite(att.pitch) || !ctrl_is_finite(att.roll_rate) ||
-        !ctrl_is_finite(att.pitch_rate) || !ctrl_is_finite(imu.gyro_z)) return 0;
-    if (fabsf(att.roll - g_roll_zero) > ROLL_PROTECT_ANGLE) return 0;
-    if (fabsf(att.pitch - g_pitch_zero) > PITCH_PROTECT_ANGLE) return 0;
-    return 1;
+        !ctrl_is_finite(att.pitch_rate) || !ctrl_is_finite(imu.gyro_z))
+        return CTRL_TEST_STATUS_ATT_DIVERGED;
+
+    if (fabsf(att.roll  - g_roll_zero)  > ROLL_PROTECT_ANGLE)  return CTRL_TEST_STATUS_ROLL_PROT;
+    if (fabsf(att.pitch - g_pitch_zero) > PITCH_PROTECT_ANGLE) return CTRL_TEST_STATUS_PITCH_PROT;
+
+    if (s_test_axis != TUNE_AXIS_PITCH && fly_overspeed())
+        return CTRL_TEST_STATUS_FLY_OVERSPEED;
+    return CTRL_TEST_STATUS_OK;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -465,8 +509,8 @@ static float roll_test_ctrl(uint8 run5, uint8 run20)
         pid_reset(&r_angle_pid);
     }
 
-    pid_inc_calc(&r_rate_pid, att.roll_rate + r_angle_pid.out);
-    r_rate_pid.out = constrain_float(r_rate_pid.out, -BAL_TEST_FLY_LIMIT, BAL_TEST_FLY_LIMIT);
+    pid_inc_calc_limited(&r_rate_pid, att.roll_rate + r_angle_pid.out,
+                         -BAL_TEST_FLY_LIMIT, BAL_TEST_FLY_LIMIT);
 
     g_bal_dbg.r_rcy_set = 0.0f;
     g_bal_dbg.r_rcy_fb  = (float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1());
@@ -509,8 +553,8 @@ static float pitch_test_ctrl(uint8 run5, uint8 run20)
         pid_reset(&p_angle_pid);
     }
 
-    pid_inc_calc(&p_rate_pid, -att.pitch_rate + p_angle_pid.out);
-    p_rate_pid.out = constrain_float(p_rate_pid.out, -BAL_TEST_DRIVE_LIMIT, BAL_TEST_DRIVE_LIMIT);
+    pid_inc_calc_limited(&p_rate_pid, -att.pitch_rate + p_angle_pid.out,
+                         -BAL_TEST_DRIVE_LIMIT, BAL_TEST_DRIVE_LIMIT);
 
     g_bal_dbg.p_vel_set  = s_speed_ramp;
     g_bal_dbg.p_vel_fb   = (float)s_test_speed_c;
@@ -551,7 +595,7 @@ static float yaw_test_ctrl(uint8 run5)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     启动单轴 Test/Wave，只闭对应轴，比选中环更外的环全部旁路
+// 函数简介     启动单轴 Test，只闭对应轴，比选中环更外的环全部旁路
 // 参数说明     axis/ring       测试轴与最高启用环
 // 返回参数     uint8           1=启动成功 0=轴环组合非法
 // 使用示例     test_start(TUNE_AXIS_PITCH, TUNE_RING_RATE);
@@ -582,7 +626,7 @@ static uint8 test_start(tune_axis_t axis, tune_ring_t ring)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     停止单轴 Test/Wave，清全部 PID 状态并停三电机
+// 函数简介     停止单轴 Test，清全部 PID 状态并停三电机
 // 参数说明     void
 // 返回参数     void
 // 使用示例     test_stop();
@@ -607,7 +651,7 @@ static void test_stop(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     跑一拍单轴 Test/Wave，输入不合法或输出发散时自动停车
+// 函数简介     跑一拍单轴 Test，输入不合法或输出发散时自动停车
 // 参数说明     void
 // 返回参数     void
 // 使用示例     test_run();
@@ -618,10 +662,14 @@ static void test_run(void)
     uint8 run20;
     float output;
 
+    control_test_status_t reason;
+
     if (!s_test_running) return;
-    if (!test_input_valid())
+    reason = test_input_reason();
+    if (reason != CTRL_TEST_STATUS_OK)
     {
         test_stop();
+        s_test_status = reason;         // 排在 test_stop 之后，别被它的通用状态码盖掉
         return;
     }
 
@@ -641,7 +689,12 @@ static void test_run(void)
     if (s_test_axis == TUNE_AXIS_ROLL)
     {
         output = roll_test_ctrl(run5, run20);
-        if (!ctrl_is_finite(output)) { test_stop(); return; }
+        if (!ctrl_is_finite(output))
+        {
+            test_stop();
+            s_test_status = CTRL_TEST_STATUS_OUTPUT_INVALID;
+            return;
+        }
         g_pwm_roll = output;
         g_motor_a = (int16)(-output);
         g_motor_b = (int16)(output);
@@ -651,15 +704,28 @@ static void test_run(void)
     else if (s_test_axis == TUNE_AXIS_PITCH)
     {
         output = pitch_test_ctrl(run5, run20);
-        if (!ctrl_is_finite(output)) { test_stop(); return; }
+        if (!ctrl_is_finite(output))
+        {
+            test_stop();
+            s_test_status = CTRL_TEST_STATUS_OUTPUT_INVALID;
+            return;
+        }
         g_pwm_pitch = output;
         g_motor_c = (int16)output;
+        // Pitch 只驱动 C 轮，但每拍仍要给 A/B 下发零输出帧，
+        // 否则整段测试期间 CYT2BL3 收不到帧，会闩进失控保护
+        W_Motor_Stop();
         test_drive_c_output(output);
     }
     else
     {
         output = yaw_test_ctrl(run5);
-        if (!ctrl_is_finite(output)) { test_stop(); return; }
+        if (!ctrl_is_finite(output))
+        {
+            test_stop();
+            s_test_status = CTRL_TEST_STATUS_OUTPUT_INVALID;
+            return;
+        }
         g_pwm_yaw = output;
         g_motor_a = (int16)output;
         g_motor_b = (int16)output;
@@ -687,7 +753,7 @@ static control_block_t control_attitude_block_reason(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     把阻断原因翻译成 Test/Wave 状态码
+// 函数简介     把阻断原因翻译成 Test 状态码
 // 参数说明     block           阻断原因
 // 返回参数     control_test_status_t 对应状态码
 // 使用示例     s_test_status = control_block_to_test_status(block);
@@ -731,15 +797,23 @@ void control_init(void)
     g_vision_island_state = 0;
     g_vision_speed_scale = 1.0f;
     g_vision_stop_request = 0;
+    g_vision_fps = 0.0f;
+    g_vision_vsync_fps = 0.0f;
+    g_vision_dma_fps = 0.0f;
+    g_vision_drop_fps = 0.0f;
+    g_vision_grab_us = 0;
+    g_vision_binarize_us = 0;
+    g_vision_edge_us = 0;
+    g_vision_element_us = 0;
+    g_vision_process_us = 0;
+    g_vision_process_max_us = 0;
     s_control_test_active = 0;
     s_test_status = CTRL_TEST_STATUS_OK;
     s_jog_target = MOTOR_JOG_NONE;
     s_jog_duty = 0;
-    s_jog_left_ms = 0;
 
     param_init();
     key_init(CTRL_DIV_KEY);             // 扫描周期必须等于下面 control_loop 里调 key_scanner 的分频
-    W_Motor_Init();                     // 上电锁定 A/B 软件刹车并请求转速回传
     Y_Motor_Init();                     // C 轮 PWM/DIR 与脉冲方向编码器
 
     // 三轴串级初值
@@ -768,19 +842,24 @@ void control_init(void)
     s_test_tick = 0;
     s_test_speed_c = 0;
 
-    vofa_init();
+    vofa_init();                        // 无线转串口模块，波形与调参的唯一通道
 
     g_imu_ok = (imu_init() == 0) ? 1 : 0;
     if (g_imu_ok)
     {
-        imu_calibrate();
+        imu_calibrate();                // 600~1800ms 阻塞，期间没有任何东西在跑
         attitude_init();
     }
+
+    // W_Motor_Init() 必须排在这里：CYT2BL3 的失控保护是 500ms 收不到占空比指令就闩死，
+    // 而上面的静止标定要阻塞 600~1800ms。先初始化就等于开机必然把驱动闩进保护。
+    // 放在这里，第一帧占空比和下面 1ms 中断开始连续下发之间几乎没有间隔。
+    W_Motor_Init();                     // 上电锁定 A/B 软件刹车并请求转速回传
     pit_ms_init(CTRL_PIT_CH, CTRL_PERIOD_MS);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     立即停止 Test/Wave 与点动，三电机清零并锁死动量轮软件刹车
+// 函数简介     立即停止 Test 与点动，三电机清零并锁死动量轮软件刹车
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_stop();
@@ -803,6 +882,7 @@ void control_stop(void)
 uint8 control_jog_start(motor_jog_t target, uint8 forward)
 {
     control_block_t block;
+    int   duty_i;
     int16 duty;
 
     if (target == MOTOR_JOG_NONE || start_flag != START_STOP || s_test_running)
@@ -823,12 +903,15 @@ uint8 control_jog_start(motor_jog_t target, uint8 forward)
         return 0;
     }
 
-    duty = (int16)((target == MOTOR_JOG_C) ? MOTOR_JOG_DRIVE_DUTY : MOTOR_JOG_FLY_DUTY);
+    // 占空比是运行参数，Params -> Motor 的 Duty Fly / Duty Drv 两行可调
+    duty_i = (target == MOTOR_JOG_C) ? JOG_DUTY_DRIVE : JOG_DUTY_FLY;
+    if (duty_i < 0)     duty_i = 0;
+    if (duty_i > 10000) duty_i = 10000;          // 转 int16 前先钳到满量程
+    duty = (int16)duty_i;
     if (!forward) duty = (int16)(-duty);
 
     if (target != MOTOR_JOG_C) W_Motor_Release();
     s_jog_duty = duty;
-    s_jog_left_ms = MOTOR_JOG_MS;
     g_vofa_mode = VOFA_MOTOR;
     s_jog_target = target;              // 最后赋值：1ms 中断读到 target 时其余字段已就绪
     s_test_status = CTRL_TEST_STATUS_OK;
@@ -846,7 +929,6 @@ void control_jog_stop(void)
     uint8 was_running = (uint8)(s_jog_target != MOTOR_JOG_NONE);
 
     s_jog_target = MOTOR_JOG_NONE;
-    s_jog_left_ms = 0;
     s_jog_duty = 0;
     g_motor_a = 0;
     g_motor_b = 0;
@@ -877,12 +959,12 @@ static void control_jog_run(void)
     motor_jog_t target = s_jog_target;
 
     if (target == MOTOR_JOG_NONE) return;
-    if (s_jog_left_ms == 0u || (target != MOTOR_JOG_C && W_Motor_LinkLost()))
+    // 点动没有时限，一直转到再按一次动作行、按返回键、驱动掉线或飞轮超速为止
+    if (target != MOTOR_JOG_C && (W_Motor_LinkLost() || fly_overspeed()))
     {
         control_jog_stop();
         return;
     }
-    s_jog_left_ms--;
 
     g_motor_a = (int16)((target == MOTOR_JOG_A) ? s_jog_duty : 0);
     g_motor_b = (int16)((target == MOTOR_JOG_B) ? s_jog_duty : 0);
@@ -900,7 +982,7 @@ static void control_jog_run(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     启动指定轴与最高启用环的 Test/Wave
+// 函数简介     启动指定轴与最高启用环的 Test
 // 参数说明     axis/ring       测试轴与最高启用环
 // 返回参数     uint8           1=已启动 0=被安全条件阻止
 // 使用示例     control_test_start(TUNE_AXIS_PITCH, TUNE_RING_RATE);
@@ -946,7 +1028,7 @@ uint8 control_test_start(tune_axis_t axis, tune_ring_t ring)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     立即停止 Test/Wave 并关闭波形输出
+// 函数简介     立即停止 Test 并关闭波形输出
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_test_stop();
@@ -959,7 +1041,7 @@ void control_test_stop(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     查询 Test/Wave 是否正在运行，顺带识别被安全闸停掉的情况
+// 函数简介     查询 Test 是否正在运行，顺带识别被安全闸停掉的情况
 // 参数说明     void
 // 返回参数     uint8           1=运行中 0=已停止
 // 使用示例     if (control_test_running()) { ... }
@@ -969,13 +1051,14 @@ uint8 control_test_running(void)
     if (s_control_test_active && !s_test_running)
     {
         s_control_test_active = 0;
-        s_test_status = CTRL_TEST_STATUS_SAFETY;
+        if (s_test_status == CTRL_TEST_STATUS_OK)
+            s_test_status = CTRL_TEST_STATUS_SAFETY;
     }
     return s_control_test_active;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     读取最近一次 Test/Wave 的启动结果或停止原因
+// 函数简介     读取最近一次 Test 的启动结果或停止原因
 // 参数说明     void
 // 返回参数     control_test_status_t 状态码
 // 使用示例     status = control_test_last_status();
@@ -996,6 +1079,15 @@ static void control_vision_exchange(uint8 publish_feedback)
 {
     static uint32 input_seq;            // 本核发布序号，用于给结果配对
     static uint32 last_frame_seq;       // 上次已处理的视觉帧序号
+    static uint32 fps_win_start_ms;     // 帧率统计窗口起点(ms)
+    static uint16 fps_frames;           // 本窗口内收到的新帧数
+    static uint32 camera_vsync_count;    // 最近一次收到的摄像头 VSYNC 累计值
+    static uint32 camera_dma_count;      // 最近一次收到的 DMA 完整帧累计值
+    static uint32 camera_drop_count;     // 最近一次收到的忙丢帧累计值
+    static uint32 last_vsync_count;      // 上个统计窗口的 VSYNC 累计值
+    static uint32 last_dma_count;        // 上个统计窗口的 DMA 累计值
+    static uint32 last_drop_count;       // 上个统计窗口的忙丢帧累计值
+    uint32 fps_win_ms;                  // 本窗口实际长度(ms)
     vision_feedback_t feedback;
     vision_result_t result;
 
@@ -1011,12 +1103,10 @@ static void control_vision_exchange(uint8 publish_feedback)
         feedback.err_offset = g_param.err_offset;
         feedback.speed_ramp_gain = g_param.speed_ramp_gain;
         feedback.speed_ring_gain = g_param.speed_ring_gain;
-        feedback.obs_narrow_ratio = g_param.obs_narrow_ratio;
         feedback.elem_en_zebra = (uint8)g_param.elem_en_zebra;
         feedback.elem_en_cross = (uint8)g_param.elem_en_cross;
         feedback.elem_en_ring = (uint8)g_param.elem_en_ring;
         feedback.elem_en_ramp = (uint8)g_param.elem_en_ramp;
-        feedback.elem_en_obstacle = (uint8)g_param.elem_en_obstacle;
         feedback.zebra_jump_cnt = g_param.zebra_jump_cnt;
         feedback.cross_lost_cnt = g_param.cross_lost_cnt;
         feedback.ring_angle = g_param.ring_angle;
@@ -1025,7 +1115,8 @@ static void control_vision_exchange(uint8 publish_feedback)
         feedback.ring_side_offset = g_param.ring_side_offset;
         feedback.ring_timeout_cnt = g_param.ring_timeout_cnt;
         feedback.elem_guard_cnt = g_param.elem_guard_cnt;
-        feedback.obs_line_offset = g_param.obs_line_offset;
+        feedback.road_wide_near = g_param.road_wide_near;
+        feedback.road_wide_far = g_param.road_wide_far;
         feedback.cam_exposure = (uint16)g_param.cam_exposure;
         feedback.reserved = 0;
         vision_feedback_publish(&feedback);
@@ -1040,6 +1131,10 @@ static void control_vision_exchange(uint8 publish_feedback)
         last_frame_seq = result.frame_seq;
         g_vision_frame_seq = result.frame_seq;
         g_vision_age_ms = 0;
+        if (fps_frames < 0xFFFFu) fps_frames++;
+        camera_vsync_count = result.camera_vsync_count;
+        camera_dma_count = result.camera_dma_count;
+        camera_drop_count = result.camera_drop_count;
         g_vision_threshold = result.threshold;
         g_vision_search_stop = result.search_stop_line;
         g_vision_left_lost = result.left_lost;
@@ -1050,6 +1145,12 @@ static void control_vision_exchange(uint8 publish_feedback)
         g_vision_speed_scale = result.speed_scale;
         g_vision_stop_request = result.stop_request;
         g_track_valid = result.track_valid;
+        g_vision_grab_us = result.grab_us;
+        g_vision_binarize_us = result.binarize_us;
+        g_vision_edge_us = result.edge_us;
+        g_vision_element_us = result.element_us;
+        g_vision_process_us = result.process_us;
+        g_vision_process_max_us = result.process_max_us;
 
         // 丢线不等于居中：偏差回 0 的同时丢线计数往上走，控制层据此判断视觉是否可信
         if (result.track_valid)
@@ -1062,6 +1163,29 @@ static void control_vision_exchange(uint8 publish_feedback)
             if (g_track_lost_frames < 60000u) g_track_lost_frames++;
             g_dbg_error = 0.0f;
         }
+    }
+
+    // 帧率结算。本函数每 1ms 调一次，所以窗口长度就是 VISION_FPS_WIN_MS。
+    // 摄像头停帧时窗口内计数为 0，读数自然掉到 0，不需要另设超时。
+    fps_win_ms = g_control_uptime_ms - fps_win_start_ms;
+    if (fps_win_ms >= VISION_FPS_WIN_MS)
+    {
+        uint32 vsync_frames = (camera_vsync_count >= last_vsync_count)
+                            ? (camera_vsync_count - last_vsync_count) : camera_vsync_count;
+        uint32 dma_frames = (camera_dma_count >= last_dma_count)
+                          ? (camera_dma_count - last_dma_count) : camera_dma_count;
+        uint32 drop_frames = (camera_drop_count >= last_drop_count)
+                           ? (camera_drop_count - last_drop_count) : camera_drop_count;
+
+        g_vision_fps = (float)fps_frames * 1000.0f / (float)fps_win_ms;
+        g_vision_vsync_fps = (float)vsync_frames * 1000.0f / (float)fps_win_ms;
+        g_vision_dma_fps = (float)dma_frames * 1000.0f / (float)fps_win_ms;
+        g_vision_drop_fps = (float)drop_frames * 1000.0f / (float)fps_win_ms;
+        last_vsync_count = camera_vsync_count;
+        last_dma_count = camera_dma_count;
+        last_drop_count = camera_drop_count;
+        fps_frames = 0;
+        fps_win_start_ms = g_control_uptime_ms;
     }
 }
 
@@ -1117,7 +1241,8 @@ void control_loop(void)
         if (!s_test_running)
         {
             s_control_test_active = 0;
-            s_test_status = CTRL_TEST_STATUS_SAFETY;
+            if (s_test_status == CTRL_TEST_STATUS_OK)
+                s_test_status = CTRL_TEST_STATUS_SAFETY;
         }
     }
     else if (s_jog_target != MOTOR_JOG_NONE)
@@ -1129,6 +1254,7 @@ void control_loop(void)
         cascade_run();
     }
     vofa_snapshot();
+    vofa_tick1ms();                     // 搬运无线串口收发字节，与主循环刷屏解耦
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -1147,17 +1273,3 @@ uint8 control_camera_debug_start(void)
     return g_cam_ok;
 }
 
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     查询 CPU1 是否发布了新的视觉帧
-// 参数说明     void
-// 返回参数     uint8           1=有新帧 0=无新帧
-// 使用示例     if (control_vision_debug()) display_track_view();
-//-------------------------------------------------------------------------------------------------------------------
-uint8 control_vision_debug(void)
-{
-    static uint32 last_frame_seq;       // 上次已提交显示的视觉帧序号
-
-    if (g_vision_frame_seq == 0u || g_vision_frame_seq == last_frame_seq) return 0;
-    last_frame_seq = g_vision_frame_seq;
-    return 1;
-}

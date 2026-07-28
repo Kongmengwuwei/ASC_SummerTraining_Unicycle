@@ -3,13 +3,6 @@
 #include "W_Motor.h"
 #include "control.h"
 
-// Lcf_Tasking_Tricore_Tc.lsl 里 __INTTAB_CPU0 与 __INTTAB_CPU1 是同一个地址
-// LCF_INTVEC0_START，并且只实例化了 int_tab_tc0 一张表，两个核共用它。
-// 所以 IFX_INTERRUPT 的第二个参数一律填 0，由哪个核响应完全由 isr_config.h 的
-// ..._INT_SERVICE 决定。填 1 会生成 intvec_tc1 段，链接脚本里没有对应的 group。
-// 代价是优先级必须全局唯一：两个核的中断撞到同一个优先级会落进同一个表项。
-// 只定义已经初始化的外设中断，未初始化的通道不占用向量表。
-
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     执行 1ms 控制周期
 // 参数说明     void
@@ -53,41 +46,43 @@ IFX_INTERRUPT(dma_ch5_isr, 0, DMA_INT_PRIO)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     处理 UART0 发送中断
+// 函数简介     处理无线转串口模块发送中断
 // 参数说明     void
 // 返回参数     void
-// 使用示例     由 UART0_TX 中断向量调用
+// 使用示例     由 UART2_TX 中断向量调用
 //-------------------------------------------------------------------------------------------------------------------
-IFX_INTERRUPT(uart0_tx_isr, 0, UART0_TX_INT_PRIO)
+IFX_INTERRUPT(uart2_tx_isr, 0, UART2_TX_INT_PRIO)
 {
     interrupt_global_enable(0);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     把 UART0 收到的调参命令字节送进 debug 环形缓冲区
+// 函数简介     把无线转串口模块收到的调参命令字节送进模块自己的环形缓冲
 // 参数说明     void
 // 返回参数     void
-// 使用示例     由 UART0_RX 中断向量调用
+// 使用示例     由 UART2_RX 中断向量调用
 //-------------------------------------------------------------------------------------------------------------------
-IFX_INTERRUPT(uart0_rx_isr, 0, UART0_RX_INT_PRIO)
+IFX_INTERRUPT(uart2_rx_isr, 0, UART2_RX_INT_PRIO)
 {
     interrupt_global_enable(0);
 
-#if DEBUG_UART_USE_INTERRUPT
-    debug_interrupr_handler();
-#endif
+    // 这里不能先调 IfxAsclin_Asc_isrReceive()：它会把硬件 FIFO 搬进 iLLD 的软件环，
+    // 而 wireless_uart_callback() 走的是 uart_query_byte()，读的是硬件 FIFO，会读空。
+    // 接收 FIFO 中断门限是 1 字节，一个字节一次中断，回调每次读一个正好对上。
+    // 与 UART3 的 W_Motor_RxHandler() 同一套写法。
+    wireless_module_uart_handler();
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     处理 UART0 错误中断
+// 函数简介     处理无线转串口模块错误中断
 // 参数说明     void
 // 返回参数     void
-// 使用示例     由 UART0_ER 中断向量调用
+// 使用示例     由 UART2_ER 中断向量调用
 //-------------------------------------------------------------------------------------------------------------------
-IFX_INTERRUPT(uart0_er_isr, 0, UART0_ER_INT_PRIO)
+IFX_INTERRUPT(uart2_er_isr, 0, UART2_ER_INT_PRIO)
 {
     interrupt_global_enable(0);
-    IfxAsclin_Asc_isrError(&uart0_handle);
+    IfxAsclin_Asc_isrError(&uart2_handle);
 }
 
 //-------------------------------------------------------------------------------------------------------------------

@@ -39,6 +39,17 @@ typedef struct
     uint32      frame_seq;          // 视觉帧序号，单调递增
     uint32      input_seq;          // 本帧用到的 CPU0 参数快照序号
     uint32      heartbeat;          // CPU1 主循环心跳
+    uint32      camera_vsync_count; // 摄像头 VSYNC 累计次数
+    uint32      camera_dma_count;   // DMA 完整帧累计次数
+    uint32      camera_drop_count;  // 上一帧未消费导致的累计丢帧数
+    uint32      grab_us;            // ROI 安全复制耗时
+    uint32      binarize_us;        // 大津阈值与二值化耗时
+    uint32      border_us;          // 二值图边框处理耗时
+    uint32      edge_us;            // 八邻域提边耗时
+    uint32      midline_us;         // 普通中线构建耗时
+    uint32      element_us;         // 元素处理与补线后重建耗时
+    uint32      process_us;         // CPU1 整帧处理耗时
+    uint32      process_max_us;     // 本次启动后的最大整帧处理耗时
     float       track_error;        // 中线偏差，track_valid=0 时恒为 0
     float       speed_scale;        // 元素建议速度倍率，Run 尚未使用
     uint16      threshold;          // 本帧大津阈值
@@ -67,8 +78,7 @@ typedef struct
     float  err_offset;              // 中线偏差零点
     float  speed_ramp_gain;         // 坡道降速倍率
     float  speed_ring_gain;         // 环岛降速倍率
-    float  obs_narrow_ratio;        // 路障路宽收窄判据比例
-    int32  zebra_jump_cnt;          // 斑马线底行跳变阈值
+    int32  zebra_jump_cnt;          // 斑马线横向跳变阈值
     int32  cross_lost_cnt;          // 十字丢线行数阈值
     int32  ring_angle;              // 环岛转角阈值(°)
     int32  ring_s2_cnt_l;           // 左环状态2 里程阈值
@@ -76,13 +86,13 @@ typedef struct
     int32  ring_side_offset;        // 环岛单边巡线横向补偿
     int32  ring_timeout_cnt;        // 环岛单状态超时帧数
     int32  elem_guard_cnt;          // 元素退出后的屏蔽帧数
-    int32  obs_line_offset;         // 路障避障横向补偿
+    int32  road_wide_near;          // 近端标准赛道宽度(像素)，算法行 IMG_H-1
+    int32  road_wide_far;           // 远端标准赛道宽度(像素)，算法行 0
     uint16 cam_exposure;            // 曝光时间
     uint8  elem_en_zebra;           // 斑马线使能
     uint8  elem_en_cross;           // 十字使能
     uint8  elem_en_ring;            // 环岛使能
     uint8  elem_en_ramp;            // 坡道使能
-    uint8  elem_en_obstacle;        // 路障使能
     uint8  reserved;                // 结构对齐占位
 } vision_feedback_t;
 

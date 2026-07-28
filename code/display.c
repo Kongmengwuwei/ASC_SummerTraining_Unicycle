@@ -1,14 +1,15 @@
 #include "display.h"
 #include "board_config.h"
+#include "control.h"
 #include "element.h"
 #include "param.h"
 #include "vision_core.h"
 #include "zf_device_ips200.h"
 
-#define IMAGE_PAGE_X       (0)          // 横屏图像区左上角横坐标
-#define IMAGE_PAGE_Y       (57)         // 320x142 图像在状态栏下方 224 像素区域内垂直居中
-#define IMAGE_PAGE_W       (320)        // 横屏图像区宽度
-#define IMAGE_PAGE_H       (142)        // 保持 180x80 原始宽高比，避免赛道纵向拉伸
+#define IMAGE_PAGE_X       (40)         // 图像区在 320 像素宽屏幕内水平居中
+#define IMAGE_PAGE_Y       (74)         // 图像区在状态栏下方垂直居中
+#define IMAGE_PAGE_W       (240)        // 缩短单次 SPI 整图传输时间，减轻扫描撕裂
+#define IMAGE_PAGE_H       (107)        // 接近 180:80 原始宽高比
 
 static disp_mode_t s_mode = DISP_MODE_BIN_LINE;         // 当前显示模式
 static uint8       s_last_mode = 0xFF;                  // 上次已绘制的模式，变了要整屏清一次
@@ -30,7 +31,6 @@ static uint16 image_page_map_x(int col)
     if (col < 0) col = 0;
     if (col >= IMG_W) col = IMG_W - 1;
     x = ((uint32)(col * 2 + 1) * IMAGE_PAGE_W) / (uint32)(IMG_W * 2);
-    if (x >= IMAGE_PAGE_W) x = IMAGE_PAGE_W - 1;
     return (uint16)(IMAGE_PAGE_X + x);
 }
 
@@ -47,7 +47,6 @@ static uint16 image_page_map_y(int row)
     if (row < 0) row = 0;
     if (row >= IMG_H) row = IMG_H - 1;
     y = ((uint32)(row * 2 + 1) * IMAGE_PAGE_H) / (uint32)(IMG_H * 2);
-    if (y >= IMAGE_PAGE_H) y = IMAGE_PAGE_H - 1;
     return (uint16)(IMAGE_PAGE_Y + y);
 }
 
@@ -75,7 +74,7 @@ static void image_page_draw_segment(int col0, int row0, int col1, int row1, uint
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     把 180x80 算法帧放大填满图像区，二值图与灰度图走同一条路径
+// 函数简介     把 180x80 算法帧等比例放大到居中图像区
 // 参数说明     void
 // 返回参数     void
 // 使用示例     image_page_blit();
@@ -181,6 +180,9 @@ static void image_page_draw_header(void)
     // 元素显示名字而不是编号，跑车时一眼就能看出识别成了什么
     ips200_show_string(160, 0,
         element_name((s_frame != 0) ? s_frame->active_elem : (uint8)ELEM_NONE));
+    // 帧率取整显示。它统计的是 CPU1 出帧速度，与本页刷屏速度无关
+    ips200_show_string(216, 0, "F");
+    ips200_show_int(224, 0, (int32)(g_vision_fps + 0.5f), 3);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -224,7 +226,8 @@ void display_image_page_enter(void)
 {
     if (s_image_page_active) return;
 
-    ips200_set_dir(IPS200_CROSSWISE);
+    // 横屏两个方向差 180°，这里选的是站在车尾侧看的方向
+    ips200_set_dir(IPS200_CROSSWISE_180);
     ips200_init(IPS200_TYPE_SPI);
     ips200_set_font(IPS200_8X16_FONT);
     ips200_set_color(RGB565_WHITE, RGB565_BLACK);

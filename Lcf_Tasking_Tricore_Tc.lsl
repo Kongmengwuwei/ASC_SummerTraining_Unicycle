@@ -27,7 +27,7 @@
  *********************************************************************************************************************/
  
 #define LCF_CSA0_SIZE       8k
-#define LCF_USTACK0_SIZE    2k
+#define LCF_USTACK0_SIZE    6k
 #define LCF_ISTACK0_SIZE    1k
 
 #define LCF_CSA1_SIZE       8k
@@ -410,6 +410,7 @@ derivative tc26B
         {
             select "(.text.psram_cpu1*)";
             select "(.text.cpu1_psram*)";
+            select "(.text.cpu1_dsram*)";
         }
     }
     

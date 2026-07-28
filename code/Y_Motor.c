@@ -4,7 +4,7 @@
 
 #include "board_config.h"
 
-// 行进轮 C：DRV8701E 通道 1，PWM = P21_3，DIR = P21_2。
+// 行进轮 C：DRV8701E 通道 1，DIR = P21_4，PWM = P21_5。
 // 编码器是 TIM2 的脉冲方向模式，P33_7 收脉冲、P33_6 收方向。
 // 5ms 读一次硬件计数并清零，内部再累计成 20ms 速度窗口供 Pitch 速度环使用。
 
@@ -12,6 +12,10 @@
 
 #if ((CTRL_DIV_SPEED % Y_MOTOR_ENCODER_PERIOD_MS) != 0)
     #error "CTRL_DIV_SPEED 必须是 Y_MOTOR_ENCODER_PERIOD_MS 的整数倍"
+#endif
+
+#if (DRIVE_OUT_LIMIT > Y_MOTOR_PWM_MAX_DUTY)
+    #error "DRIVE_OUT_LIMIT 不能超过行进轮 PWM 硬件量程"
 #endif
 
 #pragma section all "cpu0_dsram"
@@ -78,7 +82,6 @@ void Y_Motor_SetDuty(int32 duty)
     else if (duty < 0)
         duty -= DRIVE_DEAD_ZONE;
     duty = Y_Motor_LimitDuty(duty);     // 死区补偿后仍不得越过 C 轮控制安全限幅
-    duty = func_limit_ab(duty, -Y_MOTOR_PWM_MAX_DUTY, Y_MOTOR_PWM_MAX_DUTY);
 
     if (duty == 0)
     {
@@ -150,25 +153,6 @@ void Y_Motor_EncoderClear(void)
     y_motor_total_count = 0;
     y_motor_window_count = 0;
     y_motor_window_samples = 0;
-    interrupt_global_enable(interrupt_state);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     原子读取行进轮最近 5ms 计数和累计里程
-// 参数说明     data            编码器快照输出地址
-// 返回参数     void
-// 使用示例     Y_Motor_GetEncoder(&encoder);
-//-------------------------------------------------------------------------------------------------------------------
-void Y_Motor_GetEncoder(y_motor_encoder_data_t *data)
-{
-    uint32 interrupt_state;
-
-    if (data == NULL)
-        return;
-
-    interrupt_state = interrupt_global_disable();
-    data->count_5ms = y_motor_count_5ms;
-    data->total_count = y_motor_total_count;
     interrupt_global_enable(interrupt_state);
 }
 

@@ -1,20 +1,53 @@
 #include "image.h"
 #include "element.h"
+#include "IfxStm.h"
 
 #pragma section all "cpu1_dsram"
 
 Image my_image;                                 // 图像处理结果
 int   Standard_Road_Wide[IMG_H];                // 标准赛宽表
 float g_mid_error = 0.0f;                       // 当前中线偏差
+image_profile_t g_image_profile;                // 最近一帧图像主链耗时
 
-// 八邻域搜索顺序: 左边线顺时针，右边线逆时针
-static const int8 en_seed_l[8][2] = { {0,1},{-1,1},{-1,0},{-1,-1},{0,-1},{ 1,-1},{ 1,0},{ 1,1} };
-static const int8 en_seed_r[8][2] = { {0,1},{ 1,1},{ 1,0},{ 1,-1},{0,-1},{-1,-1},{-1,0},{-1,1} };
+typedef struct
+{
+    int8  black_dx;
+    int8  black_dy;
+    int8  white_dx;
+    int8  white_dy;
+    uint8 blocked_dir;
+    uint8 next_dir;
+} en_step_t;
 
-static uint16 en_pts_l[EN_MAX_PTS][2];          // 左边线生长点
-static uint16 en_pts_r[EN_MAX_PTS][2];          // 右边线生长点
+// 左右边线采用镜像优先级，方向约束用于阻止爬虫立即回头
+static const en_step_t s_en_steps_left[7] =
+{
+    {-1, -1,  0, -1, 2, 7},
+    { 1, -1,  1,  0, 3, 6},
+    { 0, -1,  1, -1, 0xFFu, 0},
+    {-1,  0, -1, -1, 5, 4},
+    { 1,  0,  1,  1, 4, 5},
+    {-1,  1, -1,  0, 6, 3},
+    { 1,  1,  0,  1, 7, 2},
+};
+
+static const en_step_t s_en_steps_right[7] =
+{
+    { 1, -1,  0, -1, 3, 6},
+    {-1, -1, -1,  0, 2, 7},
+    { 0, -1, -1, -1, 0xFFu, 0},
+    { 1,  0,  1, -1, 4, 5},
+    {-1,  0, -1,  1, 5, 4},
+    {-1,  1,  0,  1, 6, 3},
+    { 1,  1,  1,  0, 7, 2},
+};
+
+#define EN_VISITED_BYTES ((IMG_W + 7) / 8)
+static uint8 s_en_visited[IMG_H][EN_VISITED_BYTES];
 
 static uint8 img_gray[IMG_H][IMG_W];            // 灰度帧缓冲区
+static int s_seed_col = IMG_MID_COL;             // 下一帧近端起点种子列
+static int s_last_near_mid = IMG_MID_COL;        // 上一帧近端中线
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     对整数执行限幅
@@ -28,15 +61,32 @@ static int iclip(int x, int lo, int hi)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     读取二值图像像素并处理越界坐标
-// 参数说明     x/y              列/行
-// 返回参数     uint8            IMG_WHITE / IMG_BLACK
-// 使用示例     if (img_pixel(x, y) == IMG_WHITE) ...
+// 函数简介     将 CPU1 STM 时钟差换算为微秒
+// 参数说明     ticks            STM1 计数差
+// 返回参数     uint32           经过四舍五入的微秒数
+// 使用示例     elapsed_us = image_ticks_to_us(now - start);
 //-------------------------------------------------------------------------------------------------------------------
-static uint8 img_pixel(int x, int y)
+static inline uint32 image_ticks_to_us(uint32 ticks)
 {
-    if (x < 0 || x >= IMG_W || y < 0 || y >= IMG_H) return IMG_BLACK;
-    return my_image.image_two_value[y][x];
+    return (ticks + 50u) / 100u;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     按近端和远端赛宽重建标准赛宽表，行 0 是远端，行 IMG_H-1 是近端，中间线性插值
+// 参数说明     near_wide/far_wide 近端与远端标准赛道宽度(像素)，内部钳到 [4, IMG_W-4]
+// 返回参数     void
+// 使用示例     image_set_road_wide(133, 30);
+//-------------------------------------------------------------------------------------------------------------------
+void image_set_road_wide(int near_wide, int far_wide)
+{
+    int i;
+
+    near_wide = iclip(near_wide, 4, IMG_W - 4);
+    far_wide  = iclip(far_wide,  4, IMG_W - 4);
+
+    for (i = 0; i < IMG_H; i++)
+        Standard_Road_Wide[i] = iclip(far_wide + (near_wide - far_wide) * i / (IMG_H - 1),
+                                      4, IMG_W - 4);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -49,10 +99,11 @@ void image_init(void)
 {
     int i;
 
+    memset(&g_image_profile, 0, sizeof(g_image_profile));
+    image_set_road_wide(ROAD_WIDE_NEAR_DEFAULT, ROAD_WIDE_FAR_DEFAULT);
+
     for (i = 0; i < IMG_H; i++)
     {
-        Standard_Road_Wide[i] = iclip(ROAD_WIDE_FAR + (ROAD_WIDE_NEAR - ROAD_WIDE_FAR) * i / (IMG_H - 1),
-                                      4, IMG_W - 4);
         my_image.Left_Line[i]       = 0;
         my_image.Right_Line[i]      = IMG_W - 1;
         my_image.Mid_Line[i]        = IMG_MID_COL;
@@ -69,6 +120,8 @@ void image_init(void)
     my_image.Valid_Row_Top    = -1;
     my_image.Track_Valid      = 0;
     g_mid_error               = 0.0f;
+    s_seed_col                = IMG_MID_COL;
+    s_last_near_mid           = IMG_MID_COL;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -98,13 +151,17 @@ uint8 image_grab(void)
 //-------------------------------------------------------------------------------------------------------------------
 static void image_binarize(void)
 {
-    uint32 hist[256];
+    uint16 hist[256];
     uint32 i, total = 0;
+    uint32 sum_all = 0;
+    uint32 sum_b = 0;
+    uint32 w_b = 0;
+    uint32 w_f;
     int    r, c, threshold = 0, th_first = 0, th_last = 0;
     int    gmin = 255, gmax = 0;
-    float  sum_all = 0.0f, sum_b = 0.0f, w_b = 0.0f, w_f, num, var, var_max = -1.0f;
+    float  num, var, var_max = -1.0f;
 
-    for (i = 0; i < 256; i++) hist[i] = 0;
+    memset(hist, 0, sizeof(hist));
 
     // 隔行隔列统计灰度直方图
     for (r = 0; r < IMG_H; r += 2)
@@ -113,24 +170,29 @@ static void image_binarize(void)
         for (c = 0; c < IMG_W; c += 2)
         {
             uint8 g = src[c];
-            hist[g]++; total++;
+            hist[g]++;
+            total++;
+            sum_all += g;
             if (g < gmin) gmin = g;
             if (g > gmax) gmax = g;
         }
     }
     my_image.Contrast = gmax - gmin;
 
-    for (i = 0; i < 256; i++) sum_all += (float)i * (float)hist[i];
-    for (i = 0; i < 256; i++)
+    // 只在本帧实际灰度范围内搜索阈值，避免固定扫描 0~255。
+    for (i = (uint32)gmin; i <= (uint32)gmax; i++)
     {
-        w_b += (float)hist[i];
-        if (w_b <= 0.0f) continue;
-        w_f = (float)total - w_b;
-        if (w_f <= 0.0f) break;
-        sum_b += (float)i * (float)hist[i];
+        w_b += hist[i];
+        sum_b += i * hist[i];
+        if (w_b == 0u) continue;
+        w_f = total - w_b;
+        if (w_f == 0u) break;
+        if (hist[i] == 0u) continue;
+
         // 使用等价公式计算类间方差
-        num = sum_b * w_f - (sum_all - sum_b) * w_b;
-        var = num * num / (w_b * w_f);
+        num = (float)sum_b * (float)w_f
+            - (float)(sum_all - sum_b) * (float)w_b;
+        var = num * num / ((float)w_b * (float)w_f);
 
         // 记录最大方差平台首尾并取中值
         if (var > var_max)       { var_max = var; th_first = (int)i; th_last = (int)i; }
@@ -143,53 +205,19 @@ static void image_binarize(void)
     {
         const uint8 *src = img_gray[r];
         uint8       *dst = my_image.image_two_value[r];
-        for (c = 0; c < IMG_W; c++)
-            dst[c] = (src[c] >= threshold) ? IMG_WHITE : IMG_BLACK;
-    }
-}
 
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     执行八邻域孤立点滤波并设置图像边框
-// 参数说明     void
-// 返回参数     void
-// 使用示例     image_filter_frame();
-//-------------------------------------------------------------------------------------------------------------------
-static void image_filter_frame(void)
-{
-    int i, j;
-    uint32 num;
-
-    // 使用相邻三行指针完成原地滤波
-    for (i = 1; i < IMG_H - 1; i++)
-    {
-        uint8 *p0 = my_image.image_two_value[i - 1];
-        uint8 *p1 = my_image.image_two_value[i];
-        uint8 *p2 = my_image.image_two_value[i + 1];
-
-        for (j = 1; j < IMG_W - 1; j++)
+        if (r < 2)
         {
-            uint8 v = p1[j];
-
-            num = (uint32)p0[j-1] + p0[j] + p0[j+1]
-                + (uint32)p1[j-1]         + p1[j+1]
-                + (uint32)p2[j-1] + p2[j] + p2[j+1];
-
-            if      (num >= 255u * 5u) { if (v == IMG_BLACK) p1[j] = IMG_WHITE; }
-            else if (num <= 255u * 2u) { if (v == IMG_WHITE) p1[j] = IMG_BLACK; }
+            memset(dst, IMG_BLACK, IMG_W);
+            continue;
         }
-    }
 
-    for (i = 0; i < IMG_H; i++)
-    {
-        my_image.image_two_value[i][0]         = IMG_BLACK;
-        my_image.image_two_value[i][1]         = IMG_BLACK;
-        my_image.image_two_value[i][IMG_W - 2] = IMG_BLACK;
-        my_image.image_two_value[i][IMG_W - 1] = IMG_BLACK;
-    }
-    for (j = 0; j < IMG_W; j++)
-    {
-        my_image.image_two_value[0][j] = IMG_BLACK;
-        my_image.image_two_value[1][j] = IMG_BLACK;
+        dst[0] = IMG_BLACK;
+        dst[1] = IMG_BLACK;
+        for (c = 2; c < IMG_W - 2; c++)
+            dst[c] = (src[c] >= threshold) ? IMG_WHITE : IMG_BLACK;
+        dst[IMG_W - 2] = IMG_BLACK;
+        dst[IMG_W - 1] = IMG_BLACK;
     }
 }
 
@@ -202,13 +230,18 @@ static void image_filter_frame(void)
 static uint8 en_get_start(int seed_col, int *sl, int *sr)
 {
     int row, lx, rx;
+    int col, run_left, run_right, run_width;
+    int best_row = -1;
+    int best_left = 0;
+    int best_right = 0;
+    int best_width = 0;
     uint8 side;
 
     seed_col = iclip(seed_col, EN_COL_MIN_LIMIT, EN_COL_MAX_LIMIT);
 
+    // 优先沿用上一帧近端中线，正常行驶时不扫描整行
     for (row = EN_START_ROW_BOTTOM; row >= EN_START_ROW_TOP; row--)
     {
-        if (row < 0 || row >= IMG_H) continue;
         if (my_image.image_two_value[row][seed_col] != IMG_WHITE) continue;
 
         for (lx = seed_col; lx > 0         && my_image.image_two_value[row][lx] == IMG_WHITE; lx--) { }
@@ -224,45 +257,116 @@ static uint8 en_get_start(int seed_col, int *sl, int *sr)
         sr[0] = rx; sr[1] = row;
         return side;
     }
+
+    // 起点丢失时寻找底部区域最宽白色连通段，仅作为恢复兜底
+    for (row = EN_START_ROW_BOTTOM; row >= EN_START_ROW_TOP; row--)
+    {
+        col = EN_COL_MIN_LIMIT;
+        while (col <= EN_COL_MAX_LIMIT)
+        {
+            while (col <= EN_COL_MAX_LIMIT &&
+                   my_image.image_two_value[row][col] != IMG_WHITE)
+                col++;
+            run_left = col;
+            while (col <= EN_COL_MAX_LIMIT &&
+                   my_image.image_two_value[row][col] == IMG_WHITE)
+                col++;
+            run_right = col - 1;
+            run_width = run_right - run_left + 1;
+
+            if (run_left > EN_COL_MIN_LIMIT &&
+                run_right < EN_COL_MAX_LIMIT &&
+                run_width >= EN_MIN_ROAD_WIDE &&
+                run_width > best_width)
+            {
+                best_row = row;
+                best_left = run_left - 1;
+                best_right = run_right + 1;
+                best_width = run_width;
+            }
+        }
+    }
+
+    if (best_row >= 0)
+    {
+        sl[0] = best_left;
+        sl[1] = best_row;
+        sr[0] = best_right;
+        sr[1] = best_row;
+        return 3u;
+    }
     return 0;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     沿单侧黑白边界执行八邻域跟踪
-// 参数说明     sx/sy/seed/pts   起点列/起点行/搜索顺序/输出点集
+// 函数简介     沿单侧黑白边界执行带方向约束的八邻域跟踪
+// 参数说明     sx/sy/left_side 起点列/起点行/1=左边线 0=右边线
 // 返回参数     uint16           边界点数量
-// 使用示例     n = en_trace(sl[0], sl[1], en_seed_l, en_pts_l);
+// 使用示例     n = en_trace(sl[0], sl[1], 1);
 //-------------------------------------------------------------------------------------------------------------------
-static uint16 en_trace(int sx, int sy, const int8 (*seed)[2], uint16 (*pts)[2])
+static uint16 en_trace(int sx, int sy, uint8 left_side)
 {
     uint16 cnt = 0;
     int cx = sx, cy = sy;
-    int i, ax, ay, best_x = 0, best_y = 0, found;
+    int i, nx, ny, wx, wy, line_col;
+    uint8 last_dir = 0;
+    uint8 found;
+    const en_step_t *steps = left_side ? s_en_steps_left : s_en_steps_right;
+
+    memset(s_en_visited, 0, sizeof(s_en_visited));
 
     while (cnt < EN_MAX_PTS)
     {
-        pts[cnt][0] = (uint16)cx;
-        pts[cnt][1] = (uint16)cy;
+        uint8 visited_mask = (uint8)(1u << (cx & 7));
+
+        if (s_en_visited[cy][cx >> 3] & visited_mask) break;
+        s_en_visited[cy][cx >> 3] |= visited_mask;
+
+        if (left_side)
+        {
+            line_col = iclip(cx + 1, 0, IMG_W - 1);
+            if (my_image.Left_Lost_Flag[cy] || line_col > my_image.Left_Line[cy])
+            {
+                my_image.Left_Line[cy] = line_col;
+                my_image.Left_Lost_Flag[cy] = 0;
+            }
+        }
+        else
+        {
+            line_col = iclip(cx - 1, 0, IMG_W - 1);
+            if (my_image.Right_Lost_Flag[cy] || line_col < my_image.Right_Line[cy])
+            {
+                my_image.Right_Line[cy] = line_col;
+                my_image.Right_Lost_Flag[cy] = 0;
+            }
+        }
         cnt++;
 
         if (cy <= EN_ROW_TOP_LIMIT) break;
-        if (cy >= IMG_H - 1) break;         // 防止越过图像底部
+        if (cy >= IMG_H - 1) break;
         if (cx <= EN_COL_MIN_LIMIT || cx >= EN_COL_MAX_LIMIT) break;
 
         found = 0;
-        for (i = 0; i < 8; i++)
+        for (i = 0; i < 7; i++)
         {
-            ax = cx + seed[i][0];
-            ay = cy + seed[i][1];
-            if (img_pixel(ax, ay) != IMG_BLACK) continue;
-            if (img_pixel(cx + seed[(i + 1) & 7][0], cy + seed[(i + 1) & 7][1]) != IMG_WHITE) continue;
-            if (!found || ay < best_y) { best_x = ax; best_y = ay; found = 1; }
+            if (last_dir == steps[i].blocked_dir) continue;
+
+            nx = cx + steps[i].black_dx;
+            ny = cy + steps[i].black_dy;
+            wx = cx + steps[i].white_dx;
+            wy = cy + steps[i].white_dy;
+
+            if (s_en_visited[ny][nx >> 3] & (uint8)(1u << (nx & 7))) continue;
+            if (my_image.image_two_value[ny][nx] != IMG_BLACK) continue;
+            if (my_image.image_two_value[wy][wx] != IMG_WHITE) continue;
+
+            cx = nx;
+            cy = ny;
+            last_dir = steps[i].next_dir;
+            found = 1;
+            break;
         }
         if (!found) break;
-        if (best_x == cx && best_y == cy) break;
-        if (cnt >= 2 && (int)pts[cnt - 2][0] == best_x && (int)pts[cnt - 2][1] == best_y) break;
-
-        cx = best_x; cy = best_y;
     }
     return cnt;
 }
@@ -275,10 +379,8 @@ static uint16 en_trace(int sx, int sy, const int8 (*seed)[2], uint16 (*pts)[2])
 //-------------------------------------------------------------------------------------------------------------------
 static void image_get_edge(void)
 {
-    static int s_seed_col = IMG_MID_COL;        // 当前起点种子列
     int sl[2], sr[2];
-    uint16 n, k;
-    int i, x, y, top = IMG_H, last;
+    int i, top = IMG_H, last;
     uint8 side;
 
     for (i = 0; i < IMG_H; i++)
@@ -297,32 +399,12 @@ static void image_get_edge(void)
     {
         if (side & 1u)                          // 左边线取每行最大列
         {
-            n = en_trace(sl[0], sl[1], en_seed_l, en_pts_l);
-            for (k = 0; k < n; k++)
-            {
-                x = (int)en_pts_l[k][0]; y = (int)en_pts_l[k][1];
-                if (y < 0 || y >= IMG_H) continue;
-                if (my_image.Left_Lost_Flag[y] || x > my_image.Left_Line[y])
-                {
-                    my_image.Left_Line[y] = iclip(x + 1, 0, IMG_W - 1); // 记录边界白侧
-                    my_image.Left_Lost_Flag[y] = 0;
-                }
-            }
+            (void)en_trace(sl[0], sl[1], 1u);
         }
 
         if (side & 2u)                          // 右边线取每行最小列
         {
-            n = en_trace(sr[0], sr[1], en_seed_r, en_pts_r);
-            for (k = 0; k < n; k++)
-            {
-                x = (int)en_pts_r[k][0]; y = (int)en_pts_r[k][1];
-                if (y < 0 || y >= IMG_H) continue;
-                if (my_image.Right_Lost_Flag[y] || x < my_image.Right_Line[y])
-                {
-                    my_image.Right_Line[y] = iclip(x - 1, 0, IMG_W - 1);// 记录边界白侧
-                    my_image.Right_Lost_Flag[y] = 0;
-                }
-            }
+            (void)en_trace(sr[0], sr[1], 0u);
         }
 
         // 记录两侧向远端跟踪到的最小行号，供环岛状态机判断边界延伸位置
@@ -346,6 +428,14 @@ static void image_get_edge(void)
             if (!my_image.Left_Lost_Flag[i] || !my_image.Right_Lost_Flag[i]) { top = i; break; }
         if (top >= IMG_H) top = IMG_H - 1;
         my_image.Search_Stop_Line = IMG_H - top;
+    }
+    else
+    {
+        my_image.Left_Lost_Counter = IMG_H;
+        my_image.Right_Lost_Counter = IMG_H;
+        my_image.Both_Lost_Counter = IMG_H;
+        s_seed_col = IMG_MID_COL;
+        return;
     }
 
     if (g_island.island_state == 3 && my_image.Search_Stop_Line > 70)
@@ -379,7 +469,7 @@ static void image_get_edge(void)
 void Image_Build_Mid_Line(void)
 {
     int i, top, half, mid, wide, lok, rok;
-    int last_mid = IMG_MID_COL;
+    int last_mid = s_last_near_mid;
 
     my_image.Mid_Valid_Rows   = 0;
     my_image.Valid_Row_Bottom = -1;
@@ -424,6 +514,8 @@ void Image_Build_Mid_Line(void)
 
     my_image.Track_Valid = (my_image.Mid_Valid_Rows >= TRACK_MIN_VALID_ROWS &&
                             my_image.Contrast >= OTSU_CONTRAST_MIN) ? 1 : 0;
+    if (my_image.Valid_Row_Bottom >= 0)
+        s_last_near_mid = my_image.Mid_Line[my_image.Valid_Row_Bottom];
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -503,6 +595,13 @@ void Find_Up_Point(int start, int end)
     for (i = start; i >= end; i--)
     {
         if (my_image.Left_Up_Find == 0 &&
+            !my_image.Left_Lost_Flag[i] &&
+            !my_image.Left_Lost_Flag[i - 1] &&
+            !my_image.Left_Lost_Flag[i - 2] &&
+            !my_image.Left_Lost_Flag[i - 3] &&
+            !my_image.Left_Lost_Flag[i + 2] &&
+            !my_image.Left_Lost_Flag[i + 3] &&
+            !my_image.Left_Lost_Flag[i + 4] &&
             func_abs(my_image.Left_Line[i]     - my_image.Left_Line[i - 1]) <= 5 &&
             func_abs(my_image.Left_Line[i - 1] - my_image.Left_Line[i - 2]) <= 5 &&
             func_abs(my_image.Left_Line[i - 2] - my_image.Left_Line[i - 3]) <= 5 &&
@@ -512,6 +611,13 @@ void Find_Up_Point(int start, int end)
             my_image.Left_Up_Find = i;
 
         if (my_image.Right_Up_Find == 0 &&
+            !my_image.Right_Lost_Flag[i] &&
+            !my_image.Right_Lost_Flag[i - 1] &&
+            !my_image.Right_Lost_Flag[i - 2] &&
+            !my_image.Right_Lost_Flag[i - 3] &&
+            !my_image.Right_Lost_Flag[i + 2] &&
+            !my_image.Right_Lost_Flag[i + 3] &&
+            !my_image.Right_Lost_Flag[i + 4] &&
             func_abs(my_image.Right_Line[i]     - my_image.Right_Line[i - 1]) <= 5 &&
             func_abs(my_image.Right_Line[i - 1] - my_image.Right_Line[i - 2]) <= 5 &&
             func_abs(my_image.Right_Line[i - 2] - my_image.Right_Line[i - 3]) <= 5 &&
@@ -580,10 +686,23 @@ float err_sum_average(int start_point, int end_point)
 //-------------------------------------------------------------------------------------------------------------------
 void image_process(void)
 {
+    uint32 start;
+    uint32 stage;
+
+    start = MODULE_STM1.TIM0.U;
+    stage = start;
     image_binarize();
-    image_filter_frame();
+    g_image_profile.binarize_us = image_ticks_to_us(MODULE_STM1.TIM0.U - stage);
+    g_image_profile.border_us = 0;
+
+    stage = MODULE_STM1.TIM0.U;
     image_get_edge();
+    g_image_profile.edge_us = image_ticks_to_us(MODULE_STM1.TIM0.U - stage);
+
+    stage = MODULE_STM1.TIM0.U;
     Image_Build_Mid_Line();
+    g_image_profile.midline_us = image_ticks_to_us(MODULE_STM1.TIM0.U - stage);
+    g_image_profile.total_us = image_ticks_to_us(MODULE_STM1.TIM0.U - start);
 }
 
 //-------------------------------------------------------------------------------------------------------------------

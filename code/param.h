@@ -4,14 +4,10 @@
 #include "zf_common_headfile.h"
 
 #define PARAM_MAGIC             (0x51435452u)   // 参数区魔数
-#define PARAM_VERSION           (10u)
 
 // 参数结构
 typedef struct
 {
-    uint32 magic;                       // 参数魔数
-    uint32 version;                     // 参数版本
-
     // 速度与循迹
     int   track_base_speed;             // 基准速度
     float speed_up_rate;                // 速度目标加速斜坡(counts/20ms 每 20ms 拍)
@@ -20,6 +16,8 @@ typedef struct
     float speed_ramp_gain;              // 坡道降速倍率
     float speed_ring_gain;              // 环岛降速倍率
     int   cam_exposure;                 // 摄像头曝光时间
+    int   road_wide_near;               // 近端标准赛道宽度(像素)，算法行 IMG_H-1
+    int   road_wide_far;                // 远端标准赛道宽度(像素)，算法行 0
 
     // Roll 串级
     float r_rcy_kp;                     // 飞轮回收环 P
@@ -63,10 +61,9 @@ typedef struct
     int   elem_en_cross;                // 十字
     int   elem_en_ring;                 // 环岛
     int   elem_en_ramp;                 // 坡道
-    int   elem_en_obstacle;             // 路障
 
     // 元素阈值
-    int   zebra_jump_cnt;               // 斑马线底行跳变阈值
+    int   zebra_jump_cnt;               // 斑马线横向跳变阈值
     int   cross_lost_cnt;               // 十字丢线行数阈值
     int   ring_angle;                   // 环岛转角阈值
     int   ring_s2_cnt_l;                // 左环编码器阈值
@@ -74,8 +71,6 @@ typedef struct
     int   ring_side_offset;             // 环岛单边巡线横向补偿
     int   ring_timeout_cnt;             // 环岛单状态超时帧数，超时强制回空闲
     int   elem_guard_cnt;               // 元素退出后的屏蔽帧数
-    float obs_narrow_ratio;             // 路障路宽收窄判据比例
-    int   obs_line_offset;              // 路障避障横向补偿
 
     // 零点、标定与保护
     float roll_zero_init;               // 横滚机械零点初值
@@ -89,6 +84,10 @@ typedef struct
     int   motor_dir_b;                  // 动量轮B占空比与转速回读极性
     int   motor_dir_c;                  // 行进轮C输出极性
     int   enc_dir_c;                    // C轮脉冲/方向编码器计数符号
+    int   jog_duty_fly;                 // A/B 架空点动占空比，满量程 10000
+    int   jog_duty_drive;               // C 架空点动占空比，满量程 10000
+    int   fly_speed_limit;              // A/B 转速上限(RPM)，超了停测试，0=关闭
+    int   fly_slew;                     // A/B 占空比变化率上限(每1ms)，0=不限
 } param_t;
 
 extern param_t g_param;                 // 运行参数
@@ -103,6 +102,8 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define SPEED_RAMP_GAIN         (g_param.speed_ramp_gain)
 #define SPEED_RING_GAIN         (g_param.speed_ring_gain)
 #define CAM_EXPOSURE            (g_param.cam_exposure)
+#define ROAD_WIDE_NEAR          (g_param.road_wide_near)
+#define ROAD_WIDE_FAR           (g_param.road_wide_far)
 
 // Roll 串级
 #define R_RCY_KP                (g_param.r_rcy_kp)
@@ -146,7 +147,6 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define ELEM_EN_CROSS           (g_param.elem_en_cross)
 #define ELEM_EN_RING            (g_param.elem_en_ring)
 #define ELEM_EN_RAMP            (g_param.elem_en_ramp)
-#define ELEM_EN_OBSTACLE        (g_param.elem_en_obstacle)
 #define ZEBRA_JUMP_CNT          (g_param.zebra_jump_cnt)
 #define CROSS_LOST_CNT          (g_param.cross_lost_cnt)
 #define RING_ANGLE              (g_param.ring_angle)
@@ -155,8 +155,6 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define RING_SIDE_OFFSET        (g_param.ring_side_offset)
 #define RING_TIMEOUT_CNT        (g_param.ring_timeout_cnt)
 #define ELEM_GUARD_CNT          (g_param.elem_guard_cnt)
-#define OBS_NARROW_RATIO        (g_param.obs_narrow_ratio)
-#define OBS_LINE_OFFSET         (g_param.obs_line_offset)
 
 // 零点、标定与保护
 #define ROLL_ZERO_INIT          (g_param.roll_zero_init)
@@ -169,6 +167,10 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define MOTOR_DIR_B             (g_param.motor_dir_b)
 #define MOTOR_DIR_C             (g_param.motor_dir_c)
 #define ENC_DIR_C               (g_param.enc_dir_c)
+#define JOG_DUTY_FLY            (g_param.jog_duty_fly)
+#define JOG_DUTY_DRIVE          (g_param.jog_duty_drive)
+#define FLY_SPEED_LIMIT         (g_param.fly_speed_limit)
+#define FLY_SLEW                (g_param.fly_slew)
 
 // 参数描述
 typedef struct
@@ -181,14 +183,6 @@ typedef struct
 } param_desc_t;
 
 extern const param_desc_t g_param_table[];      // 参数描述表
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     获取参数描述表条目数
-// 参数说明     void
-// 返回参数     uint16          条目数
-// 使用示例     uint16 count = param_table_count();
-//-------------------------------------------------------------------------------------------------------------------
-uint16 param_table_count(void);
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     按名称查找参数描述
@@ -237,6 +231,14 @@ void param_load_defaults(void);
 // 使用示例     uint8 saved = param_save();
 //-------------------------------------------------------------------------------------------------------------------
 uint8 param_save(void);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     擦除 Flash 参数页并把运行参数恢复成默认值
+// 参数说明     void
+// 返回参数     uint8           1=擦除后页确实是空的 0=擦除失败
+// 使用示例     uint8 ok = param_erase();
+//-------------------------------------------------------------------------------------------------------------------
+uint8 param_erase(void);
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     同步横滚与俯仰机械零点

@@ -38,6 +38,8 @@
 #define UI_LONG_REPEAT_MS      (120u)
 #define UI_LIVE_PERIOD_MS      (100u)
 #define UI_IMAGE_PERIOD_MS     (100u)    // 横屏整帧刷新周期
+#define UI_IMAGE_STALL_MS      (500u)    // 停帧时的状态栏刷新周期，保证 FPS 能掉到 0
+#define UI_RESET_CONFIRM_MS    (3000u)   // Reset 二次确认窗口
 #define UI_CAM_FRAME_TIMEOUT_MS (100u)   // 超过该时间没有新帧视为摄像头帧失联
 
 typedef enum
@@ -53,11 +55,11 @@ typedef enum
 // 参数组的动作类型，决定组内 Action 行的语义与实时显示内容
 typedef enum
 {
-    GROUP_KIND_AXIS = 0,    // 分环 Test/Wave，闭环驱动对应轴
-    GROUP_KIND_CAMERA,      // 循迹波形，只出数据不动电机
+    GROUP_KIND_AXIS = 0,    // 分环 Test，闭环驱动对应轴
+    GROUP_KIND_CAMERA,      // 循迹参数，实时显示阈值、丢线和帧率，无动作行
     GROUP_KIND_MOTOR,       // 架空点动，验证转向与转速回读符号
     GROUP_KIND_ZERO,        // 在线抓当前姿态角当机械零点
-    GROUP_KIND_ELEMENT,     // 元素使能与阈值，实时显示识别到的元素
+    GROUP_KIND_ELEMENT,     // 元素使能与阈值，实时显示识别到的元素，无动作行
 } group_kind_t;
 
 // 一个可编辑参数行
@@ -75,8 +77,7 @@ typedef struct
     const char              *title;         // 页标题
     const menu_param_item_t *items;         // 参数行数组
     uint8                    item_count;    // 参数行数量
-    vofa_mode_t              wave_mode;     // 该页动作行开启的波形
-    tune_axis_t              axis;          // 该页对应的调参轴
+    tune_axis_t              axis;          // 该页对应的调参轴，只有 GROUP_KIND_AXIS 会用到
     uint8                    action_count;  // 动作行数量
     group_kind_t             kind;          // 动作行语义
 } menu_group_t;
@@ -119,7 +120,9 @@ static const menu_param_item_t s_yaw_items[] =
 
 static const menu_param_item_t s_camera_items[] =
 {
-    { "Exposure",   "cam_exposure",     16.0f, 0 },
+    { "Exposure",   "cam_exposure",      2.0f, 0 },
+    { "Road Near",  "road_wide_near",    1.0f,  0 },
+    { "Road Far",   "road_wide_far",     1.0f,  0 },
     { "Error Zero", "err_offset",        0.1f,  2 },
     { "Track Gain", "track_err_gain",    0.05f, 2 },
     { "Base Speed", "track_base_speed",  1.0f,  0 },
@@ -127,7 +130,7 @@ static const menu_param_item_t s_camera_items[] =
     { "Spd Down",   "speed_down_rate",   0.1f,  2 }
 };
 
-// 元素页。前五行是使能，步长 2 大于取值范围，所以上键一定开、下键一定关。
+// 元素页。前四行是使能，步长 2 大于取值范围，所以上键一定开、下键一定关。
 // 默认全 0，普通循迹跑稳后一次只开一个。
 static const menu_param_item_t s_element_items[] =
 {
@@ -135,7 +138,6 @@ static const menu_param_item_t s_element_items[] =
     { "En Cross",   "elem_en_cross",    2.0f, 0 },
     { "En Ring",    "elem_en_ring",     2.0f, 0 },
     { "En Ramp",    "elem_en_ramp",     2.0f, 0 },
-    { "En Obst",    "elem_en_obstacle", 2.0f, 0 },
     { "Zebra Jump", "zebra_jump_cnt",   1.0f, 0 },
     { "Cross Lost", "cross_lost_cnt",   1.0f, 0 },
     { "Ring Angle", "ring_angle",       5.0f, 0 },
@@ -145,18 +147,20 @@ static const menu_param_item_t s_element_items[] =
     { "Ring TmO",   "ring_timeout_cnt",10.0f, 0 },
     { "Guard Cnt",  "elem_guard_cnt",   5.0f, 0 },
     { "Ramp Gain",  "speed_ramp_gain",  0.05f, 2 },
-    { "Ring Gain",  "speed_ring_gain",  0.05f, 2 },
-    { "Obs Ratio",  "obs_narrow_ratio", 0.02f, 2 },
-    { "Obs Ofs",    "obs_line_offset",  1.0f, 0 }
+    { "Ring Gain",  "speed_ring_gain",  0.05f, 2 }
 };
 
 // 极性取值只有 ±1，步长给 2 保证一次按键就翻符号。
 static const menu_param_item_t s_motor_items[] =
 {
-    { "Dir A",    "motor_dir_a", 2.0f, 0 },
-    { "Dir B",    "motor_dir_b", 2.0f, 0 },
-    { "Dir C",    "motor_dir_c", 2.0f, 0 },
-    { "Enc C",    "enc_dir_c",   2.0f, 0 }
+    { "Dir A",    "motor_dir_a",    2.0f,   0 },
+    { "Dir B",    "motor_dir_b",    2.0f,   0 },
+    { "Dir C",    "motor_dir_c",    2.0f,   0 },
+    { "Enc C",    "enc_dir_c",      2.0f,   0 },
+    { "Duty Fly", "jog_duty_fly",   100.0f, 0 },
+    { "Duty Drv", "jog_duty_drive", 100.0f, 0 },
+    { "Fly RpmMx","fly_speed_limit",100.0f, 0 },
+    { "Fly Slew", "fly_slew",       100.0f, 0 }
 };
 
 static const menu_param_item_t s_zero_items[] =
@@ -177,13 +181,14 @@ static const char * const s_motor_action_names[] =
 
 static const menu_group_t s_groups[] =
 {
-    { "Roll",   s_roll_items,   9, VOFA_ROLL,  TUNE_AXIS_ROLL,  3, GROUP_KIND_AXIS   },
-    { "Pitch",  s_pitch_items,  9, VOFA_PITCH, TUNE_AXIS_PITCH, 3, GROUP_KIND_AXIS   },
-    { "Yaw",    s_yaw_items,    6, VOFA_YAW,   TUNE_AXIS_YAW,   2, GROUP_KIND_AXIS   },
-    { "Camera",  s_camera_items,  6, VOFA_TRACK, TUNE_AXIS_YAW,   1, GROUP_KIND_CAMERA  },
-    { "Element", s_element_items, 17, VOFA_TRACK, TUNE_AXIS_YAW,  1, GROUP_KIND_ELEMENT },
-    { "Motor",   s_motor_items,   4, VOFA_MOTOR, TUNE_AXIS_ROLL,  6, GROUP_KIND_MOTOR   },
-    { "Zero",    s_zero_items,    4, VOFA_OFF,   TUNE_AXIS_ROLL,  1, GROUP_KIND_ZERO    }
+    { "Roll",   s_roll_items,   9, TUNE_AXIS_ROLL,  3, GROUP_KIND_AXIS   },
+    { "Pitch",  s_pitch_items,  9, TUNE_AXIS_PITCH, 3, GROUP_KIND_AXIS   },
+    { "Yaw",    s_yaw_items,    6, TUNE_AXIS_YAW,   2, GROUP_KIND_AXIS   },
+    // 下面四页不走 control_test_start()，axis 填什么都不会被读到
+    { "Camera",  s_camera_items,  8, TUNE_AXIS_YAW,  0, GROUP_KIND_CAMERA  },
+    { "Element", s_element_items, 14, TUNE_AXIS_YAW, 0, GROUP_KIND_ELEMENT },
+    { "Motor",   s_motor_items,   8, TUNE_AXIS_ROLL, 6, GROUP_KIND_MOTOR   },
+    { "Zero",    s_zero_items,    4, TUNE_AXIS_ROLL, 1, GROUP_KIND_ZERO    }
 };
 
 static const char * const s_param_page_names[] =
@@ -197,6 +202,7 @@ static const char * const s_param_page_names[] =
     "Motor",
     "Zero",
     "Save",
+    "Reset",
     "Back"
 };
 
@@ -208,10 +214,11 @@ static uint8       s_group_index;                   // 当前参数组下标
 static uint8       s_cursor;                        // 当前光标行
 static uint8       s_top;                           // 当前滚动窗口的首行
 static uint8       s_editing;                       // 正在编辑参数值
-static uint8       s_test_on;                       // 当前页开着 Test/Wave
+static uint8       s_test_on;                       // 当前页开着 Test
 static uint8       s_active_test;                   // 开着的是哪一个动作行，0xFF 表示没有
 static uint8       s_dirty;                         // 1=重绘本页 2=先整屏清再重绘
 static uint8       s_image_ok;                      // 图像页看到的摄像头就绪状态
+static uint32      s_reset_armed_until_ms;          // Reset 二次确认截止时刻，0=未进入确认态
 static uint8       s_page_cursor[MENU_PAGE_COUNT];  // 各页面记住的光标位置
 static uint8       s_page_top[MENU_PAGE_COUNT];     // 各页面记住的滚动位置
 static uint8       s_group_cursor[GROUP_COUNT];     // 各参数组记住的光标位置
@@ -329,6 +336,7 @@ static void draw_status(void)
         strstr(s_status, "CONFLICT") != 0 ||
         strstr(s_status, "DIVERGED") != 0 ||
         strstr(s_status, "LOST") != 0 ||
+        strstr(s_status, "PROTECT") != 0 ||
         strstr(s_status, "SAFETY") != 0)
         color = UI_RED;
     else if (strstr(s_status, "NOT") != 0 ||
@@ -433,6 +441,38 @@ static void save_params_action(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     擦除 Flash 参数页并回默认值，第一次按只提示，UI_RESET_CONFIRM_MS 内再按一次才执行
+// 参数说明     void
+// 返回参数     void
+// 使用示例     reset_params_action();
+//-------------------------------------------------------------------------------------------------------------------
+static void reset_params_action(void)
+{
+    uint32 now = g_control_uptime_ms;
+
+    if (control_test_running() ||
+        control_jog_running() != MOTOR_JOG_NONE ||
+        start_flag != START_STOP)
+    {
+        menu_status("RESET BLOCKED: RUNNING");
+        s_reset_armed_until_ms = 0;
+        return;
+    }
+
+    // 擦除会丢掉全部标定，所以要连按两次确认
+    if (s_reset_armed_until_ms == 0 || (int32)(now - s_reset_armed_until_ms) >= 0)
+    {
+        s_reset_armed_until_ms = now + UI_RESET_CONFIRM_MS;
+        menu_status("PRESS AGAIN TO ERASE");
+        return;
+    }
+
+    s_reset_armed_until_ms = 0;
+    menu_status(param_erase() ? "ERASED, DEFAULTS" : "ERASE FAILED");
+    param_sync_zero();
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     保存当前页面的光标和滚动位置
 // 参数说明     void
 // 返回参数     void
@@ -484,6 +524,16 @@ static void set_page(menu_page_t page)
     save_page_position();
     s_page = page;
     load_page_position(page);
+
+    // 波形完全由页面和正在跑什么决定，没有任何地方让人选，无线串口侧也没有切波形的命令。
+    // Camera/Element 进页面就出 trk；三轴页由 control_test_start() 按轴给；
+    // Motor 由 control_jog_start() 给 mot；Attitude 页的动作行给 att。
+    g_vofa_mode = VOFA_OFF;
+    if (page == MENU_PAGE_GROUP &&
+        (s_groups[s_group_index].kind == GROUP_KIND_CAMERA ||
+         s_groups[s_group_index].kind == GROUP_KIND_ELEMENT))
+        g_vofa_mode = VOFA_TRACK;
+
     s_editing = 0;
     s_dirty = 2;
     s_status[0] = '\0';
@@ -575,7 +625,7 @@ static void render_main_live(void)
     else                                                ui_line(120, "IMU  READY", UI_GREEN);
 
     if (W_Motor_LinkLost())         ui_line(144, "BLDC LINK LOST", UI_RED);
-    else                            ui_line(144, "BLDC ONLINE", UI_GREEN);
+    else                            ui_line(144, "BLDC UART OK", UI_GREEN);
 
     if (camera_state == VISION_CORE_OFF)
         ui_line(168, "CAM  NOT INITIALIZED", UI_YELLOW);
@@ -669,10 +719,10 @@ static void render_attitude_live(void)
 static void render_attitude(void)
 {
     ui_header("Attitude", s_cursor, 2);
-    draw_action_row(0, 0, s_test_on ? "Wave: ON" : "Wave: OFF");
+    draw_action_row(0, 0, s_test_on ? "Test: ON" : "Test: OFF");
     draw_action_row(1, 1, "Back");
     render_attitude_live();
-    ui_line(224, "UART0 115200 / FireWater", UI_GRAY);
+    ui_line(224, "WIRELESS 115200 / FIREWATER", UI_GRAY);
     ui_footer();
 }
 
@@ -694,19 +744,30 @@ static void render_group_live(void)
         motor_jog_t jog = control_jog_running();
 
         if (W_Motor_LinkLost())
-            ui_line(245, "BLDC LINK LOST", UI_RED);
+            ui_line(229, "BLDC LINK LOST", UI_RED);
         else
         {
-            (void)snprintf(line, sizeof(line), "AIRBORNE ONLY   JOG %s",
+            // 指令值带符号，和下面两行反馈对着看就能判断极性对不对
+            (void)snprintf(line, sizeof(line), "AIRBORNE JOG %s CMD%+6d",
                            (jog == MOTOR_JOG_A) ? "A" :
                            (jog == MOTOR_JOG_B) ? "B" :
-                           (jog == MOTOR_JOG_C) ? "C" : "-");
-            ui_line(245, line, UI_YELLOW);
+                           (jog == MOTOR_JOG_C) ? "C" : "-",
+                           (int)((jog == MOTOR_JOG_A) ? g_motor_a :
+                                 (jog == MOTOR_JOG_B) ? g_motor_b :
+                                 (jog == MOTOR_JOG_C) ? g_motor_c : 0));
+            ui_line(229, line, UI_YELLOW);
         }
-        (void)snprintf(line, sizeof(line), "A%6d B%6d C%5d",
-                       (int)W_Motor_GetSpeed1(),
-                       (int)W_Motor_GetSpeed2(),
-                       (int)Y_Motor_GetSpeed20ms());
+
+        // A/B 没有编码器，转子霍尔接在 CYT2BL3 上，主控只能拿到驱动每 10ms 回传的转速。
+        // 霍尔六步在低转速下回传是阶梯值，慢转时读数跳变属正常
+        (void)snprintf(line, sizeof(line), "RPM  A%+6d B%+6d",
+                       (int)W_Motor_GetSpeed1(), (int)W_Motor_GetSpeed2());
+        ui_line(245, line, UI_CYAN);
+
+        // C 轮编码器 TIM2：20ms 增量和上电累计值，都已按 enc_dir_c 取过符号
+        (void)snprintf(line, sizeof(line), "ENC  C%+5d TOT%+8ld",
+                       (int)Y_Motor_GetSpeed20ms(),
+                       (long)Y_Motor_GetTotalCount());
         ui_line(261, line, UI_CYAN);
         return;
     }
@@ -719,6 +780,33 @@ static void render_group_live(void)
         ui_line(245, line, UI_CYAN);
         (void)snprintf(line, sizeof(line), "ZERO R%7.2f P%7.2f",
                        (double)g_roll_zero, (double)g_pitch_zero);
+        ui_line(261, line, UI_CYAN);
+        return;
+    }
+
+    // Camera 页显示采集、处理和忙丢帧频率，便于区分相机与算法瓶颈。
+    // Camera 页只有 8 个参数行，列表最多画到 y=165，下面四行都是空的
+    if (group->kind == GROUP_KIND_CAMERA)
+    {
+        // 分段耗时(us)：ROI 复制 / 大津二值化 / 八邻域提边 / 元素处理
+        (void)snprintf(line, sizeof(line), "G%4u B%4u E%5u M%4u",
+                       (unsigned)g_vision_grab_us, (unsigned)g_vision_binarize_us,
+                       (unsigned)g_vision_edge_us, (unsigned)g_vision_element_us);
+        ui_line(213, line, UI_GRAY);
+        // 总耗时与本次开机峰值。超过 16670us 就会被 VSYNC 隔帧丢弃，帧率对半掉
+        (void)snprintf(line, sizeof(line), "US%6u MAX%6u",
+                       (unsigned)g_vision_process_us, (unsigned)g_vision_process_max_us);
+        ui_line(229, line, UI_GRAY);
+
+        (void)snprintf(line, sizeof(line), "F%3d VS%3d DM%3d DP%3d",
+                       (int)(g_vision_fps + 0.5f),
+                       (int)(g_vision_vsync_fps + 0.5f),
+                       (int)(g_vision_dma_fps + 0.5f),
+                       (int)(g_vision_drop_fps + 0.5f));
+        ui_line(245, line, UI_CYAN);
+        (void)snprintf(line, sizeof(line), "V%d E%+7.1f L%2u R%2u",
+                       (int)g_track_valid, (double)g_dbg_error,
+                       (unsigned)g_vision_left_lost, (unsigned)g_vision_right_lost);
         ui_line(261, line, UI_CYAN);
         return;
     }
@@ -744,30 +832,21 @@ static void render_group_live(void)
         return;
     }
 
-    ui_line(245, "TEST ACTIVE / BACK STOP", UI_YELLOW);
-    if (group->kind == GROUP_KIND_CAMERA)
-    {
-        (void)snprintf(line, sizeof(line), "TH %3d VALID %d LOST%4u",
-                       (int)g_vision_threshold, (int)g_track_valid,
-                       (unsigned)g_track_lost_frames);
-        ui_line(261, line, UI_CYAN);
-        (void)snprintf(line, sizeof(line), "ERR %8.3f  L%3u R%3u",
-                       (double)g_dbg_error,
-                       (unsigned)g_vision_left_lost, (unsigned)g_vision_right_lost);
-        ui_line(277, line, UI_CYAN);
-        return;
-    }
-
     switch (group->axis)
     {
         case TUNE_AXIS_ROLL:
-            (void)snprintf(line, sizeof(line), "RATE %8.3f", (double)att.roll_rate);
-            ui_line(261, line, UI_CYAN);
-            (void)snprintf(line, sizeof(line), "ANGLE%8.3f PWM%6d",
-                           (double)att.roll, (int)g_motor_a);
+            (void)snprintf(line, sizeof(line), "RATE%+7.2f ANG%+7.2f",
+                           (double)att.roll_rate, (double)att.roll);
+            ui_line(245, line, UI_CYAN);
+            (void)snprintf(line, sizeof(line), "CMD A%+5d B%+5d",
+                           (int)g_motor_a, (int)g_motor_b);
+            ui_line(261, line, UI_YELLOW);
+            (void)snprintf(line, sizeof(line), "RPM A%+6d B%+6d",
+                           (int)W_Motor_GetSpeed1(), (int)W_Motor_GetSpeed2());
             ui_line(277, line, UI_CYAN);
             break;
         case TUNE_AXIS_PITCH:
+            ui_line(245, "TEST ACTIVE / BACK STOP", UI_YELLOW);
             (void)snprintf(line, sizeof(line), "RATE %8.3f", (double)att.pitch_rate);
             ui_line(261, line, UI_CYAN);
             (void)snprintf(line, sizeof(line), "ANGLE%8.3f PWM%6d",
@@ -775,10 +854,14 @@ static void render_group_live(void)
             ui_line(277, line, UI_CYAN);
             break;
         case TUNE_AXIS_YAW:
-            (void)snprintf(line, sizeof(line), "RATE %8.3f", (double)att.yaw_rate);
-            ui_line(261, line, UI_CYAN);
-            (void)snprintf(line, sizeof(line), "YAW  %8.3f PWM%6d",
-                           (double)att.yaw, (int)g_motor_a);
+            (void)snprintf(line, sizeof(line), "RATE%+7.2f YAW%+7.2f",
+                           (double)att.yaw_rate, (double)att.yaw);
+            ui_line(245, line, UI_CYAN);
+            (void)snprintf(line, sizeof(line), "CMD A%+5d B%+5d",
+                           (int)g_motor_a, (int)g_motor_b);
+            ui_line(261, line, UI_YELLOW);
+            (void)snprintf(line, sizeof(line), "RPM A%+6d B%+6d",
+                           (int)W_Motor_GetSpeed1(), (int)W_Motor_GetSpeed2());
             ui_line(277, line, UI_CYAN);
             break;
         default:
@@ -797,8 +880,6 @@ static const char *action_name(uint8 action_index)
     const menu_group_t *group = &s_groups[s_group_index];
 
     if (group->kind == GROUP_KIND_MOTOR) return s_motor_action_names[action_index];
-    if (group->kind == GROUP_KIND_CAMERA) return "Vision";
-    if (group->kind == GROUP_KIND_ELEMENT) return "Elem";
     if (group->kind == GROUP_KIND_ZERO) return "Capture Zero";
     if (action_index == 0u) return "Rate";
     if (action_index == 1u) return "Angle";
@@ -822,6 +903,10 @@ static const char *test_status_text(control_test_status_t status)
         case CTRL_TEST_STATUS_ATT_DIVERGED:   return "ATTITUDE DIVERGED";
         case CTRL_TEST_STATUS_IMU_LOST:       return "IMU LINK LOST";
         case CTRL_TEST_STATUS_BLDC_LOST:      return "BLDC LINK LOST";
+        case CTRL_TEST_STATUS_ROLL_PROT:      return "ROLL OVER PROTECT";
+        case CTRL_TEST_STATUS_PITCH_PROT:     return "PITCH OVER PROTECT";
+        case CTRL_TEST_STATUS_FLY_OVERSPEED:  return "FLYWHEEL OVERSPEED";
+        case CTRL_TEST_STATUS_OUTPUT_INVALID: return "PID OUTPUT INVALID";
         case CTRL_TEST_STATUS_SAFETY:         return "SAFETY STOP";
         default:                              return "TEST BLOCKED";
     }
@@ -866,7 +951,7 @@ static void render_group(void)
             if (group->kind == GROUP_KIND_MOTOR || group->kind == GROUP_KIND_ZERO)
                 (void)snprintf(label, sizeof(label), "%s", action_name(action));
             else
-                (void)snprintf(label, sizeof(label), "%s %s Test/Wave",
+                (void)snprintf(label, sizeof(label), "%s %s Test",
                                (s_test_on && s_active_test == action) ? "Stop" : "Start",
                                action_name(action));
             draw_action_row(row, index, label);
@@ -1016,27 +1101,16 @@ static void toggle_group_action(uint8 action_index)
     }
 
     stop_local_test();
-    if (group->kind == GROUP_KIND_CAMERA || group->kind == GROUP_KIND_ELEMENT)
-    {
-        (void)control_camera_debug_start();
-        if (vision_core_state() == VISION_CORE_FAILED)
-        {
-            menu_status("CAM INIT FAILED");
-            return;
-        }
-    }
-    else if (!control_test_start(group->axis, ring))
+    if (!control_test_start(group->axis, ring))
     {
         menu_status(test_status_text(control_test_last_status()));
         return;
     }
 
-    g_tune_axis = group->axis;
-    g_tune_ring = ring;
-    g_vofa_mode = group->wave_mode;
+    // g_tune_axis / g_tune_ring / g_vofa_mode 都由 control_test_start() 负责，这里不重复赋值
     s_test_on = 1;
     s_active_test = action_index;
-    menu_status("TEST/WAVE ON");
+    menu_status("TEST ON");
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -1103,9 +1177,7 @@ static void handle_main(uint8 up, uint8 down, uint8 enter)
         s_last_image_frame_seq = 0u;
         s_image_redraw_pending = 1u;
         s_last_image_state = 0xFFu;
-        g_vofa_mode = VOFA_TRACK;
-        s_test_on = 1;
-        s_active_test = 0u;
+        // 图像页只看屏幕，不发波形。上面 set_page() 已经把 g_vofa_mode 关成 VOFA_OFF
     }
     else
     {
@@ -1128,20 +1200,34 @@ static void handle_params(uint8 up, uint8 down, uint8 enter, uint8 back)
     }
     if (up) move_cursor(-1);
     if (down) move_cursor(1);
+    // 光标一离开 Reset 行就撤销确认态，避免停在别处按确认时误擦
+    if (up || down) s_reset_armed_until_ms = 0;
     if (!enter) return;
 
     if (s_cursor == 0)
     {
         set_page(MENU_PAGE_ATTITUDE);
     }
-    else if (s_cursor >= 1 && s_cursor <= GROUP_COUNT)
+    else if (s_cursor <= GROUP_COUNT)
     {
         s_group_index = (uint8)(s_cursor - 1u);
         set_page(MENU_PAGE_GROUP);
+        // 这两页靠视觉实时数据，进来就把摄像头拉起来，不用再按一次动作行
+        if (s_groups[s_group_index].kind == GROUP_KIND_CAMERA ||
+            s_groups[s_group_index].kind == GROUP_KIND_ELEMENT)
+        {
+            (void)control_camera_debug_start();
+            if (vision_core_state() == VISION_CORE_FAILED)
+                menu_status("CAM INIT FAILED");
+        }
     }
     else if (s_cursor == (uint8)(GROUP_COUNT + 1u))
     {
         save_params_action();
+    }
+    else if (s_cursor == (uint8)(GROUP_COUNT + 2u))
+    {
+        reset_params_action();
     }
     else
     {
@@ -1310,6 +1396,11 @@ static void handle_image(uint8 up, uint8 down, uint8 enter, uint8 back)
         s_last_image_frame_seq = g_vision_frame_seq;
         s_image_redraw_pending = 1u;
     }
+
+    // 停帧时上面那个条件不再成立，页面会一直停在最后一帧，FPS 也跟着冻住。
+    // 这里定期补一次重画请求；此时快照不会 ready，display_track_view() 只刷状态栏。
+    if ((uint32)(now - s_last_image_draw_ms) >= UI_IMAGE_STALL_MS)
+        s_image_redraw_pending = 1u;
 
     view_dirty = display_view_dirty();
     if (view_dirty)

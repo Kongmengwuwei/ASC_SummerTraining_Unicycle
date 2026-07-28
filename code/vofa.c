@@ -1,12 +1,9 @@
 #include "vofa.h"
 #include "W_Motor.h"
 #include "Y_Motor.h"
-#include "board_config.h"
 #include "param.h"
-#include "imu.h"
 #include "attitude.h"
 #include "control.h"
-#include "display.h"
 #include <stdio.h>
 
 // 全局状态
@@ -25,53 +22,67 @@ static volatile const char *s_tag = "off";      // 帧标签
 
 // 下行命令缓冲
 #define VOFA_CMD_LINE_MAX   (64)                // 单行命令长度
-#define VOFA_CMD_READ_MAX   (32)                // 单次读取长度
 
 static char  s_cmd_line[VOFA_CMD_LINE_MAX];     // 命令行缓冲
 static uint8 s_cmd_len = 0;                     // 命令行长度
 static uint8 s_cmd_ovf = 0;                     // 命令行溢出标志
 
-// UART0 非阻塞发送队列
-#define VOFA_TX_FIFO_DEPTH  (16)                // 硬件发送 FIFO 深度
-#define VOFA_TX_UART0_SIZE  (2048)              // 软件发送队列长度
+// 收发环形缓冲。
+// 刷屏走 SPI，一次实时行刷新要十几毫秒，主循环被它拖住的时候串口不能跟着停：
+// 发慢了波形会一阵一阵地涌，收慢了库里那 64 字节接收缓冲会溢出，
+// 命令中间少几个字节还能解析成功，"r_rate_kp 12.5" 少个 2 就变成 1.5，静默改错增益。
+// 所以两个方向都由 1ms 中断搬运，前台只负责格式化和解析。
+//
+// 单生产者单消费者，前台只写 head、中断只写 tail，各自是自己那个下标的唯一写者，
+// 所以不用关中断。长度取 2 的幂，uint32 下标自然回绕后再取模。
+#define VOFA_TX_FIFO_DEPTH  (16u)               // ASCLIN 硬件发送 FIFO 深度
+#define VOFA_TX_SIZE        (2048u)             // 发送环长度，必须是 2 的幂
+#define VOFA_RX_SIZE        (256u)              // 接收环长度，必须是 2 的幂
+#define VOFA_TX_MASK        (VOFA_TX_SIZE - 1u)
+#define VOFA_RX_MASK        (VOFA_RX_SIZE - 1u)
 
-typedef struct
-{
-    fifo_struct  fifo;                          // 字节环形缓冲
-    Ifx_ASCLIN  *asclin;                        // 串口寄存器组
-} vofa_tx_t;
+typedef char vofa_ring_size_is_pow2[((VOFA_TX_SIZE & VOFA_TX_MASK) == 0u &&
+                                     (VOFA_RX_SIZE & VOFA_RX_MASK) == 0u) ? 1 : -1];
 
-static vofa_tx_t s_tx_uart0;                    // UART0 发送状态
-static uint8     s_tx_uart0_buf[VOFA_TX_UART0_SIZE];
+static uint8 s_tx_buf[VOFA_TX_SIZE];            // 上行字节环
+static volatile uint32 s_tx_head;               // 写下标，只由前台写
+static volatile uint32 s_tx_tail;               // 读下标，只由 1ms 中断写
+
+static uint8 s_rx_buf[VOFA_RX_SIZE];            // 下行字节环
+static volatile uint32 s_rx_head;               // 写下标，只由 1ms 中断写
+static volatile uint32 s_rx_tail;               // 读下标，只由前台写
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将完整数据帧写入发送队列
-// 参数说明     tx 目标队列，dat 数据地址，len 数据长度
-// 返回参数     uint8           1 写入成功，0 写入失败
-// 使用示例     (void)tx_push(&s_tx_uart0, (const uint8 *)line, len);
+// 函数简介     把一整帧压进上行环，装不下就整帧丢弃，绝不写半截
+// 参数说明     dat/len         数据地址与长度
+// 返回参数     uint8           1 写入成功，0 空间不足已丢帧
+// 使用示例     (void)tx_push((const uint8 *)line, (uint32)len);
 //-------------------------------------------------------------------------------------------------------------------
-static uint8 tx_push(vofa_tx_t *tx, const uint8 *dat, uint32 len)
+static uint8 tx_push(const uint8 *dat, uint32 len)
 {
-    return (uint8)(len != 0u &&
-                   fifo_write_buffer(&tx->fifo, (void *)dat, len) == FIFO_SUCCESS);
+    uint32 head = s_tx_head;
+    uint32 used = head - s_tx_tail;             // 无符号相减，回绕后依然是真实占用量
+    uint32 i;
+
+    if (len == 0u || len > (VOFA_TX_SIZE - used)) return 0;
+
+    // 半截帧比丢帧更糟：VOFA+ 会把残行当成一帧解析，通道全部错位。
+    for (i = 0; i < len; i++) s_tx_buf[(head + i) & VOFA_TX_MASK] = dat[i];
+    s_tx_head = head + len;                     // 数据写完再发布下标
+    return 1;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将队列数据写入硬件发送 FIFO
-// 参数说明     tx              目标队列
+// 函数简介     将一行 ASCII 数据写入上行环
+// 参数说明     line            以 '\0' 结尾且包含换行符的字符串
 // 返回参数     void
-// 使用示例     tx_pump(&s_tx_uart0);
+// 使用示例     cmd_send("ack:1.000\n");
 //-------------------------------------------------------------------------------------------------------------------
-static void tx_pump(vofa_tx_t *tx)
+static void cmd_send(const char *line)
 {
-    uint8 b;
-
-    while (fifo_used(&tx->fifo) != 0u &&
-           IfxAsclin_getTxFifoFillLevel(tx->asclin) < VOFA_TX_FIFO_DEPTH)
-    {
-        if (fifo_read_element(&tx->fifo, &b, FIFO_READ_AND_CLEAN) != FIFO_SUCCESS) break;
-        IfxAsclin_writeTxData(tx->asclin, b);
-    }
+    uint32 n = 0;
+    while (line[n] != '\0' && n < 200u) n++;
+    if (n) (void)tx_push((const uint8 *)line, n);
 }
 
 // 调参轴、环与参数名的对应表
@@ -97,7 +108,7 @@ static const char *const s_tune_tbl[TUNE_AXIS_MAX][TUNE_RING_MAX][3] =
 // 函数简介     比较两个 ASCII 字符串并忽略大小写
 // 参数说明     a 第一个字符串，b 第二个字符串
 // 返回参数     int             0 表示相等
-// 使用示例     if (cmd_icmp(tok, "axis") == 0)
+// 使用示例     if (cmd_icmp(tok, "r_rate_kp") == 0)
 //-------------------------------------------------------------------------------------------------------------------
 static int cmd_icmp(const char *a, const char *b)
 {
@@ -184,7 +195,6 @@ static uint8 cmd_parse_float_strict(const char *text, float *value)
         while (*p >= '0' && *p <= '9')
         {
             exponent_seen = 1;
-            if (exponent > 38u) return 0;
             exponent = (uint16)(exponent * 10u + (uint16)(*p - '0'));
             if (exponent > 38u) return 0;
             p++;
@@ -267,19 +277,6 @@ static uint8 cmd_test_param_allowed(const char *name)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将一行 ASCII 数据写入 UART0 发送队列
-// 参数说明     line            以 '\0' 结尾且包含换行符的字符串
-// 返回参数     void
-// 使用示例     cmd_send("ack:1\n");
-//-------------------------------------------------------------------------------------------------------------------
-static void cmd_send(const char *line)
-{
-    uint32 n = 0;
-    while (line[n] != '\0' && n < 200u) n++;
-    if (n) (void)tx_push(&s_tx_uart0, (const uint8 *)line, n);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     发送命令执行状态帧
 // 参数说明     ok              1 成功，0 失败
 // 返回参数     void
@@ -291,220 +288,54 @@ static void cmd_ack(uint8 ok)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     发送当前调参轴和调参环的 PID 参数
-// 参数说明     void
-// 返回参数     void
-// 使用示例     cmd_report_pid();
+// 函数简介     判断参数名是否属于八个环的 PID，只有它们能用命令改
+// 参数说明     name            参数名
+// 返回参数     uint8           1 表示是八环 PID 之一
+// 使用示例     if (!cmd_pid_param(tok[0])) cmd_ack(0);
 //-------------------------------------------------------------------------------------------------------------------
-static void cmd_report_pid(void)
+static uint8 cmd_pid_param(const char *name)
 {
-    char  line[96];
-    float kp = 0.0f, ki = 0.0f, kd = 0.0f;
-    const char *const *names = s_tune_tbl[g_tune_axis][g_tune_ring];
+    uint8 axis, ring, gain;
 
-    if (names[0]) (void)param_get_by_name(names[0], &kp);
-    if (names[1]) (void)param_get_by_name(names[1], &ki);
-    if (names[2]) (void)param_get_by_name(names[2], &kd);
-
-    (void)snprintf(line, sizeof(line), "pid:%d.000,%d.000,%.4f,%.4f,%.4f\n",
-                   (int)g_tune_axis, (int)g_tune_ring, (double)kp, (double)ki, (double)kd);
-    cmd_send(line);
+    if (name == 0) return 0;
+    for (axis = 0; axis < (uint8)TUNE_AXIS_MAX; axis++)
+        for (ring = 0; ring < (uint8)TUNE_RING_MAX; ring++)
+            for (gain = 0; gain < 3u; gain++)
+            {
+                const char *entry = s_tune_tbl[axis][ring][gain];
+                if (entry != 0 && cmd_icmp(name, entry) == 0) return 1;
+            }
+    return 0;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     发送指定参数的当前值
-// 参数说明     index           参数表下标
+// 函数简介     解析并执行一行下行命令。协议只有一条：<参数名> <值>，以 CR LF 结尾
+// 参数说明     line            已去掉换行符的命令字符串
 // 返回参数     void
-// 使用示例     cmd_report_param(3);
-//-------------------------------------------------------------------------------------------------------------------
-static void cmd_report_param(uint16 index)
-{
-    char  line[64];
-    float v = 0.0f;
-    if (index >= param_table_count()) return;
-    (void)param_get_by_name(g_param_table[index].name, &v);
-    (void)snprintf(line, sizeof(line), "par:%u.000,%.4f\n", (unsigned)index, (double)v);
-    cmd_send(line);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     解析并执行一行下行命令
-// 参数说明     line            已移除换行符的命令字符串
-// 返回参数     void
-// 使用示例     cmd_execute("kp 12.5");
+// 使用示例     cmd_execute("r_rate_kp 12.5");
 //-------------------------------------------------------------------------------------------------------------------
 static void cmd_execute(char *line)
 {
     char *tok[3];
     int ntok = cmd_tokenize(line, tok);
+    float value;
 
-    if (ntok < 0) { cmd_ack(0); return; }
-    if (ntok == 0) return;
+    if (ntok == 0) return;                      // 空行不当错误
+    if (ntok != 2) { cmd_ack(0); return; }
 
-    // 切换调参轴
-    if (cmd_icmp(tok[0], "axis") == 0)
-    {
-        tune_axis_t axis;
+    // 只放行八个环的 PID，其余参数一律用车上的按键改
+    if (!cmd_pid_param(tok[0])) { cmd_ack(0); return; }
 
-        if (ntok != 2 || cmd_motion_active() || control_test_running())
-        {
-            cmd_ack(0);
-            return;
-        }
-        if      (cmd_icmp(tok[1], "roll")  == 0) axis = TUNE_AXIS_ROLL;
-        else if (cmd_icmp(tok[1], "pitch") == 0) axis = TUNE_AXIS_PITCH;
-        else if (cmd_icmp(tok[1], "yaw")   == 0) axis = TUNE_AXIS_YAW;
-        else if (cmd_icmp(tok[1], "next")  == 0)
-            axis = (tune_axis_t)(((int)g_tune_axis + 1) % (int)TUNE_AXIS_MAX);
-        else { cmd_ack(0); return; }
+    // 发车或架空点动期间不接受改参数
+    if (cmd_motion_active()) { cmd_ack(0); return; }
 
-        if (axis == TUNE_AXIS_YAW && g_tune_ring == TUNE_RING_VEL)
-        {
-            cmd_ack(0);
-            return;
-        }
-        g_tune_axis = axis;
-        cmd_report_pid(); cmd_ack(1); return;
-    }
+    // 闭环测试期间锁定调参轴，只放行当前轴、当前最高启用环之内的 PID
+    if (control_test_running() && !cmd_test_param_allowed(tok[0])) { cmd_ack(0); return; }
 
-    // 切换调参环
-    if (cmd_icmp(tok[0], "ring") == 0)
-    {
-        tune_ring_t ring;
-
-        if (ntok != 2 || cmd_motion_active() || control_test_running())
-        {
-            cmd_ack(0);
-            return;
-        }
-        if      (cmd_icmp(tok[1], "rate")  == 0) ring = TUNE_RING_RATE;
-        else if (cmd_icmp(tok[1], "angle") == 0) ring = TUNE_RING_ANGLE;
-        else if (cmd_icmp(tok[1], "vel")   == 0) ring = TUNE_RING_VEL;
-        else if (cmd_icmp(tok[1], "next")  == 0)
-            ring = (tune_ring_t)(((int)g_tune_ring + 1) % (int)TUNE_RING_MAX);
-        else { cmd_ack(0); return; }
-
-        if (g_tune_axis == TUNE_AXIS_YAW && ring == TUNE_RING_VEL)
-        {
-            cmd_ack(0);
-            return;
-        }
-        g_tune_ring = ring;
-        cmd_report_pid(); cmd_ack(1); return;
-    }
-
-    // 修改当前轴和环的增益
-    if (cmd_icmp(tok[0], "kp")  == 0 || cmd_icmp(tok[0], "kpm") == 0 ||
-        cmd_icmp(tok[0], "ki")  == 0 || cmd_icmp(tok[0], "kd")  == 0)
-    {
-        int which = (cmd_icmp(tok[0], "ki") == 0) ? 1 : ((cmd_icmp(tok[0], "kd") == 0) ? 2 : 0);
-        const char *name;
-        float value;
-
-        if (ntok != 2 || cmd_motion_active() ||
-            g_tune_axis >= TUNE_AXIS_MAX || g_tune_ring >= TUNE_RING_MAX ||
-            !cmd_parse_float_strict(tok[1], &value))
-        {
-            cmd_ack(0);
-            return;
-        }
-        name = s_tune_tbl[g_tune_axis][g_tune_ring][which];
-        if (name == 0 || !param_set_by_name(name, value)) { cmd_ack(0); return; }
-        cmd_report_pid(); cmd_ack(1); return;
-    }
-
-    // 按名称修改参数
-    if (cmd_icmp(tok[0], "set") == 0)
-    {
-        float value;
-        uint8 test_active = control_test_running();
-
-        if (ntok != 3 || cmd_motion_active() ||
-            (test_active && !cmd_test_param_allowed(tok[1])) ||
-            !cmd_parse_float_strict(tok[2], &value))
-        {
-            cmd_ack(0);
-            return;
-        }
-        if (param_set_by_name(tok[1], value))
-        {
-            if (cmd_icmp(tok[1], "cam_exposure") == 0)
-                display_set_exposure((uint16)g_param.cam_exposure);
-            cmd_ack(1);
-        }
-        else
-        {
-            cmd_ack(0);
-        }
-        return;
-    }
-
-    // 读取指定参数
-    if (cmd_icmp(tok[0], "get") == 0)
-    {
-        uint16 i;
-        if (ntok != 2) { cmd_ack(0); return; }
-        for (i = 0; i < param_table_count(); i++)
-            if (cmd_icmp(tok[1], g_param_table[i].name) == 0) { cmd_report_param(i); cmd_ack(1); return; }
-        cmd_ack(0); return;
-    }
-
-    // 回传全部参数
-    if (cmd_icmp(tok[0], "list") == 0)
-    {
-        uint16 i;
-        if (ntok != 1) { cmd_ack(0); return; }
-        for (i = 0; i < param_table_count(); i++) cmd_report_param(i);
-        cmd_ack(1); return;
-    }
-
-    // 保存参数
-    if (cmd_icmp(tok[0], "save") == 0)
-    {
-        if (ntok != 1 || cmd_motion_active() || control_test_running())
-        {
-            cmd_ack(0);
-            return;
-        }
-        cmd_ack(param_save());
-        return;
-    }
-
-    // 切换波形模式
-    if (cmd_icmp(tok[0], "wave") == 0)
-    {
-        int m;
-        if (ntok != 2 || cmd_motion_active() || control_test_running())
-        {
-            cmd_ack(0);
-            return;
-        }
-        if      (cmd_icmp(tok[1], "off")   == 0) m = (int)VOFA_OFF;
-        else if (cmd_icmp(tok[1], "imu")   == 0) m = (int)VOFA_IMU_RAW;
-        else if (cmd_icmp(tok[1], "att")   == 0) m = (int)VOFA_ATT;
-        else if (cmd_icmp(tok[1], "roll")  == 0) m = (int)VOFA_ROLL;
-        else if (cmd_icmp(tok[1], "pitch") == 0 ||
-                 cmd_icmp(tok[1], "pit")   == 0) m = (int)VOFA_PITCH;
-        else if (cmd_icmp(tok[1], "yaw")   == 0) m = (int)VOFA_YAW;
-        else if (cmd_icmp(tok[1], "track") == 0 ||
-                 cmd_icmp(tok[1], "trk")   == 0) m = (int)VOFA_TRACK;
-        else if (cmd_icmp(tok[1], "motor") == 0 ||
-                 cmd_icmp(tok[1], "mot")   == 0) m = (int)VOFA_MOTOR;
-        else if (cmd_icmp(tok[1], "dash")  == 0) m = (int)VOFA_DASH;
-        else { cmd_ack(0); return; }
-        g_vofa_mode = (vofa_mode_t)m;
-        cmd_ack(1); return;
-    }
-
-    // 通信心跳
-    if (cmd_icmp(tok[0], "ping") == 0)
-    {
-        cmd_ack((uint8)(ntok == 1));
-        return;
-    }
-
-    cmd_ack(0);
+    if (!cmd_parse_float_strict(tok[1], &value)) { cmd_ack(0); return; }
+    cmd_ack(param_set_by_name(tok[0], value));
 }
+
 
 // 外部接口
 //-------------------------------------------------------------------------------------------------------------------
@@ -521,11 +352,6 @@ void vofa_snapshot(void)
     s_seq++;                                    // 奇数表示正在写入
     switch (m)
     {
-    case VOFA_IMU_RAW:
-        s_tag = "imu"; s_n = 6;
-        s_ch[0] = imu.acc_x;  s_ch[1] = imu.acc_y;  s_ch[2] = imu.acc_z;
-        s_ch[3] = imu.gyro_x; s_ch[4] = imu.gyro_y; s_ch[5] = imu.gyro_z;
-        break;
     case VOFA_ATT:
         // FireWater 通道顺序为 Roll、Pitch、Yaw
         s_tag = "att"; s_n = 3;
@@ -535,10 +361,13 @@ void vofa_snapshot(void)
         break;
     case VOFA_ROLL:
         // r_rcy_fb 是 B、A 两个飞轮的转速差(RPM)，由 CYT2BL3 每 10ms 回传
-        s_tag = "roll"; s_n = 7;
+        s_tag = "roll"; s_n = 11;
         s_ch[0] = g_bal_dbg.r_rcy_set;  s_ch[1] = g_bal_dbg.r_rcy_fb;  s_ch[2] = g_bal_dbg.r_rcy_out;
         s_ch[3] = g_bal_dbg.r_ang_fb;   s_ch[4] = g_bal_dbg.r_ang_out;
         s_ch[5] = g_bal_dbg.r_rate_fb;  s_ch[6] = g_bal_dbg.r_pwm;
+        s_ch[7] = (float)g_motor_a;     s_ch[8] = (float)g_motor_b;
+        s_ch[9] = (float)W_Motor_GetSpeed1();
+        s_ch[10] = (float)W_Motor_GetSpeed2();
         break;
     case VOFA_PITCH:
         s_tag = "pit"; s_n = 7;
@@ -577,19 +406,6 @@ void vofa_snapshot(void)
         s_ch[2] = (float)W_Motor_GetSpeed1();   // A 轮回传转速(RPM)
         s_ch[3] = (float)W_Motor_GetSpeed2();   // B 轮回传转速(RPM)
         s_ch[4] = (float)Y_Motor_GetSpeed20ms();// C 轮编码器增量(counts/20ms)
-        break;
-    case VOFA_DASH:
-        // 前三通道用于三维姿态显示
-        s_tag = "dash"; s_n = 9;
-        s_ch[0] = att.roll;
-        s_ch[1] = att.pitch;
-        s_ch[2] = att.yaw;
-        s_ch[3] = g_bal_dbg.p_vel_fb;           // 行进轮速度
-        s_ch[4] = g_dbg_error;                  // 中线偏差
-        s_ch[5] = (float)g_motor_a;             // 电机 A 输出
-        s_ch[6] = (float)g_motor_b;             // 电机 B 输出
-        s_ch[7] = (float)g_motor_c;             // 电机 C 输出
-        s_ch[8] = g_bal_dbg.p_vel_set;          // 目标速度
         break;
     default:
         s_n = 0;
@@ -635,47 +451,90 @@ void vofa_poll(void)
     if (len <= 0) return;                                           // 格式化失败
     if (len > (int)sizeof(line) - 2) len = (int)sizeof(line) - 2;   // 限制实际缓冲长度
     line[len++] = '\n'; line[len] = '\0';
-    (void)tx_push(&s_tx_uart0, (const uint8 *)line, (uint32)len);   // 写入发送队列
+    (void)tx_push((const uint8 *)line, (uint32)len);                // 写入上行环，装不下就丢这一帧
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     上行发送队列初始化
+// 函数简介     初始化无线转串口模块与上行发送队列
 // 参数说明     void
 // 返回参数     void
 // 使用示例     vofa_init();
 //-------------------------------------------------------------------------------------------------------------------
 void vofa_init(void)
 {
-    (void)fifo_init(&s_tx_uart0.fifo, FIFO_DATA_8BIT, s_tx_uart0_buf, VOFA_TX_UART0_SIZE);
-    s_tx_uart0.asclin = uart0_handle.asclin;        // 烧录器虚拟串口 UART0
+    // 模块 RX 接 P10_5(MCU TX)、TX 接 P10_6(MCU RX)、RTS 接 P10_2，引脚与波特率都在
+    // zf_device_wireless_uart.h 里定义。自动波特率关着，模块保持出厂 115200，
+    // 这条路径里 wireless_uart_init() 不会失败，返回值没有信息量。
+    (void)wireless_uart_init();
+
+    s_tx_head = 0; s_tx_tail = 0;
+    s_rx_head = 0; s_rx_tail = 0;
+    s_cmd_len = 0; s_cmd_ovf = 0;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将发送队列数据写入 UART0 硬件 FIFO
+// 函数简介     搬运一拍串口字节，由 1ms 控制中断调用。只搬字节，不做格式化和解析
 // 参数说明     void
 // 返回参数     void
-// 使用示例     vofa_tx_pump();
+// 使用示例     vofa_tick1ms();
 //-------------------------------------------------------------------------------------------------------------------
-void vofa_tx_pump(void)
+void vofa_tick1ms(void)
 {
-    tx_pump(&s_tx_uart0);
+    uint8  buf[32];
+    uint32 got, i;
+    uint32 head;
+    uint32 tail;
+
+    // 收：把库里那 64 字节缓冲倒进自己的环。1ms 一次，115200 下一拍最多来 12 字节，
+    // 无论前台在刷屏还是在解析都不会溢出。读的时候要挡住 UART2 接收中断，
+    // 那个中断优先级 17 低于本中断的 30，会被本中断打断在 fifo 写一半的位置上。
+    {
+        uint32 interrupt_state = interrupt_global_disable();
+        got = wireless_uart_read_buffer(buf, (uint32)sizeof(buf));
+        interrupt_global_enable(interrupt_state);
+    }
+
+    head = s_rx_head;
+    for (i = 0; i < got; i++)
+    {
+        if ((uint32)(head - s_rx_tail) >= VOFA_RX_SIZE) break;  // 前台没来得及取，丢掉多的
+        s_rx_buf[head & VOFA_RX_MASK] = buf[i];
+        head++;
+    }
+    s_rx_head = head;
+
+    // 发：RTS 是无线模块的流控输出，P10_2 带上拉。高电平表示模块内部缓冲满，
+    // 此时继续灌数据会被模块丢掉，所以整拍不发，字节留在环里下一拍再说。
+    // 模块没插、没供电或者挂了，这里会一直读到高电平。
+    // 库里的 wireless_uart_send_buffer() 遇到这种情况靠 system_delay_ms 死等，中断里不能用。
+    if (gpio_get_level(WIRELESS_UART_RTS_PIN)) return;
+
+    // 一拍最多补满 16 字节硬件 FIFO。115200 下一拍只能发走约 12 字节，
+    // 所以每拍都能把 FIFO 顶满，实际吞吐就是波特率本身，与主循环刷屏彻底无关。
+    tail = s_tx_tail;
+    while (tail != s_tx_head &&
+           IfxAsclin_getTxFifoFillLevel(uart2_handle.asclin) < VOFA_TX_FIFO_DEPTH)
+    {
+        IfxAsclin_writeTxData(uart2_handle.asclin, s_tx_buf[tail & VOFA_TX_MASK]);
+        tail++;
+    }
+    s_tx_tail = tail;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     接收并执行 UART0 下行调参命令
+// 函数简介     解析并执行无线串口下行调参命令，由主循环调用
 // 参数说明     void
 // 返回参数     void
 // 使用示例     vofa_cmd_poll();
 //-------------------------------------------------------------------------------------------------------------------
 void vofa_cmd_poll(void)
 {
-    uint8  buf[VOFA_CMD_READ_MAX];
-    uint32 got, k;
+    uint32 tail = s_rx_tail;
 
-    got = debug_read_ring_buffer(buf, (uint32)VOFA_CMD_READ_MAX);
-    for (k = 0; k < got; k++)
+    while (tail != s_rx_head)
     {
-        char c = (char)buf[k];
+        char c = (char)s_rx_buf[tail & VOFA_RX_MASK];
+        tail++;
 
         if (c == '\n' || c == '\r')
         {
@@ -691,6 +550,7 @@ void vofa_cmd_poll(void)
         if (s_cmd_len < (VOFA_CMD_LINE_MAX - 1))
             s_cmd_line[s_cmd_len++] = c;
         else
-            s_cmd_ovf = 1;                      // 标记命令行溢出
+            s_cmd_ovf = 1;                      // 标记命令行溢出，整行作废
     }
+    s_rx_tail = tail;
 }

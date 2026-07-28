@@ -38,7 +38,8 @@
 #define DMA_DATA_CORE_ID        (1)                 // 预处理专用纯数字，DMA 状态放入 CPU1 DSRAM
 #define DMA_INT_PRIO  	        60
 
-// UART0：调参与波形，运行在 CPU0
+// UART0 未使用，保留宏供 zf_driver_uart 编译。
+// 工程不调 debug_init()，UART0 从不初始化，所以 isr.c 里没有对应的中断服务函数。
 #define	UART0_INT_SERVICE       IfxSrc_Tos_cpu0
 #define UART0_TX_INT_PRIO       11
 #define UART0_RX_INT_PRIO       10
@@ -50,7 +51,7 @@
 #define UART1_RX_INT_PRIO       14
 #define UART1_ER_INT_PRIO       15
 
-// UART2 未使用，保留宏供 zf_driver_uart 编译
+// UART2：无线转串口模块，调参与波形，运行在 CPU0
 #define	UART2_INT_SERVICE       IfxSrc_Tos_cpu0
 #define UART2_TX_INT_PRIO       16
 #define UART2_RX_INT_PRIO       17

@@ -3,19 +3,25 @@
 
 #include "zf_common_headfile.h"
 
-// UART0 上行波形，VOFA+ FireWater 格式 <tag>:v0,v1,...\n，通道按位置对应。
+// 无线转串口上行波形，VOFA+ FireWater 格式 <tag>:v0,v1,...\n，通道按位置对应。
 // 同一模式下通道数必须恒定，否则 FireWater 会错位。
+// 物理层是逐飞无线转串口模块，挂在 UART2 @115200：
+// P10_5(MCU TX) -> 模块 RX、P10_6(MCU RX) <- 模块 TX、P10_2 读模块 RTS 流控。
+// 模式不是给人选的，完全由当前菜单页和正在跑什么决定：
+//   主菜单/Image/Params 列表        VOFA_OFF
+//   Params → Attitude 按 Test       VOFA_ATT
+//   Params → Roll/Pitch/Yaw 开测试  VOFA_ROLL / VOFA_PITCH / VOFA_YAW，由 control_test_start() 按轴给
+//   Params → Motor 点动             VOFA_MOTOR，由 control_jog_start() 给
+//   进 Params → Camera / Element    VOFA_TRACK
 typedef enum
 {
     VOFA_OFF = 0,       // 关闭波形输出
-    VOFA_IMU_RAW,       // imu  : IMU 原始六轴，6 通道
     VOFA_ATT,           // att  : Roll、Pitch、Yaw，3 通道
-    VOFA_ROLL,          // roll : Roll 串级各环，7 通道
+    VOFA_ROLL,          // roll : Roll 串级、双轮命令与转速，11 通道
     VOFA_PITCH,         // pit  : Pitch 串级各环，7 通道
     VOFA_YAW,           // yaw  : Yaw 串级各环，6 通道
-    VOFA_TRACK,         // trk  : 循迹偏差与丢线统计，10 通道
+    VOFA_TRACK,         // trk  : 循迹偏差与丢线统计，13 通道
     VOFA_MOTOR,         // mot  : 三电机指令与转速回读，5 通道
-    VOFA_DASH,          // dash : 综合面板，9 通道
 } vofa_mode_t;
 
 // 调参轴
@@ -42,7 +48,7 @@ extern volatile tune_axis_t g_tune_axis;    // 当前调参轴
 extern volatile tune_ring_t g_tune_ring;    // 当前调参环
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     上行发送队列初始化
+// 函数简介     初始化无线转串口模块与上行发送队列
 // 参数说明     void
 // 返回参数     void
 // 使用示例     vofa_init();
@@ -50,12 +56,12 @@ extern volatile tune_ring_t g_tune_ring;    // 当前调参环
 void vofa_init(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将发送队列数据写入 UART0 硬件 FIFO
+// 函数简介     搬运一拍串口字节，由 1ms 控制中断调用。只搬字节，不做格式化和解析
 // 参数说明     void
 // 返回参数     void
-// 使用示例     vofa_tx_pump();
+// 使用示例     vofa_tick1ms();
 //-------------------------------------------------------------------------------------------------------------------
-void vofa_tx_pump(void);
+void vofa_tick1ms(void);
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     根据波形模式更新通道快照
@@ -73,23 +79,17 @@ void vofa_snapshot(void);
 //-------------------------------------------------------------------------------------------------------------------
 void vofa_poll(void);
 
-// UART0 下行命令，ASCII 行，'\n' 或 '\r' 结束：
-//   axis roll|pitch|yaw|next      切换调参轴
-//   ring rate|angle|vel|next      切换调参环
-//   kp|ki|kd <value>              改当前轴当前环的增益
-//   set <name> <value>            按名字改参数
-//   get <name>                    读单个参数
-//   list                          回传全部参数
-//   save                          写 Flash
-//   wave off|imu|att|roll|pit|yaw|trk|mot|dash 切波形
-//   ping                          通信检测
-// 应答格式为 pid:<...>、par:<...> 和 ack:<0|1>。
-// 数值字段必须完整合法；电机测试、点动或发车期间禁止切轴、切环、切波形和保存。
-// 闭环测试期间仅允许修改当前轴已启用串级范围内的增益。
+// 下行只有一条命令，ASCII 行，'\r\n' 或 '\n' 结束：
+//   <参数名> <值>
+// 参数名白名单就是 vofa.c 里 s_tune_tbl 的 24 个环 PID，其余参数一律用车上的按键改。
+// 应答只有 ack:1.000 / ack:0.000。数值必须完整解析，NaN 与无穷一律拒绝。
+// 发车或架空点动期间拒绝改参数；闭环测试期间只放行当前轴、当前最高启用环之内的增益。
+// 波形模式由菜单页决定，命令侧不能切波形。
 // 本协议只做看波形和调参，不提供任何电机启停命令，发车与停车只能用车上的实体键。
+// 24 条命令的完整清单见 调参命令.md。
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     接收并执行 UART0 下行调参命令
+// 函数简介     解析并执行无线串口下行调参命令，由主循环调用
 // 参数说明     void
 // 返回参数     void
 // 使用示例     vofa_cmd_poll();

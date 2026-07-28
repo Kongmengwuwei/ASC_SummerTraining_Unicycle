@@ -11,7 +11,6 @@ typedef enum {
     ELEM_RING_LEFT,                            // 左环岛
     ELEM_RING_RIGHT,                           // 右环岛
     ELEM_RAMP,                                 // 坡道
-    ELEM_OBSTACLE,                             // 路障
 } elem_type_t;
 
 typedef struct {
@@ -33,12 +32,6 @@ typedef struct {
 } island_t;
 
 typedef struct {
-    volatile int state;         // 0无路障 1有路障
-    volatile int direction;     // 1左避 2右避
-    volatile int narrow_count;  // 收窄行计数
-} obstacle_t;
-
-typedef struct {
     float       speed_scale;    // 元素速度倍率
     elem_type_t active_elem;    // 当前元素
     uint8       stop_request;   // 停车请求
@@ -54,7 +47,6 @@ typedef struct
     float  track_error;
     float  speed_ramp_gain;
     float  speed_ring_gain;
-    float  obs_narrow_ratio;
     uint32 uptime_ms;
     int    zebra_jump_cnt;
     int    cross_lost_cnt;
@@ -64,17 +56,14 @@ typedef struct
     int    ring_side_offset;
     int    ring_timeout_cnt;    // 环岛单状态最长停留帧数，超了强制回空闲
     int    elem_guard_cnt;      // 元素退出后的屏蔽帧数
-    int    obs_line_offset;
     uint8  en_zebra;            // 各元素使能，0=本帧不检测并清自己的旗标
     uint8  en_cross;
     uint8  en_ring;
     uint8  en_ramp;
-    uint8  en_obstacle;
 } element_motion_t;
 
 extern order_t       g_order;
 extern island_t      g_island;
-extern obstacle_t    g_obstacle;
 extern elem_action_t g_elem_action;
 
 //-------------------------------------------------------------------------------------------------------------------

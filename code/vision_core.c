@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "IfxStm.h"
 #include "image.h"
 #include "zf_device_mt9v03x.h"
 
@@ -39,9 +40,25 @@ static vision_display_frame_t s_display_frame;
 #pragma section all "cpu1_dsram"
 static uint32 s_frame_seq;
 static uint32 s_command_seq;
+static uint32 s_process_max_us;
 static uint16 s_camera_exposure;
+static int32  s_road_wide_near;         // 已生效的近端赛宽，0=尚未应用过
+static int32  s_road_wide_far;          // 已生效的远端赛宽，0=尚未应用过
 static vision_feedback_t s_feedback_cache;
 #pragma section all restore
+
+#pragma section code "cpu1_psram"
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将 CPU1 STM 时钟差换算为微秒
+// 参数说明     ticks            STM1 计数差
+// 返回参数     uint32           经过四舍五入的微秒数
+// 使用示例     elapsed_us = vision_ticks_to_us(now - start);
+//-------------------------------------------------------------------------------------------------------------------
+static inline uint32 vision_ticks_to_us(uint32 ticks)
+{
+    return (ticks + 50u) / 100u;
+}
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     将整数压缩到图像列坐标范围
@@ -89,7 +106,6 @@ static void vision_feedback_defaults(vision_feedback_t *feedback)
     feedback->err_offset = 0.0f;
     feedback->speed_ramp_gain = SPEED_RAMP_GAIN_DEFAULT;
     feedback->speed_ring_gain = SPEED_RING_GAIN_DEFAULT;
-    feedback->obs_narrow_ratio = OBS_NARROW_RATIO_DEFAULT;
     feedback->zebra_jump_cnt = ZEBRA_JUMP_CNT_DEFAULT;
     feedback->cross_lost_cnt = CROSS_LOST_CNT_DEFAULT;
     feedback->ring_angle = RING_ANGLE_DEFAULT;
@@ -98,14 +114,14 @@ static void vision_feedback_defaults(vision_feedback_t *feedback)
     feedback->ring_side_offset = RING_SIDE_OFFSET_DEFAULT;
     feedback->ring_timeout_cnt = RING_TIMEOUT_CNT_DEFAULT;
     feedback->elem_guard_cnt = ELEM_GUARD_CNT_DEFAULT;
-    feedback->obs_line_offset = OBS_LINE_OFFSET_DEFAULT;
+    feedback->road_wide_near = ROAD_WIDE_NEAR_DEFAULT;
+    feedback->road_wide_far = ROAD_WIDE_FAR_DEFAULT;
     feedback->cam_exposure = CAM_EXPOSURE_DEFAULT;
     // 元素使能默认全关，CPU0 的首份快照到达前 CPU1 不跑任何元素
     feedback->elem_en_zebra = ELEM_EN_ZEBRA_DEFAULT;
     feedback->elem_en_cross = ELEM_EN_CROSS_DEFAULT;
     feedback->elem_en_ring = ELEM_EN_RING_DEFAULT;
     feedback->elem_en_ramp = ELEM_EN_RAMP_DEFAULT;
-    feedback->elem_en_obstacle = ELEM_EN_OBSTACLE_DEFAULT;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -199,6 +215,7 @@ static uint8 vision_camera_start(void)
     uint8 ok;
 
     s_core_state = VISION_CORE_STARTING;
+    s_process_max_us = 0;
     image_init();
     element_init();
     ok = (uint8)(mt9v03x_init() == 0u);
@@ -254,7 +271,11 @@ void vision_core_init(void)
         s_feedback_cache = feedback;
     s_frame_seq = 0;
     s_command_seq = s_command_box.seq;
+    s_process_max_us = 0;
     s_camera_exposure = s_feedback_cache.cam_exposure;
+    // 置 0 表示赛宽表还没按运行参数建过，第一帧一定会重建一次
+    s_road_wide_near = 0;
+    s_road_wide_far = 0;
     s_heartbeat = 0;
     s_display_request = 0;
     s_display_ready = 0;
@@ -274,17 +295,36 @@ void vision_core_run(void)
     vision_feedback_t feedback;
     vision_result_t result;
     element_motion_t motion;
+    uint32 process_start;
+    uint32 element_start;
+    uint32 grab_us;
+    uint32 element_us;
+    uint32 process_us;
     float base_error = 0.0f;
     float final_error = 0.0f;
 
     s_heartbeat++;
     vision_command_service();
     if (s_core_state != VISION_CORE_READY) return;
+
+    process_start = MODULE_STM1.TIM0.U;
     if (!image_grab()) return;
+    grab_us = vision_ticks_to_us(MODULE_STM1.TIM0.U - process_start);
 
     if (vision_feedback_read(&feedback))
         s_feedback_cache = feedback;
     feedback = s_feedback_cache;
+
+    // 赛宽表只在参数变化时重建，稳态下不做这 80 行插值。
+    // 必须排在 image_process() 之前，本帧补线和元素判据要用同一张表。
+    if (feedback.road_wide_near != s_road_wide_near ||
+        feedback.road_wide_far  != s_road_wide_far)
+    {
+        s_road_wide_near = feedback.road_wide_near;
+        s_road_wide_far  = feedback.road_wide_far;
+        image_set_road_wide((int)s_road_wide_near, (int)s_road_wide_far);
+    }
+
     image_process();
     if (my_image.Track_Valid)
         base_error = err_sum_average(ERR_FRONT_ROW, ERR_FRONT_ROW + ERR_AVG_ROWS) - feedback.err_offset;
@@ -296,7 +336,6 @@ void vision_core_run(void)
     motion.track_error = base_error;
     motion.speed_ramp_gain = feedback.speed_ramp_gain;
     motion.speed_ring_gain = feedback.speed_ring_gain;
-    motion.obs_narrow_ratio = feedback.obs_narrow_ratio;
     motion.uptime_ms = feedback.uptime_ms;
     motion.zebra_jump_cnt = (int)feedback.zebra_jump_cnt;
     motion.cross_lost_cnt = (int)feedback.cross_lost_cnt;
@@ -306,24 +345,41 @@ void vision_core_run(void)
     motion.ring_side_offset = (int)feedback.ring_side_offset;
     motion.ring_timeout_cnt = (int)feedback.ring_timeout_cnt;
     motion.elem_guard_cnt = (int)feedback.elem_guard_cnt;
-    motion.obs_line_offset = (int)feedback.obs_line_offset;
     motion.en_zebra = feedback.elem_en_zebra;
     motion.en_cross = feedback.elem_en_cross;
     motion.en_ring = feedback.elem_en_ring;
     motion.en_ramp = feedback.elem_en_ramp;
-    motion.en_obstacle = feedback.elem_en_obstacle;
+
+    element_start = MODULE_STM1.TIM0.U;
     element_set_motion(&motion);
     element_process();
-    Image_Build_Mid_Line();
+    if (g_order.cross == 1)
+        Image_Build_Mid_Line();
 
     if (my_image.Track_Valid)
         final_error = err_sum_average(ERR_FRONT_ROW, ERR_FRONT_ROW + ERR_AVG_ROWS) - feedback.err_offset;
+    element_us = vision_ticks_to_us(MODULE_STM1.TIM0.U - element_start);
 
     s_frame_seq++;
+    vision_display_publish((vision_display_mode_t)s_display_mode);
+    process_us = vision_ticks_to_us(MODULE_STM1.TIM0.U - process_start);
+    if (process_us > s_process_max_us) s_process_max_us = process_us;
+
     memset(&result, 0, sizeof(result));
     result.frame_seq = s_frame_seq;
     result.input_seq = feedback.input_seq;
     result.heartbeat = s_heartbeat;
+    result.camera_vsync_count = mt9v03x_vsync_count;
+    result.camera_dma_count = mt9v03x_dma_count;
+    result.camera_drop_count = mt9v03x_busy_drop_count;
+    result.grab_us = grab_us;
+    result.binarize_us = g_image_profile.binarize_us;
+    result.border_us = g_image_profile.border_us;
+    result.edge_us = g_image_profile.edge_us;
+    result.midline_us = g_image_profile.midline_us;
+    result.element_us = element_us;
+    result.process_us = process_us;
+    result.process_max_us = s_process_max_us;
     result.track_error = final_error;
     result.speed_scale = g_elem_action.speed_scale;
     result.threshold = (uint16)my_image.Threshold;
@@ -337,9 +393,9 @@ void vision_core_run(void)
     result.track_valid = (uint8)my_image.Track_Valid;
     result.stop_request = g_elem_action.stop_request;
     vision_result_publish(&result);
-
-    vision_display_publish((vision_display_mode_t)s_display_mode);
 }
+
+#pragma section code restore
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     原子读取 CPU1 发布的最新视觉结果

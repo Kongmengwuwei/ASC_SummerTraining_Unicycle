@@ -71,8 +71,18 @@ extern uint8  g_vision_active_elem;          // 最新元素编号
 extern uint8  g_vision_island_state;         // 最新环岛状态号，0=空闲
 extern float  g_vision_speed_scale;          // 元素建议速度倍率，Run 尚未使用
 extern uint8  g_vision_stop_request;         // 元素停车请求，Run 尚未使用
+extern float  g_vision_fps;                  // CPU1 出帧率(帧/s)，1ms 中断写，菜单与图像页读
+extern float  g_vision_vsync_fps;            // 摄像头 VSYNC 频率(帧/s)
+extern float  g_vision_dma_fps;              // DMA 完整帧频率(帧/s)
+extern float  g_vision_drop_fps;             // CPU1 忙导致的丢帧频率(帧/s)
+extern uint32 g_vision_grab_us;              // 最近一帧 ROI 复制耗时
+extern uint32 g_vision_binarize_us;          // 最近一帧大津与二值化耗时
+extern uint32 g_vision_edge_us;              // 最近一帧八邻域提边耗时
+extern uint32 g_vision_element_us;           // 最近一帧元素处理耗时
+extern uint32 g_vision_process_us;           // 最近一帧 CPU1 总处理耗时
+extern uint32 g_vision_process_max_us;       // 本次摄像头启动后的最大处理耗时
 
-// Test/Wave 启动结果，菜单据此显示可操作的提示
+// Test 启动结果，菜单据此显示可操作的提示
 typedef enum
 {
     CTRL_TEST_STATUS_OK = 0,        // 已启动
@@ -83,6 +93,10 @@ typedef enum
     CTRL_TEST_STATUS_ATT_DIVERGED,  // 四元数发散
     CTRL_TEST_STATUS_IMU_LOST,      // IMU 链路中断
     CTRL_TEST_STATUS_BLDC_LOST,     // CYT2BL3 通信中断
+    CTRL_TEST_STATUS_ROLL_PROT,     // 横滚超保护角
+    CTRL_TEST_STATUS_PITCH_PROT,    // 俯仰超保护角
+    CTRL_TEST_STATUS_FLY_OVERSPEED, // 动量轮转速超上限，抢在驱动堵转保护之前停
+    CTRL_TEST_STATUS_OUTPUT_INVALID,// PID 输出出现 NaN 或无穷
     CTRL_TEST_STATUS_SAFETY,        // 运行中被安全闸停掉
 } control_test_status_t;
 
@@ -112,7 +126,7 @@ void control_init(void);
 void control_loop(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     立即停止 Test/Wave 与点动，三电机清零并锁死动量轮软件刹车
+// 函数简介     立即停止 Test 与点动，三电机清零并锁死动量轮软件刹车
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_stop();
@@ -120,7 +134,7 @@ void control_loop(void);
 void control_stop(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     启动指定轴与最高启用环的 Test/Wave
+// 函数简介     启动指定轴与最高启用环的 Test
 // 参数说明     axis/ring       测试轴与最高启用环
 // 返回参数     uint8           1=已启动 0=被安全条件阻止，原因见 control_test_last_status()
 // 使用示例     control_test_start(TUNE_AXIS_PITCH, TUNE_RING_RATE);
@@ -128,7 +142,7 @@ void control_stop(void);
 uint8 control_test_start(tune_axis_t axis, tune_ring_t ring);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     立即停止 Test/Wave 并关闭波形输出
+// 函数简介     立即停止 Test 并关闭波形输出
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_test_stop();
@@ -136,7 +150,7 @@ uint8 control_test_start(tune_axis_t axis, tune_ring_t ring);
 void control_test_stop(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     查询 Test/Wave 是否正在运行，顺带识别被安全闸停掉的情况
+// 函数简介     查询 Test 是否正在运行，顺带识别被安全闸停掉的情况
 // 参数说明     void
 // 返回参数     uint8           1=运行中 0=已停止
 // 使用示例     if (control_test_running()) { ... }
@@ -144,7 +158,7 @@ void control_test_stop(void);
 uint8 control_test_running(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     读取最近一次 Test/Wave 的启动结果或停止原因
+// 函数简介     读取最近一次 Test 的启动结果或停止原因
 // 参数说明     void
 // 返回参数     control_test_status_t 状态码
 // 使用示例     status = control_test_last_status();
@@ -152,7 +166,7 @@ uint8 control_test_running(void);
 control_test_status_t control_test_last_status(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     启动一次限时架空点动，倒计时在 1ms 中断里跑，菜单卡死也会自动停
+// 函数简介     启动架空点动，持续转到停为止，占空比取 jog_duty_fly / jog_duty_drive
 // 参数说明     target/forward  点动电机与方向，forward 为 1 表示正转
 // 返回参数     uint8           1=已启动 0=姿态、标定、运行状态或驱动条件不满足
 // 使用示例     control_jog_start(MOTOR_JOG_A, 1);
@@ -182,13 +196,5 @@ motor_jog_t control_jog_running(void);
 // 使用示例     control_camera_debug_start();
 //-------------------------------------------------------------------------------------------------------------------
 uint8 control_camera_debug_start(void);
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     查询 CPU1 是否发布了新的视觉帧
-// 参数说明     void
-// 返回参数     uint8           1=有新帧 0=无新帧
-// 使用示例     if (control_vision_debug()) display_track_view();
-//-------------------------------------------------------------------------------------------------------------------
-uint8 control_vision_debug(void);
 
 #endif

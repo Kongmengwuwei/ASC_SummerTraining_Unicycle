@@ -58,20 +58,31 @@ float pid_loc_calc(pid_t *p, float error)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     算一拍增量式 PID 并累加到 p->out，函数内不限幅，调用者必须自己钳并写回
-// 参数说明     p/error         PID 实例与当前误差
-// 返回参数     float           累加后的总输出，不是本次增量
-// 使用示例     pid_inc_calc(&r_rate_pid, att.roll_rate + r_angle_pid.out);
+// 函数简介     算一拍带输出限幅的增量式 PID，积分只在不会继续推向饱和时生效
+// 参数说明     p/error/low/high PID 实例、当前误差、输出下限与上限
+// 返回参数     float           限幅后的累计输出
+// 使用示例     pid_inc_calc_limited(&r_rate_pid, error, -limit, limit);
 //-------------------------------------------------------------------------------------------------------------------
-float pid_inc_calc(pid_t *p, float error)
+float pid_inc_calc_limited(pid_t *p, float error, float low, float high)
 {
-    p->out_p = p->kp * (error - p->last_error);
+    float error_delta = error - p->last_error;
+    float output_without_i;
+    float output_candidate;
+
+    p->out_p = p->kp * error_delta;
     p->out_i = p->ki * error;
-    p->out_d = p->kd * ((error - p->last_error) - p->last_derivative);
+    p->out_d = p->kd * (error_delta - p->last_derivative);
 
-    p->last_derivative = error - p->last_error;
+    output_without_i = p->out + p->out_p + p->out_d;
+    output_candidate = output_without_i + p->out_i;
+    if ((output_candidate > high && p->out_i > 0.0f) ||
+        (output_candidate < low  && p->out_i < 0.0f))
+    {
+        p->out_i = 0.0f;
+    }
+
+    p->last_derivative = error_delta;
     p->last_error = error;
-
-    p->out += p->out_p + p->out_i + p->out_d;
+    p->out = constrain_float(output_without_i + p->out_i, low, high);
     return p->out;
 }

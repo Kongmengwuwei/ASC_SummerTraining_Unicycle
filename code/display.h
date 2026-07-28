@@ -3,9 +3,9 @@
 
 #include "zf_common_headfile.h"
 
-#define CAM_EXP_STEP    (16)        // 单次按键的曝光调整步长
-#define CAM_EXP_MIN     (16)        // 曝光下限
-#define CAM_EXP_MAX     (1600)      // 曝光上限
+#define CAM_EXP_STEP    (2)         // 单次按键的曝光调整步长，工作点在 48 附近所以取细步长
+#define CAM_EXP_MIN     (4)         // 曝光下限，与 param.c 里 cam_exposure 的范围一致
+#define CAM_EXP_MAX     (1600)      // 曝光上限，与 param.c 里 cam_exposure 的范围一致
 
 // 图像页显示模式，与 vision_display_mode_t 一一对应
 typedef enum

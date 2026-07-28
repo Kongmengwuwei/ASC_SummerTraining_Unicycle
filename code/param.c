@@ -12,7 +12,9 @@ const param_desc_t g_param_table[] =
     { "track_err_gain",   &g_param.track_err_gain,   1, -20.0f,  20.0f   },
     { "speed_ramp_gain",  &g_param.speed_ramp_gain,  1, 0.0f,    1.5f    },
     { "speed_ring_gain",  &g_param.speed_ring_gain,  1, 0.0f,    1.5f    },
-    { "cam_exposure",     &g_param.cam_exposure,     0, 16.0f,   1600.0f },
+    { "cam_exposure",     &g_param.cam_exposure,     0,  4.0f,   1600.0f },
+    { "road_wide_near",   &g_param.road_wide_near,   0,  8.0f,   176.0f  },
+    { "road_wide_far",    &g_param.road_wide_far,    0,  8.0f,   176.0f  },
     // Roll 串级
     { "r_rcy_kp",         &g_param.r_rcy_kp,         1, -50.0f,   50.0f  },
     { "r_rcy_ki",         &g_param.r_rcy_ki,         1, -20.0f,   20.0f  },
@@ -51,7 +53,6 @@ const param_desc_t g_param_table[] =
     { "elem_en_cross",    &g_param.elem_en_cross,    0, 0.0f,     1.0f   },
     { "elem_en_ring",     &g_param.elem_en_ring,     0, 0.0f,     1.0f   },
     { "elem_en_ramp",     &g_param.elem_en_ramp,     0, 0.0f,     1.0f   },
-    { "elem_en_obstacle", &g_param.elem_en_obstacle, 0, 0.0f,     1.0f   },
     { "zebra_jump_cnt",   &g_param.zebra_jump_cnt,   0, 0.0f,     60.0f  },
     { "cross_lost_cnt",   &g_param.cross_lost_cnt,   0, 0.0f,     80.0f  },
     { "ring_angle",       &g_param.ring_angle,       0, 0.0f,     720.0f },
@@ -60,8 +61,6 @@ const param_desc_t g_param_table[] =
     { "ring_side_offset", &g_param.ring_side_offset, 0, 0.0f,     80.0f  },
     { "ring_timeout_cnt", &g_param.ring_timeout_cnt, 0, 0.0f,     5000.0f},
     { "elem_guard_cnt",   &g_param.elem_guard_cnt,   0, 0.0f,     1000.0f},
-    { "obs_narrow_ratio", &g_param.obs_narrow_ratio, 1, 0.0f,     1.0f   },
-    { "obs_line_offset",  &g_param.obs_line_offset,  0, 0.0f,     80.0f  },
     // 零点、标定与保护
     { "roll_zero_init",   &g_param.roll_zero_init,   1, -45.0f,   45.0f  },
     { "pitch_zero_init",  &g_param.pitch_zero_init,  1, -45.0f,   45.0f  },
@@ -73,6 +72,11 @@ const param_desc_t g_param_table[] =
     { "motor_dir_b",      &g_param.motor_dir_b,      0, -1.0f,    1.0f   },
     { "motor_dir_c",      &g_param.motor_dir_c,      0, -1.0f,    1.0f   },
     { "enc_dir_c",        &g_param.enc_dir_c,        0, -1.0f,    1.0f   },
+    { "jog_duty_fly",     &g_param.jog_duty_fly,     0,  0.0f,    10000.0f },
+    // 上限跟 DRIVE_OUT_LIMIT 一致，再大也会被 Y_Motor_LimitDuty() 钳掉
+    { "jog_duty_drive",   &g_param.jog_duty_drive,   0,  0.0f,    3500.0f  },
+    { "fly_speed_limit",  &g_param.fly_speed_limit,  0,  0.0f,    20000.0f },
+    { "fly_slew",         &g_param.fly_slew,         0,  0.0f,    10000.0f },
 };
 
 #define PARAM_TABLE_NUM  ((uint16)(sizeof(g_param_table) / sizeof(g_param_table[0])))
@@ -111,17 +115,6 @@ static uint8 param_float_is_finite(float value)
 
     bits.f = value;
     return (uint8)((bits.u & 0x7F800000u) != 0x7F800000u);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     获取参数描述表条目数
-// 参数说明     void
-// 返回参数     uint16          条目数
-// 使用示例     uint16 count = param_table_count();
-//-------------------------------------------------------------------------------------------------------------------
-uint16 param_table_count(void)
-{
-    return PARAM_TABLE_NUM;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -184,16 +177,20 @@ uint8 param_get_by_name(const char *name, float *value)
 }
 
 // Flash 数据区。
-// 记录布局：magic + version + 每个参数一个字 + 末尾一个 CRC32 字。
-// 字数由参数表长度算出来，加字段时不用手改，也就不会算错 CRC 的位置。
-#define PARAM_FLASH_SECTOR      (0u)            // DFlash 扇区
-#define PARAM_FLASH_PAGE        (11u)           // DFlash 页
-#define PARAM_DATA_WORDS        ((uint32)(2u + PARAM_TABLE_NUM))     // 参与 CRC 的字数
-#define PARAM_CRC_WORD_INDEX    (PARAM_DATA_WORDS)                   // CRC32 所在字
-#define PARAM_RECORD_WORDS      (PARAM_DATA_WORDS + 1u)              // 整条记录字数
+// 记录布局：magic + 条数 N + N 组(键, 值) + 末尾一个 CRC32 字。
+// 键由参数名和类型哈希得到，与表内顺序无关。加参数、删参数、调整顺序都不会
+// 动到其他参数已经存下来的值，所以不需要版本号，也不会因为改表把标定清掉。
+#define PARAM_FLASH_SECTOR       (0u)           // DFlash 扇区
+#define PARAM_FLASH_PAGE         (11u)          // DFlash 页
+#define PARAM_MAGIC_INDEX        (0u)           // 魔数所在字
+#define PARAM_COUNT_INDEX        (1u)           // 条数所在字
+#define PARAM_FIRST_RECORD_INDEX (2u)           // 第一组键值对所在字
+// 一页最多放得下多少组键值对，扣掉 magic、条数和 CRC 三个字
+#define PARAM_MAX_RECORDS        ((uint32)((EEPROM_PAGE_LENGTH - 3u) / 2u))
+#define PARAM_RECORD_WORDS       ((uint32)(3u + (uint32)PARAM_TABLE_NUM * 2u))  // 整条记录字数
 
-// 记录放不下一页 Flash 时下面这行会因为数组长度为负而编译失败
-typedef char param_record_fits_one_page[(PARAM_RECORD_WORDS <= EEPROM_PAGE_LENGTH) ? 1 : -1];
+// 参数表放不下一页 Flash 时下面这行会因为数组长度为负而编译失败
+typedef char param_record_fits_one_page[(PARAM_TABLE_NUM <= PARAM_MAX_RECORDS) ? 1 : -1];
 
 param_t g_param;                                // 运行参数
 volatile uint32 g_param_revision = 0;            // 参数修订号
@@ -262,183 +259,95 @@ static uint8 param_validate_current(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     校验 Flash 缓冲区中的 v9 参数 CRC32
-// 参数说明     void
-// 返回参数     uint8           1 表示 CRC 正确, 0 表示记录损坏
-// 使用示例     if (param_buffer_crc_valid()) param_unpack_from_buffer();
+// 函数简介     由参数名和类型算出存储键，Flash 记录按键索引而不是按表内顺序
+// 参数说明     name/is_float   参数名与是否浮点
+// 返回参数     uint32          FNV-1a 哈希，最后把类型折进去
+// 使用示例     key = param_name_key("r_rate_kp", 1);
 //-------------------------------------------------------------------------------------------------------------------
-static uint8 param_buffer_crc_valid(void)
+static uint32 param_name_key(const char *name, uint8 is_float)
 {
-    const uint32 *words = (const uint32 *)flash_union_buffer;
-    return (uint8)(flash_union_buffer[PARAM_CRC_WORD_INDEX].uint32_type ==
-                   param_crc32_words(words, PARAM_DATA_WORDS));
+    uint32 hash = 2166136261u;                  // FNV-1a 32 位偏移基
+
+    while (*name != 0)
+    {
+        hash ^= (uint32)(uint8)*name++;
+        hash *= 16777619u;
+    }
+    // 类型折进键里：某个参数从 int 改成 float 时旧值自动失配，只有它回默认值
+    return hash ^ (is_float ? 0x5A5A5A5Au : 0u);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将运行参数写入 Flash 缓冲区
+// 函数简介     检查参数表内所有存储键互不相同
 // 参数说明     void
-// 返回参数     uint32          已写入的缓冲单元数
-// 使用示例     uint32 count = param_pack_to_buffer();
+// 返回参数     uint8           1=全部唯一 0=有重名或哈希碰撞
+// 使用示例     if (!param_keys_unique()) return;
 //-------------------------------------------------------------------------------------------------------------------
-static uint32 param_pack_to_buffer(void)
+static uint8 param_keys_unique(void)
 {
-    uint32 i = 0;
-    flash_buffer_clear();
-    flash_union_buffer[i++].uint32_type = g_param.magic;
-    flash_union_buffer[i++].uint32_type = g_param.version;
+    uint16 i, j;
 
-    flash_union_buffer[i++].int32_type  = g_param.track_base_speed;
-    flash_union_buffer[i++].float_type  = g_param.speed_up_rate;
-    flash_union_buffer[i++].float_type  = g_param.speed_down_rate;
-    flash_union_buffer[i++].float_type  = g_param.track_err_gain;
-    flash_union_buffer[i++].float_type  = g_param.speed_ramp_gain;
-    flash_union_buffer[i++].float_type  = g_param.speed_ring_gain;
-    flash_union_buffer[i++].int32_type  = g_param.cam_exposure;
+    for (i = 0; i < PARAM_TABLE_NUM; i++)
+    {
+        uint32 key = param_name_key(g_param_table[i].name, g_param_table[i].is_float);
 
-    flash_union_buffer[i++].float_type  = g_param.r_rcy_kp;
-    flash_union_buffer[i++].float_type  = g_param.r_rcy_ki;
-    flash_union_buffer[i++].float_type  = g_param.r_rcy_kd;
-    flash_union_buffer[i++].float_type  = g_param.r_angle_kp;
-    flash_union_buffer[i++].float_type  = g_param.r_angle_ki;
-    flash_union_buffer[i++].float_type  = g_param.r_angle_kd;
-    flash_union_buffer[i++].float_type  = g_param.r_rate_kp;
-    flash_union_buffer[i++].float_type  = g_param.r_rate_ki;
-    flash_union_buffer[i++].float_type  = g_param.r_rate_kd;
-
-    flash_union_buffer[i++].float_type  = g_param.p_vel_kp;
-    flash_union_buffer[i++].float_type  = g_param.p_vel_ki;
-    flash_union_buffer[i++].float_type  = g_param.p_vel_kd;
-    flash_union_buffer[i++].float_type  = g_param.p_angle_kp;
-    flash_union_buffer[i++].float_type  = g_param.p_angle_ki;
-    flash_union_buffer[i++].float_type  = g_param.p_angle_kd;
-    flash_union_buffer[i++].float_type  = g_param.p_rate_kp;
-    flash_union_buffer[i++].float_type  = g_param.p_rate_ki;
-    flash_union_buffer[i++].float_type  = g_param.p_rate_kd;
-
-    flash_union_buffer[i++].float_type  = g_param.y_angle_kp;
-    flash_union_buffer[i++].float_type  = g_param.y_angle_ki;
-    flash_union_buffer[i++].float_type  = g_param.y_angle_kd;
-    flash_union_buffer[i++].float_type  = g_param.y_rate_kp;
-    flash_union_buffer[i++].float_type  = g_param.y_rate_ki;
-    flash_union_buffer[i++].float_type  = g_param.y_rate_kd;
-
-    flash_union_buffer[i++].float_type  = g_param.lean_k1;
-    flash_union_buffer[i++].float_type  = g_param.lean_k2;
-    flash_union_buffer[i++].float_type  = g_param.lean_limit;
-    flash_union_buffer[i++].int32_type  = g_param.lean_limit_mode;
-    flash_union_buffer[i++].float_type  = g_param.lean_slew;
-
-    flash_union_buffer[i++].int32_type  = g_param.elem_en_zebra;
-    flash_union_buffer[i++].int32_type  = g_param.elem_en_cross;
-    flash_union_buffer[i++].int32_type  = g_param.elem_en_ring;
-    flash_union_buffer[i++].int32_type  = g_param.elem_en_ramp;
-    flash_union_buffer[i++].int32_type  = g_param.elem_en_obstacle;
-    flash_union_buffer[i++].int32_type  = g_param.zebra_jump_cnt;
-    flash_union_buffer[i++].int32_type  = g_param.cross_lost_cnt;
-    flash_union_buffer[i++].int32_type  = g_param.ring_angle;
-    flash_union_buffer[i++].int32_type  = g_param.ring_s2_cnt_l;
-    flash_union_buffer[i++].int32_type  = g_param.ring_s2_cnt_r;
-    flash_union_buffer[i++].int32_type  = g_param.ring_side_offset;
-    flash_union_buffer[i++].int32_type  = g_param.ring_timeout_cnt;
-    flash_union_buffer[i++].int32_type  = g_param.elem_guard_cnt;
-    flash_union_buffer[i++].float_type  = g_param.obs_narrow_ratio;
-    flash_union_buffer[i++].int32_type  = g_param.obs_line_offset;
-
-    flash_union_buffer[i++].float_type  = g_param.roll_zero_init;
-    flash_union_buffer[i++].float_type  = g_param.pitch_zero_init;
-    flash_union_buffer[i++].float_type  = g_param.roll_protect_angle;
-    flash_union_buffer[i++].float_type  = g_param.pitch_protect_angle;
-    flash_union_buffer[i++].float_type  = g_param.err_offset;
-
-
-    flash_union_buffer[i++].int32_type  = g_param.motor_dir_a;
-    flash_union_buffer[i++].int32_type  = g_param.motor_dir_b;
-    flash_union_buffer[i++].int32_type  = g_param.motor_dir_c;
-    flash_union_buffer[i++].int32_type  = g_param.enc_dir_c;
-    return i;
+        for (j = (uint16)(i + 1u); j < PARAM_TABLE_NUM; j++)
+            if (key == param_name_key(g_param_table[j].name, g_param_table[j].is_float))
+                return 0;
+    }
+    return 1;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     从 Flash 缓冲区读取运行参数
+// 函数简介     把一条键值对写进对应参数，越界的钳到该参数允许范围内
+// 参数说明     key/value       存储键与原始 32 位值
+// 返回参数     void
+// 使用示例     param_apply_record(key, value);
+//-------------------------------------------------------------------------------------------------------------------
+static void param_apply_record(uint32 key, flash_data_union value)
+{
+    uint16 i;
+
+    for (i = 0; i < PARAM_TABLE_NUM; i++)
+    {
+        const param_desc_t *d = &g_param_table[i];
+
+        if (param_name_key(d->name, d->is_float) != key) continue;
+
+        if (d->is_float)
+        {
+            float v = value.float_type;
+            if (!param_float_is_finite(v)) return;      // 这一项存坏了就保持默认值
+            if (v < d->vmin) v = d->vmin;
+            if (v > d->vmax) v = d->vmax;
+            *(float *)d->ptr = v;
+        }
+        else
+        {
+            int v = value.int32_type;
+            if ((float)v < d->vmin) v = (int)d->vmin;
+            if ((float)v > d->vmax) v = (int)d->vmax;
+            *(int *)d->ptr = v;
+        }
+        return;
+    }
+    // 键不在当前参数表里：这个参数已经删掉或改名，直接忽略
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     把四个方向参数归一到 +1 或 -1
 // 参数说明     void
 // 返回参数     void
-// 使用示例     param_unpack_from_buffer();
+// 使用示例     param_normalize_dirs();
 //-------------------------------------------------------------------------------------------------------------------
-static void param_unpack_from_buffer(void)
+static void param_normalize_dirs(void)
 {
-    uint32 i = 0;
-    g_param.magic   = flash_union_buffer[i++].uint32_type;
-    g_param.version = flash_union_buffer[i++].uint32_type;
-
-    g_param.track_base_speed = flash_union_buffer[i++].int32_type;
-    g_param.speed_up_rate    = flash_union_buffer[i++].float_type;
-    g_param.speed_down_rate  = flash_union_buffer[i++].float_type;
-    g_param.track_err_gain   = flash_union_buffer[i++].float_type;
-    g_param.speed_ramp_gain  = flash_union_buffer[i++].float_type;
-    g_param.speed_ring_gain  = flash_union_buffer[i++].float_type;
-    g_param.cam_exposure     = flash_union_buffer[i++].int32_type;
-
-    g_param.r_rcy_kp   = flash_union_buffer[i++].float_type;
-    g_param.r_rcy_ki   = flash_union_buffer[i++].float_type;
-    g_param.r_rcy_kd   = flash_union_buffer[i++].float_type;
-    g_param.r_angle_kp = flash_union_buffer[i++].float_type;
-    g_param.r_angle_ki = flash_union_buffer[i++].float_type;
-    g_param.r_angle_kd = flash_union_buffer[i++].float_type;
-    g_param.r_rate_kp  = flash_union_buffer[i++].float_type;
-    g_param.r_rate_ki  = flash_union_buffer[i++].float_type;
-    g_param.r_rate_kd  = flash_union_buffer[i++].float_type;
-
-    g_param.p_vel_kp   = flash_union_buffer[i++].float_type;
-    g_param.p_vel_ki   = flash_union_buffer[i++].float_type;
-    g_param.p_vel_kd   = flash_union_buffer[i++].float_type;
-    g_param.p_angle_kp = flash_union_buffer[i++].float_type;
-    g_param.p_angle_ki = flash_union_buffer[i++].float_type;
-    g_param.p_angle_kd = flash_union_buffer[i++].float_type;
-    g_param.p_rate_kp  = flash_union_buffer[i++].float_type;
-    g_param.p_rate_ki  = flash_union_buffer[i++].float_type;
-    g_param.p_rate_kd  = flash_union_buffer[i++].float_type;
-
-    g_param.y_angle_kp = flash_union_buffer[i++].float_type;
-    g_param.y_angle_ki = flash_union_buffer[i++].float_type;
-    g_param.y_angle_kd = flash_union_buffer[i++].float_type;
-    g_param.y_rate_kp  = flash_union_buffer[i++].float_type;
-    g_param.y_rate_ki  = flash_union_buffer[i++].float_type;
-    g_param.y_rate_kd  = flash_union_buffer[i++].float_type;
-
-    g_param.lean_k1         = flash_union_buffer[i++].float_type;
-    g_param.lean_k2         = flash_union_buffer[i++].float_type;
-    g_param.lean_limit      = flash_union_buffer[i++].float_type;
-    g_param.lean_limit_mode = flash_union_buffer[i++].int32_type;
-    g_param.lean_slew       = flash_union_buffer[i++].float_type;
-    g_param.elem_en_zebra    = flash_union_buffer[i++].int32_type;
-    g_param.elem_en_cross    = flash_union_buffer[i++].int32_type;
-    g_param.elem_en_ring     = flash_union_buffer[i++].int32_type;
-    g_param.elem_en_ramp     = flash_union_buffer[i++].int32_type;
-    g_param.elem_en_obstacle = flash_union_buffer[i++].int32_type;
-
-    g_param.zebra_jump_cnt   = flash_union_buffer[i++].int32_type;
-    g_param.cross_lost_cnt   = flash_union_buffer[i++].int32_type;
-    g_param.ring_angle       = flash_union_buffer[i++].int32_type;
-    g_param.ring_s2_cnt_l    = flash_union_buffer[i++].int32_type;
-    g_param.ring_s2_cnt_r    = flash_union_buffer[i++].int32_type;
-    g_param.ring_side_offset = flash_union_buffer[i++].int32_type;
-    g_param.ring_timeout_cnt = flash_union_buffer[i++].int32_type;
-    g_param.elem_guard_cnt   = flash_union_buffer[i++].int32_type;
-    g_param.obs_narrow_ratio = flash_union_buffer[i++].float_type;
-    g_param.obs_line_offset  = flash_union_buffer[i++].int32_type;
-
-    g_param.roll_zero_init      = flash_union_buffer[i++].float_type;
-    g_param.pitch_zero_init     = flash_union_buffer[i++].float_type;
-    g_param.roll_protect_angle  = flash_union_buffer[i++].float_type;
-    g_param.pitch_protect_angle = flash_union_buffer[i++].float_type;
-    g_param.err_offset          = flash_union_buffer[i++].float_type;
-
-
-    g_param.motor_dir_a = flash_union_buffer[i++].int32_type;
-    g_param.motor_dir_b = flash_union_buffer[i++].int32_type;
-    g_param.motor_dir_c = flash_union_buffer[i++].int32_type;
-    g_param.enc_dir_c   = flash_union_buffer[i++].int32_type;
+    g_param.motor_dir_a = (g_param.motor_dir_a >= 0) ? 1 : -1;
+    g_param.motor_dir_b = (g_param.motor_dir_b >= 0) ? 1 : -1;
+    g_param.motor_dir_c = (g_param.motor_dir_c >= 0) ? 1 : -1;
+    g_param.enc_dir_c   = (g_param.enc_dir_c   >= 0) ? 1 : -1;
 }
+
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     载入 board_config.h 中的默认参数
@@ -448,9 +357,6 @@ static void param_unpack_from_buffer(void)
 //-------------------------------------------------------------------------------------------------------------------
 void param_load_defaults(void)
 {
-    g_param.magic   = PARAM_MAGIC;
-    g_param.version = PARAM_VERSION;
-
     g_param.track_base_speed = TRACK_BASE_SPEED_DEFAULT;
     g_param.speed_up_rate    = SPEED_UP_RATE_DEFAULT;
     g_param.speed_down_rate  = SPEED_DOWN_RATE_DEFAULT;
@@ -458,6 +364,8 @@ void param_load_defaults(void)
     g_param.speed_ramp_gain  = SPEED_RAMP_GAIN_DEFAULT;
     g_param.speed_ring_gain  = SPEED_RING_GAIN_DEFAULT;
     g_param.cam_exposure     = CAM_EXPOSURE_DEFAULT;
+    g_param.road_wide_near   = ROAD_WIDE_NEAR_DEFAULT;
+    g_param.road_wide_far    = ROAD_WIDE_FAR_DEFAULT;
 
     g_param.r_rcy_kp   = R_RCY_KP_DEFAULT;
     g_param.r_rcy_ki   = R_RCY_KI_DEFAULT;
@@ -495,7 +403,6 @@ void param_load_defaults(void)
     g_param.elem_en_cross    = ELEM_EN_CROSS_DEFAULT;
     g_param.elem_en_ring     = ELEM_EN_RING_DEFAULT;
     g_param.elem_en_ramp     = ELEM_EN_RAMP_DEFAULT;
-    g_param.elem_en_obstacle = ELEM_EN_OBSTACLE_DEFAULT;
 
     g_param.zebra_jump_cnt   = ZEBRA_JUMP_CNT_DEFAULT;
     g_param.cross_lost_cnt   = CROSS_LOST_CNT_DEFAULT;
@@ -505,8 +412,6 @@ void param_load_defaults(void)
     g_param.ring_side_offset = RING_SIDE_OFFSET_DEFAULT;
     g_param.ring_timeout_cnt = RING_TIMEOUT_CNT_DEFAULT;
     g_param.elem_guard_cnt   = ELEM_GUARD_CNT_DEFAULT;
-    g_param.obs_narrow_ratio = OBS_NARROW_RATIO_DEFAULT;
-    g_param.obs_line_offset  = OBS_LINE_OFFSET_DEFAULT;
 
     g_param.roll_zero_init      = ROLL_ZERO_INIT_DEFAULT;
     g_param.pitch_zero_init     = PITCH_ZERO_INIT_DEFAULT;
@@ -519,6 +424,10 @@ void param_load_defaults(void)
     g_param.motor_dir_b = MOTOR_DIR_B_DEFAULT;
     g_param.motor_dir_c = MOTOR_DIR_C_DEFAULT;
     g_param.enc_dir_c   = ENC_DIR_C_DEFAULT;
+    g_param.jog_duty_fly   = JOG_DUTY_FLY_DEFAULT;
+    g_param.jog_duty_drive = JOG_DUTY_DRIVE_DEFAULT;
+    g_param.fly_speed_limit = FLY_SPEED_LIMIT_DEFAULT;
+    g_param.fly_slew        = FLY_SLEW_DEFAULT;
     g_param_revision++;
 }
 
@@ -535,6 +444,22 @@ void param_sync_zero(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     擦除 Flash 参数页并把运行参数恢复成默认值
+// 参数说明     void
+// 返回参数     uint8           1=擦除后页确实是空的 0=擦除失败
+// 使用示例     uint8 ok = param_erase();
+//-------------------------------------------------------------------------------------------------------------------
+uint8 param_erase(void)
+{
+    if (flash_check(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE))
+        flash_erase_page(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE);
+
+    param_load_defaults();
+    // flash_check 返回 0 表示整页全是 0，也就是擦干净了
+    return (uint8)(flash_check(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE) == 0u);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     从 Flash 初始化运行参数
 // 参数说明     void
 // 返回参数     void
@@ -542,30 +467,33 @@ void param_sync_zero(void)
 //-------------------------------------------------------------------------------------------------------------------
 void param_init(void)
 {
-    uint8 loaded = 0;
+    uint32 count;
+    uint32 words;
+    uint32 i;
 
-    if (flash_check(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE))   // 检查页数据
-    {
-        uint32 magic;
-        uint32 version;
+    // 先铺一遍默认值。Flash 里没有的键就保持默认，所以新加的参数不影响旧记录
+    param_load_defaults();
 
-        flash_read_page_to_buffer(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE);
-        magic = flash_union_buffer[0].uint32_type;
-        version = flash_union_buffer[1].uint32_type;
+    // 存储键撞了会把值写进错的参数，这种情况宁可整体不加载
+    if (!param_keys_unique()) return;
+    if (!flash_check(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE)) return;
 
-        // 魔数、版本、CRC 三者全对才认，任何一项不对就整体回默认值
-        if (magic == PARAM_MAGIC && version == PARAM_VERSION &&
-            param_buffer_crc_valid())
-        {
-            param_unpack_from_buffer();
-            loaded = param_validate_current();
-        }
-    }
+    flash_read_page_to_buffer(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE);
+    if (flash_union_buffer[PARAM_MAGIC_INDEX].uint32_type != PARAM_MAGIC) return;
 
-    if (loaded)
-        g_param_revision++;
-    else
-        param_load_defaults();
+    count = flash_union_buffer[PARAM_COUNT_INDEX].uint32_type;
+    if (count == 0u || count > PARAM_MAX_RECORDS) return;
+
+    words = PARAM_FIRST_RECORD_INDEX + count * 2u;
+    if (flash_union_buffer[words].uint32_type !=
+        param_crc32_words((const uint32 *)flash_union_buffer, words)) return;
+
+    for (i = 0; i < count; i++)
+        param_apply_record(flash_union_buffer[PARAM_FIRST_RECORD_INDEX + i * 2u].uint32_type,
+                           flash_union_buffer[PARAM_FIRST_RECORD_INDEX + i * 2u + 1u]);
+
+    param_normalize_dirs();
+    g_param_revision++;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -576,27 +504,37 @@ void param_init(void)
 //-------------------------------------------------------------------------------------------------------------------
 uint8 param_save(void)
 {
-    uint32 expected[PARAM_RECORD_WORDS];
-    uint32 count;
+    static uint32 expected[PARAM_RECORD_WORDS];     // 回读比对用，放静态区不占栈
+    uint32 words = PARAM_FIRST_RECORD_INDEX + (uint32)PARAM_TABLE_NUM * 2u;
+    uint16 t;
     uint32 i;
 
+    if (!param_keys_unique()) return 0;
     if (!param_validate_current()) return 0;
 
-    g_param.magic   = PARAM_MAGIC;
-    g_param.version = PARAM_VERSION;
-    count = param_pack_to_buffer();
-    if (count != PARAM_DATA_WORDS) return 0;
+    flash_union_buffer[PARAM_MAGIC_INDEX].uint32_type = PARAM_MAGIC;
+    flash_union_buffer[PARAM_COUNT_INDEX].uint32_type = (uint32)PARAM_TABLE_NUM;
+    for (t = 0; t < PARAM_TABLE_NUM; t++)
+    {
+        const param_desc_t *d = &g_param_table[t];
+        uint32 at = PARAM_FIRST_RECORD_INDEX + (uint32)t * 2u;
 
-    flash_union_buffer[PARAM_CRC_WORD_INDEX].uint32_type =
-        param_crc32_words((const uint32 *)flash_union_buffer, PARAM_DATA_WORDS);
-    for (i = 0; i < PARAM_RECORD_WORDS; i++)
+        flash_union_buffer[at].uint32_type = param_name_key(d->name, d->is_float);
+        if (d->is_float) flash_union_buffer[at + 1u].float_type = *(float *)d->ptr;
+        else             flash_union_buffer[at + 1u].int32_type = *(int *)d->ptr;
+    }
+    flash_union_buffer[words].uint32_type =
+        param_crc32_words((const uint32 *)flash_union_buffer, words);
+
+    for (i = 0; i <= words; i++)
         expected[i] = flash_union_buffer[i].uint32_type;
 
     if (flash_write_page_from_buffer(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE) != 0u)
         return 0;
     flash_read_page_to_buffer(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE);
 
-    for (i = 0; i < PARAM_RECORD_WORDS; i++)
+    // 逐字比对而不是只验 CRC：写入整页没生效时旧记录的 CRC 一样是对的
+    for (i = 0; i <= words; i++)
         if (flash_union_buffer[i].uint32_type != expected[i]) return 0;
-    return param_buffer_crc_valid();
+    return 1;
 }
