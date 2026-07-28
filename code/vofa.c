@@ -13,7 +13,9 @@ volatile tune_axis_t g_tune_axis = TUNE_AXIS_ROLL;  // 当前调参轴
 volatile tune_ring_t g_tune_ring = TUNE_RING_RATE;  // 当前调参环
 
 // 波形快照
-#define VOFA_CH_MAX     (13)                    // 单帧最大通道数
+// 单帧最大通道数。16 通道每帧约 170 字节，20ms 一帧就是 8.5KB/s，
+// 115200 的线速率是 11.5KB/s，够用。再往上加通道要同时把 g_vofa_div 调大
+#define VOFA_CH_MAX     (16)
 
 static volatile uint32      s_seq = 0;          // 快照序号
 static volatile float       s_ch[VOFA_CH_MAX];  // 通道值
@@ -239,15 +241,20 @@ static int cmd_tokenize(char *line, char **tokens)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     判断点动或完整发车流程是否正在占用电机
+// 函数简介     判断当前运行状态是否禁止在线改 PID
 // 参数说明     void
-// 返回参数     uint8           1 表示禁止改变调参对象
+// 返回参数     uint8           1 表示拒绝改参数
 // 使用示例     if (cmd_motion_active()) cmd_ack(0);
 //-------------------------------------------------------------------------------------------------------------------
 static uint8 cmd_motion_active(void)
 {
-    return (uint8)(start_flag != START_STOP ||
-                   control_jog_running() != MOTOR_JOG_NONE);
+    // 架空点动是开环下发固定占空比，PID 根本不在环里，改了没有意义，拒
+    if (control_jog_running() != MOTOR_JOG_NONE) return 1;
+
+    // START_BALANCE 是三轴一起跑的整定状态，八个环全在环里，整定本来就要边跑边改，放行。
+    // 越界值仍由 param.c 钳位，NaN/Inf 仍由 cmd_parse_float_strict() 拒掉。
+    // 其余发车状态照旧拒绝：START_DRIVE_ONLY 只有 C 轮在跑，改 Roll/Yaw 的增益看不出任何变化
+    return (uint8)(start_flag != START_STOP && start_flag != START_BALANCE);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -361,24 +368,32 @@ void vofa_snapshot(void)
         break;
     case VOFA_ROLL:
         // r_rcy_fb 是 B、A 两个飞轮的转速差(RPM)，由 CYT2BL3 每 10ms 回传
-        s_tag = "roll"; s_n = 11;
+        s_tag = "roll"; s_n = 15;
         s_ch[0] = g_bal_dbg.r_rcy_set;  s_ch[1] = g_bal_dbg.r_rcy_fb;  s_ch[2] = g_bal_dbg.r_rcy_out;
         s_ch[3] = g_bal_dbg.r_ang_fb;   s_ch[4] = g_bal_dbg.r_ang_out;
         s_ch[5] = g_bal_dbg.r_rate_fb;  s_ch[6] = g_bal_dbg.r_pwm;
         s_ch[7] = (float)g_motor_a;     s_ch[8] = (float)g_motor_b;
         s_ch[9] = (float)W_Motor_GetSpeed1();
         s_ch[10] = (float)W_Motor_GetSpeed2();
+        // 末尾四路是当前正在用的增益本身。整定时波形和参数得对得上，
+        // 否则回放录下来的曲线根本分不清哪一段是哪组增益
+        s_ch[11] = R_RATE_KP;  s_ch[12] = R_RATE_KI;
+        s_ch[13] = R_ANGLE_KP; s_ch[14] = R_RCY_KP;
         break;
     case VOFA_PITCH:
-        s_tag = "pit"; s_n = 7;
+        s_tag = "pit"; s_n = 11;
         s_ch[0] = g_bal_dbg.p_vel_set;  s_ch[1] = g_bal_dbg.p_vel_fb;  s_ch[2] = g_bal_dbg.p_vel_out;
         s_ch[3] = g_bal_dbg.p_ang_fb;   s_ch[4] = g_bal_dbg.p_ang_out;
         s_ch[5] = g_bal_dbg.p_rate_fb;  s_ch[6] = g_bal_dbg.p_pwm;
+        s_ch[7] = P_RATE_KP;   s_ch[8] = P_RATE_KI;
+        s_ch[9] = P_ANGLE_KP;  s_ch[10] = P_VEL_KP;
         break;
     case VOFA_YAW:
-        s_tag = "yaw"; s_n = 6;
+        s_tag = "yaw"; s_n = 8;
         s_ch[0] = g_bal_dbg.y_set;      s_ch[1] = g_bal_dbg.y_fb;      s_ch[2] = g_bal_dbg.y_out;
         s_ch[3] = g_bal_dbg.y_rate_fb;  s_ch[4] = g_bal_dbg.y_pwm;     s_ch[5] = g_lean_offset;
+        // Yaw 内环是位置式，ki/kd 恒 0，只发两个真正在调的
+        s_ch[6] = Y_RATE_KP;   s_ch[7] = Y_ANGLE_KP;
         break;
     case VOFA_TRACK:
         // track_valid=0 时 err 被强制回 0，看 err 必须同时看 valid 和 both_lost
@@ -406,6 +421,27 @@ void vofa_snapshot(void)
         s_ch[2] = (float)W_Motor_GetSpeed1();   // A 轮回传转速(RPM)
         s_ch[3] = (float)W_Motor_GetSpeed2();   // B 轮回传转速(RPM)
         s_ch[4] = (float)Y_Motor_GetSpeed20ms();// C 轮编码器增量(counts/20ms)
+        break;
+    case VOFA_BAL:
+        // 三轴一起跑时看的是"站没站住"和"飞轮有没有单向堆积"，各环内部量看单轴波形。
+        // CH0/CH1 与 CH2/CH3 成对，角度贴住目标就是站住了；
+        // CH8/CH9 同向一起爬升说明回收环压不住，再跑下去就要闩驱动堵转保护。
+        s_tag = "bal"; s_n = 15;
+        s_ch[0] = att.roll;                     // 横滚角(°)
+        s_ch[1] = g_roll_zero + g_lean_offset;  // 横滚有效目标(°)，含压弯动态零点
+        s_ch[2] = att.pitch;                    // 俯仰角(°)
+        s_ch[3] = g_pitch_zero;                 // 俯仰机械零点(°)
+        s_ch[4] = g_bal_dbg.y_set - g_bal_dbg.y_fb;     // 航向误差(°)，连续角相减
+        s_ch[5] = (float)g_motor_a;             // 混控后 A 轮指令
+        s_ch[6] = (float)g_motor_b;             // 混控后 B 轮指令
+        s_ch[7] = (float)g_motor_c;             // 混控后 C 轮指令
+        s_ch[8] = (float)W_Motor_GetSpeed1();   // A 轮回传转速(RPM)
+        s_ch[9] = (float)W_Motor_GetSpeed2();   // B 轮回传转速(RPM)
+        s_ch[10] = (float)Y_Motor_GetSpeed20ms();       // C 轮编码器增量(counts/20ms)
+        // 三轴一起跑的时候只带两个内环的增益，它俩决定站不站得住；
+        // 外环增益去对应轴的单轴波形上看
+        s_ch[11] = R_RATE_KP;  s_ch[12] = R_RATE_KI;
+        s_ch[13] = P_RATE_KP;  s_ch[14] = P_RATE_KI;
         break;
     default:
         s_n = 0;

@@ -5,6 +5,8 @@
 
 // 无线转串口上行波形，VOFA+ FireWater 格式 <tag>:v0,v1,...\n，通道按位置对应。
 // 同一模式下通道数必须恒定，否则 FireWater 会错位。
+// 三个单轴模式和 bal 的末尾几路发的是当前正在用的增益本身：
+// 录下来的曲线要能自己说明是哪组增益跑出来的，否则回放时分不清哪一段对应哪次改动。
 // 物理层是逐飞无线转串口模块，挂在 UART2 @115200：
 // P10_5(MCU TX) -> 模块 RX、P10_6(MCU RX) <- 模块 TX、P10_2 读模块 RTS 流控。
 // 模式不是给人选的，完全由当前菜单页和正在跑什么决定：
@@ -13,15 +15,17 @@
 //   Params → Roll/Pitch/Yaw 开测试  VOFA_ROLL / VOFA_PITCH / VOFA_YAW，由 control_test_start() 按轴给
 //   Params → Motor 点动             VOFA_MOTOR，由 control_jog_start() 给
 //   进 Params → Camera / Element    VOFA_TRACK
+//   主菜单 → Balance                VOFA_BAL，由 control_balance_start() 给，翻页也不断
 typedef enum
 {
     VOFA_OFF = 0,       // 关闭波形输出
     VOFA_ATT,           // att  : Roll、Pitch、Yaw，3 通道
-    VOFA_ROLL,          // roll : Roll 串级、双轮命令与转速，11 通道
-    VOFA_PITCH,         // pit  : Pitch 串级各环，7 通道
-    VOFA_YAW,           // yaw  : Yaw 串级各环，6 通道
+    VOFA_ROLL,          // roll : Roll 串级、双轮命令与转速 + 本轴 4 个增益，15 通道
+    VOFA_PITCH,         // pit  : Pitch 串级各环 + 本轴 4 个增益，11 通道
+    VOFA_YAW,           // yaw  : Yaw 串级各环 + 本轴 2 个增益，8 通道
     VOFA_TRACK,         // trk  : 循迹偏差与丢线统计，13 通道
     VOFA_MOTOR,         // mot  : 三电机指令与转速回读，5 通道
+    VOFA_BAL,           // bal  : 三轴同时闭环的角度、目标、三电机 + 两个内环增益，15 通道
 } vofa_mode_t;
 
 // 调参轴
@@ -83,7 +87,8 @@ void vofa_poll(void);
 //   <参数名> <值>
 // 参数名白名单就是 vofa.c 里 s_tune_tbl 的 24 个环 PID，其余参数一律用车上的按键改。
 // 应答只有 ack:1.000 / ack:0.000。数值必须完整解析，NaN 与无穷一律拒绝。
-// 发车或架空点动期间拒绝改参数；闭环测试期间只放行当前轴、当前最高启用环之内的增益。
+// 架空点动期间拒绝改参数；闭环测试期间只放行当前轴、当前最高启用环之内的增益；
+// 三轴平衡(START_BALANCE)期间 24 个全放行，整定本来就要边跑边改。
 // 波形模式由菜单页决定，命令侧不能切波形。
 // 本协议只做看波形和调参，不提供任何电机启停命令，发车与停车只能用车上的实体键。
 // 24 条命令的完整清单见 调参命令.md。

@@ -40,6 +40,8 @@
 #define UI_IMAGE_PERIOD_MS     (100u)    // 横屏整帧刷新周期
 #define UI_IMAGE_STALL_MS      (500u)    // 停帧时的状态栏刷新周期，保证 FPS 能掉到 0
 #define UI_RESET_CONFIRM_MS    (3000u)   // Reset 二次确认窗口
+#define UI_BALANCE_CONFIRM_MS  (3000u)   // Balance 二次确认窗口
+#define UI_MAX_GROUP_ITEMS     (16u)     // 单页参数行上限，子页 Save 组名字表用
 #define UI_CAM_FRAME_TIMEOUT_MS (100u)   // 超过该时间没有新帧视为摄像头帧失联
 
 typedef enum
@@ -82,40 +84,48 @@ typedef struct
     group_kind_t             kind;          // 动作行语义
 } menu_group_t;
 
+// PID 三页的步长按各环的实际落点定，规则是"步长 ≈ 落点下限的 1/10"：
+// 从 0 按十下就到起手值，调到落点上限一百下以内，停在最终值附近时一下改动 1~5%。
+// 落点区间见 控制调试指南.md 第 5 节。步长比落点还大或者小两个数量级都没法用键调，
+// 前者一按就冲过头，后者要按几百下。
+// 恒为 0 的 ki/kd 行跟同一个环的 kp 取同一尺度，免得一页之内量级看着是乱的。
 static const menu_param_item_t s_roll_items[] =
 {
-    { "Rate Kp",  "r_rate_kp",  1.0f,  2 },
-    { "Rate Ki",  "r_rate_ki",  0.01f, 3 },
-    { "Rate Kd",  "r_rate_kd",  0.5f,  2 },
-    { "Angle Kp", "r_angle_kp", 1.0f,  2 },
-    { "Angle Ki", "r_angle_ki", 0.01f, 3 },
-    { "Angle Kd", "r_angle_kd", 0.5f,  2 },
-    { "Speed Kp", "r_rcy_kp",   0.05f, 3 },
-    { "Speed Ki", "r_rcy_ki",   0.01f, 3 },
-    { "Speed Kd", "r_rcy_kd",   0.05f, 3 }
+    { "Rate Kp",  "r_rate_kp",  1.0f,   2 },    // 落点 10~80
+    { "Rate Ki",  "r_rate_ki",  0.01f,  3 },    // 落点 0.2~1.0
+    { "Rate Kd",  "r_rate_kd",  0.5f,   2 },
+    { "Angle Kp", "r_angle_kp", 0.2f,   2 },    // 落点 2~20
+    { "Angle Ki", "r_angle_ki", 0.01f,  3 },
+    { "Angle Kd", "r_angle_kd", 0.2f,   2 },    // 位置式内环之后这一路可用
+    { "Ang Lim",  "r_angle_limit", 5.0f, 0 },   // 角度环输出限幅(°/s)
+    { "Speed Kp", "r_rcy_kp",   0.001f, 3 },    // 落点 0.003~0.03，飞轮转速差(RPM)换倾角(°)
+    { "Speed Ki", "r_rcy_ki",   0.001f, 3 },
+    { "Speed Kd", "r_rcy_kd",   0.001f, 3 },
+    { "Rcy Lim",  "r_rcy_limit", 0.5f,  1 },    // 回收环输出限幅(°)
+    { "Rcy Tau",  "r_rcy_tau",   0.2f,  1 }     // 回收环反馈低通(s)，抖起来先加大它
 };
 
 static const menu_param_item_t s_pitch_items[] =
 {
-    { "Rate Kp",  "p_rate_kp",  0.1f,   3 },
-    { "Rate Ki",  "p_rate_ki",  0.001f, 4 },
+    { "Rate Kp",  "p_rate_kp",  0.5f,   2 },    // 落点 5~50
+    { "Rate Ki",  "p_rate_ki",  0.01f,  3 },    // 落点 0.1~0.8
     { "Rate Kd",  "p_rate_kd",  0.5f,   2 },
-    { "Angle Kp", "p_angle_kp", 1.0f,   2 },
+    { "Angle Kp", "p_angle_kp", 0.2f,   2 },    // 落点 2~20
     { "Angle Ki", "p_angle_ki", 0.01f,  3 },
-    { "Angle Kd", "p_angle_kd", 0.5f,   2 },
-    { "Speed Kp", "p_vel_kp",   0.001f, 4 },
+    { "Angle Kd", "p_angle_kd", 0.2f,   2 },
+    { "Speed Kp", "p_vel_kp",   0.001f, 4 },    // 落点 0.005~0.05，counts/20ms 换倾角(°)
     { "Speed Ki", "p_vel_ki",   0.001f, 4 },
     { "Speed Kd", "p_vel_kd",   0.001f, 4 }
 };
 
 static const menu_param_item_t s_yaw_items[] =
 {
-    { "Rate Kp",  "y_rate_kp",  0.1f,   3 },
-    { "Rate Ki",  "y_rate_ki",  0.001f, 4 },
-    { "Rate Kd",  "y_rate_kd",  0.1f,   3 },
-    { "Angle Kp", "y_angle_kp", 0.05f,  3 },
-    { "Angle Ki", "y_angle_ki", 0.001f, 4 },
-    { "Angle Kd", "y_angle_kd", 0.05f,  3 }
+    { "Rate Kp",  "y_rate_kp",  0.5f,   2 },    // 落点 5~50，位置式，只调这一个
+    { "Rate Ki",  "y_rate_ki",  0.01f,  3 },
+    { "Rate Kd",  "y_rate_kd",  0.5f,   2 },
+    { "Angle Kp", "y_angle_kp", 0.1f,   2 },    // 落点 1~5
+    { "Angle Ki", "y_angle_ki", 0.01f,  3 },
+    { "Angle Kd", "y_angle_kd", 0.1f,   2 }
 };
 
 static const menu_param_item_t s_camera_items[] =
@@ -123,7 +133,7 @@ static const menu_param_item_t s_camera_items[] =
     { "Exposure",   "cam_exposure",      2.0f, 0 },
     { "Road Near",  "road_wide_near",    1.0f,  0 },
     { "Road Far",   "road_wide_far",     1.0f,  0 },
-    { "Error Zero", "err_offset",        0.1f,  2 },
+    { "Error Zero", "err_offset",        0.5f,  1 },
     { "Track Gain", "track_err_gain",    0.05f, 2 },
     { "Base Speed", "track_base_speed",  1.0f,  0 },
     { "Spd Up",     "speed_up_rate",     0.1f,  2 },
@@ -191,6 +201,17 @@ static const menu_group_t s_groups[] =
     { "Zero",    s_zero_items,    4, TUNE_AXIS_ROLL, 1, GROUP_KIND_ZERO    }
 };
 
+// save_group_action() 在栈上开 UI_MAX_GROUP_ITEMS 个名字指针，任何一页的行数超了都会越界写
+#define MENU_ITEMS_OF(a) (sizeof(a) / sizeof((a)[0]))
+typedef char menu_group_items_fit[
+    (MENU_ITEMS_OF(s_roll_items)    <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_pitch_items)   <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_yaw_items)     <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_camera_items)  <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_element_items) <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_motor_items)   <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_zero_items)    <= UI_MAX_GROUP_ITEMS) ? 1 : -1];
+
 static const char * const s_param_page_names[] =
 {
     "Attitude",
@@ -219,6 +240,8 @@ static uint8       s_active_test;                   // 开着的是哪一个动�
 static uint8       s_dirty;                         // 1=重绘本页 2=先整屏清再重绘
 static uint8       s_image_ok;                      // 图像页看到的摄像头就绪状态
 static uint32      s_reset_armed_until_ms;          // Reset 二次确认截止时刻，0=未进入确认态
+static uint32      s_balance_armed_until_ms;        // Balance 二次确认截止时刻，0=未进入确认态
+static uint8       s_balance_on;                    // 上次看到的三轴平衡运行状态，用来发现安全闸自动停机
 static uint8       s_page_cursor[MENU_PAGE_COUNT];  // 各页面记住的光标位置
 static uint8       s_page_top[MENU_PAGE_COUNT];     // 各页面记住的滚动位置
 static uint8       s_group_cursor[GROUP_COUNT];     // 各参数组记住的光标位置
@@ -423,21 +446,58 @@ static void stop_local_test(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     在电机与闭环全部停止时保存当前参数
+// 函数简介     判断当前能不能写 Flash，不能写时顺带把原因写进状态行
 // 参数说明     void
-// 返回参数     void
-// 使用示例     save_params_action();
+// 返回参数     uint8           1 表示被挡住，调用方直接返回
+// 使用示例     if (save_blocked()) return;
 //-------------------------------------------------------------------------------------------------------------------
-static void save_params_action(void)
+static uint8 save_blocked(void)
 {
     if (control_test_running() ||
         control_jog_running() != MOTOR_JOG_NONE ||
         start_flag != START_STOP)
     {
         menu_status("SAVE BLOCKED: RUNNING");
-        return;
+        return 1;
     }
-    menu_status(param_save() ? "SAVED TO FLASH" : "SAVE FAILED");
+    return 0;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     Params 页最底下的 Save：把全部参数写进 Flash
+// 参数说明     void
+// 返回参数     void
+// 使用示例     save_params_action();
+//-------------------------------------------------------------------------------------------------------------------
+static void save_params_action(void)
+{
+    if (save_blocked()) return;
+    menu_status(param_save() ? "ALL SAVED TO FLASH" : "SAVE FAILED");
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     子页里的 Save：只把当前这一页的参数写进 Flash，别的页保持 Flash 里已有的值
+// 参数说明     void
+// 返回参数     void
+// 使用示例     save_group_action();
+//-------------------------------------------------------------------------------------------------------------------
+static void save_group_action(void)
+{
+    const menu_group_t *group = &s_groups[s_group_index];
+    const char *names[UI_MAX_GROUP_ITEMS];
+    char text[sizeof(s_status)];
+    uint8 i;
+
+    if (save_blocked()) return;
+
+    // item_count 不会超过 UI_MAX_GROUP_ITEMS，文件末尾有编译期检查
+    for (i = 0; i < group->item_count; i++)
+        names[i] = group->items[i].name;
+
+    (void)snprintf(text, sizeof(text), "%s %s",
+                   group->title,
+                   param_save_names(names, i) ? "PAGE SAVED" : "SAVE FAILED");
+    menu_status(text);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -528,10 +588,14 @@ static void set_page(menu_page_t page)
     // 波形完全由页面和正在跑什么决定，没有任何地方让人选，无线串口侧也没有切波形的命令。
     // Camera/Element 进页面就出 trk；三轴页由 control_test_start() 按轴给；
     // Motor 由 control_jog_start() 给 mot；Attitude 页的动作行给 att。
+    // 三轴平衡是唯一跨页面存活的运行状态（stop_local_test() 有意不碰 start_flag），
+    // 所以它的波形也不能因为翻页就断掉，否则翻一次页波形就少一段
     g_vofa_mode = VOFA_OFF;
-    if (page == MENU_PAGE_GROUP &&
-        (s_groups[s_group_index].kind == GROUP_KIND_CAMERA ||
-         s_groups[s_group_index].kind == GROUP_KIND_ELEMENT))
+    if (start_flag == START_BALANCE)
+        g_vofa_mode = VOFA_BAL;
+    else if (page == MENU_PAGE_GROUP &&
+             (s_groups[s_group_index].kind == GROUP_KIND_CAMERA ||
+              s_groups[s_group_index].kind == GROUP_KIND_ELEMENT))
         g_vofa_mode = VOFA_TRACK;
 
     s_editing = 0;
@@ -652,7 +716,7 @@ static void render_main(void)
     ui_header("MENU", s_cursor, 3);
     draw_action_row(0, 0, "Params");
     draw_action_row(1, 1, "Image");
-    draw_action_row(2, 2, "Run");
+    draw_action_row(2, 2, (start_flag == START_BALANCE) ? "Balance: ON" : "Balance: OFF");
     render_main_live();
     draw_status();
     ui_footer();
@@ -1151,8 +1215,55 @@ static uint8 group_param_edit_allowed(const menu_group_t *group, uint8 item_inde
 }
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     主菜单 Balance 行：连按两次启动三轴平衡，运行中再按一次停车
+// 参数说明     void
+// 返回参数     void
+// 使用示例     balance_action();
+//-------------------------------------------------------------------------------------------------------------------
+static void balance_action(void)
+{
+    uint32 now = g_control_uptime_ms;
+
+    // 跑着的时候再按一次就是停，和三轴页的分环 Test、Motor 页的点动一个手感
+    if (start_flag == START_BALANCE)
+    {
+        s_balance_armed_until_ms = 0;
+        s_balance_on = 0;
+        control_stop();
+        menu_status("BALANCE STOPPED");
+        return;
+    }
+
+    if (control_test_running() || control_jog_running() != MOTOR_JOG_NONE)
+    {
+        s_balance_armed_until_ms = 0;
+        menu_status("BALANCE BLOCKED: RUNNING");
+        return;
+    }
+
+    // 按下去 A/B 就松刹车，车会自己立起来，所以要连按两次确认
+    if (s_balance_armed_until_ms == 0 || (int32)(now - s_balance_armed_until_ms) >= 0)
+    {
+        s_balance_armed_until_ms = now + UI_BALANCE_CONFIRM_MS;
+        menu_status("PRESS AGAIN TO BALANCE");
+        return;
+    }
+
+    s_balance_armed_until_ms = 0;
+    if (control_balance_start())
+    {
+        s_balance_on = 1;
+        menu_status("BALANCE RUNNING");
+    }
+    else
+    {
+        menu_status(test_status_text(control_test_last_status()));
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     处理主菜单按键
-// 参数说明     up/down/enter    上移/下移/确认事件
+// 参数说明     up/down/enter   上移/下移/确认事件
 // 返回参数     void
 // 使用示例     handle_main(up, down, enter);
 //-------------------------------------------------------------------------------------------------------------------
@@ -1160,6 +1271,8 @@ static void handle_main(uint8 up, uint8 down, uint8 enter)
 {
     if (up) move_cursor(-1);
     if (down) move_cursor(1);
+    // 光标一离开 Balance 行就撤销确认态，避免停在别处按确认时误发车
+    if (up || down) s_balance_armed_until_ms = 0;
     if (!enter) return;
 
     if (s_cursor == 0)
@@ -1181,7 +1294,7 @@ static void handle_main(uint8 up, uint8 down, uint8 enter)
     }
     else
     {
-        menu_status("RUN NOT ENABLED");
+        balance_action();
     }
 }
 
@@ -1329,7 +1442,7 @@ static void handle_group(uint8 up, uint8 down, uint8 enter, uint8 back)
     }
     else if (s_cursor == save_index)
     {
-        save_params_action();
+        save_group_action();            // 子页的 Save 只存本页参数，全量存去 Params 页的 Save
     }
     else
     {
@@ -1437,6 +1550,8 @@ void menu_init(void)
     s_editing = 0;
     s_test_on = 0;
     s_active_test = 0xFFu;
+    s_balance_on = 0;
+    s_balance_armed_until_ms = 0;
     s_image_ok = 0;
     s_dirty = 2;
     s_last_live_ms = 0;
@@ -1469,8 +1584,14 @@ void menu_run(void)
     uint32 now = g_control_uptime_ms;
 
     enter = key_event(MENU_KEY_ENTER, 0);
+    // 返回键在任何页面都是急停。先清 s_balance_on，否则下面那段自动停机检测会把
+    // 上一次的停机原因当成本次的原因显示出来
     if (back && start_flag != START_STOP)
+    {
+        s_balance_on = 0;
         control_stop();
+        menu_status("STOPPED");
+    }
 
     if (g_param_revision != s_last_param_revision)
     {
@@ -1494,6 +1615,16 @@ void menu_run(void)
         s_active_test = 0xFFu;
         g_vofa_mode = VOFA_OFF;
         menu_status(test_status_text(control_test_last_status()));
+    }
+
+    // 三轴平衡可能被 1ms 中断里的安全闸直接打回 START_STOP，这里发现并显示原因。
+    // 不限页面：平衡是唯一跨页面存活的运行状态
+    if (s_balance_on && start_flag != START_BALANCE)
+    {
+        s_balance_on = 0;
+        if (g_vofa_mode == VOFA_BAL) g_vofa_mode = VOFA_OFF;
+        menu_status(test_status_text(control_test_last_status()));
+        s_dirty = 1;
     }
 
     switch (s_page)

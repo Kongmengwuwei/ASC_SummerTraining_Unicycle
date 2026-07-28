@@ -23,9 +23,12 @@ typedef struct
     float r_rcy_kp;                     // 飞轮回收环 P
     float r_rcy_ki;                     // 飞轮回收环 I
     float r_rcy_kd;                     // 飞轮回收环 D
+    float r_rcy_limit;                  // 飞轮回收环输出限幅(°)，0=不限
+    float r_rcy_tau;                    // 飞轮回收环反馈低通时间常数(s)，0=不滤波
     float r_angle_kp;                   // 横滚角度环 P
     float r_angle_ki;                   // 横滚角度环 I
     float r_angle_kd;                   // 横滚角度环 D
+    float r_angle_limit;                // 横滚角度环输出限幅(°/s)，0=不限
     float r_rate_kp;                    // 横滚角速度环 P
     float r_rate_ki;                    // 横滚角速度环 I
     float r_rate_kd;                    // 横滚角速度环 D
@@ -109,9 +112,12 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define R_RCY_KP                (g_param.r_rcy_kp)
 #define R_RCY_KI                (g_param.r_rcy_ki)
 #define R_RCY_KD                (g_param.r_rcy_kd)
+#define R_RCY_LIMIT             (g_param.r_rcy_limit)
+#define R_RCY_TAU               (g_param.r_rcy_tau)
 #define R_ANGLE_KP              (g_param.r_angle_kp)
 #define R_ANGLE_KI              (g_param.r_angle_ki)
 #define R_ANGLE_KD              (g_param.r_angle_kd)
+#define R_ANGLE_LIMIT           (g_param.r_angle_limit)
 #define R_RATE_KP               (g_param.r_rate_kp)
 #define R_RATE_KI               (g_param.r_rate_ki)
 #define R_RATE_KD               (g_param.r_rate_kd)
@@ -225,12 +231,21 @@ void param_init(void);
 void param_load_defaults(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将运行参数保存到 Flash
+// 函数简介     将全部运行参数保存到 Flash，对应 Params 页最底下那个 Save
 // 参数说明     void
 // 返回参数     uint8           1 表示成功, 0 表示失败
 // 使用示例     uint8 saved = param_save();
 //-------------------------------------------------------------------------------------------------------------------
 uint8 param_save(void);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     只保存名字表里的参数，其余参数保持 Flash 里已有的值，对应各子页里的 Save。
+//              Flash 里从没存过、又不在名字表里的参数不写记录，下次上电仍回默认值
+// 参数说明     names/count     参数名表与表长，名字要和 g_param_table 里的完全一致
+// 返回参数     uint8           1 表示成功, 0 表示失败或表为空
+// 使用示例     uint8 saved = param_save_names(names, 9);
+//-------------------------------------------------------------------------------------------------------------------
+uint8 param_save_names(const char *const *names, uint16 count);
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     擦除 Flash 参数页并把运行参数恢复成默认值

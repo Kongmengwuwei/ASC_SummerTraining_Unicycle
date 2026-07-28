@@ -19,9 +19,12 @@ const param_desc_t g_param_table[] =
     { "r_rcy_kp",         &g_param.r_rcy_kp,         1, -50.0f,   50.0f  },
     { "r_rcy_ki",         &g_param.r_rcy_ki,         1, -20.0f,   20.0f  },
     { "r_rcy_kd",         &g_param.r_rcy_kd,         1, -50.0f,   50.0f  },
+    { "r_rcy_limit",      &g_param.r_rcy_limit,      1,  0.0f,    15.0f  },
+    { "r_rcy_tau",        &g_param.r_rcy_tau,        1,  0.0f,    10.0f  },
     { "r_angle_kp",       &g_param.r_angle_kp,       1, -2000.0f, 2000.0f},
     { "r_angle_ki",       &g_param.r_angle_ki,       1, -200.0f,  200.0f },
     { "r_angle_kd",       &g_param.r_angle_kd,       1, -500.0f,  500.0f },
+    { "r_angle_limit",    &g_param.r_angle_limit,    1,  0.0f,    500.0f },
     { "r_rate_kp",        &g_param.r_rate_kp,        1, -2000.0f, 2000.0f},
     { "r_rate_ki",        &g_param.r_rate_ki,        1, -200.0f,  200.0f },
     { "r_rate_kd",        &g_param.r_rate_kd,        1, -500.0f,  500.0f },
@@ -73,7 +76,7 @@ const param_desc_t g_param_table[] =
     { "motor_dir_c",      &g_param.motor_dir_c,      0, -1.0f,    1.0f   },
     { "enc_dir_c",        &g_param.enc_dir_c,        0, -1.0f,    1.0f   },
     { "jog_duty_fly",     &g_param.jog_duty_fly,     0,  0.0f,    10000.0f },
-    // 上限跟 DRIVE_OUT_LIMIT 一致，再大也会被 Y_Motor_LimitDuty() 钳掉
+    // 点动只用来验方向，架空空载 3500 已经转得很快了，所以卡在 DRIVE_OUT_LIMIT(8000) 之下
     { "jog_duty_drive",   &g_param.jog_duty_drive,   0,  0.0f,    3500.0f  },
     { "fly_speed_limit",  &g_param.fly_speed_limit,  0,  0.0f,    20000.0f },
     { "fly_slew",         &g_param.fly_slew,         0,  0.0f,    10000.0f },
@@ -370,9 +373,12 @@ void param_load_defaults(void)
     g_param.r_rcy_kp   = R_RCY_KP_DEFAULT;
     g_param.r_rcy_ki   = R_RCY_KI_DEFAULT;
     g_param.r_rcy_kd   = R_RCY_KD_DEFAULT;
+    g_param.r_rcy_limit = R_RCY_LIMIT_DEFAULT;
+    g_param.r_rcy_tau   = R_RCY_TAU_DEFAULT;
     g_param.r_angle_kp = R_ANGLE_KP_DEFAULT;
     g_param.r_angle_ki = R_ANGLE_KI_DEFAULT;
     g_param.r_angle_kd = R_ANGLE_KD_DEFAULT;
+    g_param.r_angle_limit = R_ANGLE_LIMIT_DEFAULT;
     g_param.r_rate_kp  = R_RATE_KP_DEFAULT;
     g_param.r_rate_ki  = R_RATE_KI_DEFAULT;
     g_param.r_rate_kd  = R_RATE_KD_DEFAULT;
@@ -496,33 +502,120 @@ void param_init(void)
     g_param_revision++;
 }
 
+// 整页 Flash 一次只能整体擦写，所以"只存这一页的参数"实际做法是：
+// 先把 Flash 里现有的记录读出来铺到 s_stored[]，写的时候本页参数取内存里的当前值，
+// 其余参数原样搬旧值回去。旧记录里没有的参数就整条不写，保持"从没存过"这个状态，
+// 下次上电它照样回默认值。记录条数是变长的，param_init() 只遍历 count 条。
+static flash_data_union s_stored[PARAM_TABLE_NUM];  // Flash 里现存的值，按参数表下标铺开
+static uint8            s_stored_ok[PARAM_TABLE_NUM];   // 该参数在 Flash 里有记录
+
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将运行参数保存到 Flash
+// 函数简介     把 Flash 里现存的键值对按参数表下标铺进 s_stored / s_stored_ok
 // 参数说明     void
-// 返回参数     uint8           1 表示成功, 0 表示失败
-// 使用示例     uint8 saved = param_save();
+// 返回参数     void
+// 使用示例     param_load_stored();
 //-------------------------------------------------------------------------------------------------------------------
-uint8 param_save(void)
+static void param_load_stored(void)
+{
+    uint32 count, words, i;
+    uint16 t;
+
+    for (t = 0; t < PARAM_TABLE_NUM; t++) s_stored_ok[t] = 0;
+
+    // 下面每一条校验不过就当整页没记录，此时按页保存等价于只写本页那几个参数
+    if (!flash_check(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE)) return;
+    flash_read_page_to_buffer(PARAM_FLASH_SECTOR, PARAM_FLASH_PAGE);
+    if (flash_union_buffer[PARAM_MAGIC_INDEX].uint32_type != PARAM_MAGIC) return;
+
+    count = flash_union_buffer[PARAM_COUNT_INDEX].uint32_type;
+    if (count == 0u || count > PARAM_MAX_RECORDS) return;
+
+    words = PARAM_FIRST_RECORD_INDEX + count * 2u;
+    if (flash_union_buffer[words].uint32_type !=
+        param_crc32_words((const uint32 *)flash_union_buffer, words)) return;
+
+    for (i = 0; i < count; i++)
+    {
+        uint32 key = flash_union_buffer[PARAM_FIRST_RECORD_INDEX + i * 2u].uint32_type;
+
+        for (t = 0; t < PARAM_TABLE_NUM; t++)
+        {
+            const param_desc_t *d = &g_param_table[t];
+
+            if (param_name_key(d->name, d->is_float) != key) continue;
+            s_stored[t]    = flash_union_buffer[PARAM_FIRST_RECORD_INDEX + i * 2u + 1u];
+            s_stored_ok[t] = 1;
+            break;
+        }
+        // 键不在当前参数表里：这个参数已经删掉或改名，不搬回去
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     判断参数名是否在给定的名字表里
+// 参数说明     name/names/count 参数名、名字表与表长
+// 返回参数     uint8           1 表示在表里
+// 使用示例     if (param_name_listed(d->name, names, count)) ...
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 param_name_listed(const char *name, const char *const *names, uint16 count)
+{
+    uint16 i;
+
+    for (i = 0; i < count; i++)
+        if (names[i] != 0 && strcmp(names[i], name) == 0) return 1;
+    return 0;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     组装并写入一条 Flash 记录，names 为 0 表示保存全部参数
+// 参数说明     names/count     要取内存当前值的参数名表与表长
+// 返回参数     uint8           1 表示写入并回读比对成功
+// 使用示例     ok = param_save_impl(0, 0);
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 param_save_impl(const char *const *names, uint16 count)
 {
     static uint32 expected[PARAM_RECORD_WORDS];     // 回读比对用，放静态区不占栈
-    uint32 words = PARAM_FIRST_RECORD_INDEX + (uint32)PARAM_TABLE_NUM * 2u;
+    uint32 words;
     uint16 t;
+    uint16 n = 0;                                   // 实际写进去的记录条数
     uint32 i;
 
     if (!param_keys_unique()) return 0;
     if (!param_validate_current()) return 0;
 
+    // 全量保存每一条都取内存值，不需要旧记录；按页保存才要先读出来
+    if (names != 0) param_load_stored();
+
     flash_union_buffer[PARAM_MAGIC_INDEX].uint32_type = PARAM_MAGIC;
-    flash_union_buffer[PARAM_COUNT_INDEX].uint32_type = (uint32)PARAM_TABLE_NUM;
     for (t = 0; t < PARAM_TABLE_NUM; t++)
     {
         const param_desc_t *d = &g_param_table[t];
-        uint32 at = PARAM_FIRST_RECORD_INDEX + (uint32)t * 2u;
+        uint8  from_ram = (uint8)((names == 0) ? 1 : param_name_listed(d->name, names, count));
+        uint32 at;
 
+        // 不在本页、Flash 里也没存过 → 这一条整个不写
+        if (!from_ram && !s_stored_ok[t]) continue;
+
+        at = PARAM_FIRST_RECORD_INDEX + (uint32)n * 2u;
         flash_union_buffer[at].uint32_type = param_name_key(d->name, d->is_float);
-        if (d->is_float) flash_union_buffer[at + 1u].float_type = *(float *)d->ptr;
-        else             flash_union_buffer[at + 1u].int32_type = *(int *)d->ptr;
+        if (!from_ram)
+        {
+            flash_union_buffer[at + 1u] = s_stored[t];      // 别的页的旧值原样搬回去
+        }
+        else if (d->is_float)
+        {
+            flash_union_buffer[at + 1u].float_type = *(float *)d->ptr;
+        }
+        else
+        {
+            flash_union_buffer[at + 1u].int32_type = *(int *)d->ptr;
+        }
+        n++;
     }
+    if (n == 0u) return 0;                          // 空记录会让 param_init() 判无效
+
+    flash_union_buffer[PARAM_COUNT_INDEX].uint32_type = (uint32)n;
+    words = PARAM_FIRST_RECORD_INDEX + (uint32)n * 2u;
     flash_union_buffer[words].uint32_type =
         param_crc32_words((const uint32 *)flash_union_buffer, words);
 
@@ -537,4 +630,27 @@ uint8 param_save(void)
     for (i = 0; i <= words; i++)
         if (flash_union_buffer[i].uint32_type != expected[i]) return 0;
     return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将全部运行参数保存到 Flash
+// 参数说明     void
+// 返回参数     uint8           1 表示成功, 0 表示失败
+// 使用示例     uint8 saved = param_save();
+//-------------------------------------------------------------------------------------------------------------------
+uint8 param_save(void)
+{
+    return param_save_impl(0, 0);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     只把名字表里的参数存进 Flash，其余参数保持 Flash 里已有的值
+// 参数说明     names/count     参数名表与表长，名字要和 g_param_table 里的完全一致
+// 返回参数     uint8           1 表示成功, 0 表示失败或表为空
+// 使用示例     uint8 saved = param_save_names(names, 9);
+//-------------------------------------------------------------------------------------------------------------------
+uint8 param_save_names(const char *const *names, uint16 count)
+{
+    if (names == 0 || count == 0u) return 0;
+    return param_save_impl(names, count);
 }

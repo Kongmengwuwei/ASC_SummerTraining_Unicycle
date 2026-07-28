@@ -67,10 +67,32 @@
 #define R_RCY_KI_DEFAULT        (0.0f)         // 飞轮回收环 I
 #define R_RCY_KD_DEFAULT        (0.0f)         // 飞轮回收环 D
 #define R_RCY_IMAX              (50.0f)        // 飞轮回收环积分限幅
+// 回收环输出是加进角度环误差的零点偏移，单位是度，等于"命令车体歪多少"。
+// pid_loc_calc() 只限积分不限输出，不夹住的话飞轮差速几千 RPM 时会命令出几十度，
+// 角度环照着追就是一脚踹到饱和。和压弯零点的 LEAN_LIMIT 是同一类限幅
+#define R_RCY_LIMIT_DEFAULT     (3.0f)         // 飞轮回收环输出限幅(°)，0=不限
+// 回收环反馈的一阶低通时间常数(s)。飞轮差速里平衡纹波的交流量是待纠正直流漂移的十几倍，
+// 不滤掉的话回收环会跟着平衡环的节奏走，把交流量反号灌回角度环误差，直接起等幅极限环。
+// 回收本来就是秒级的慢事，2s 时间常数对 2Hz 纹波衰减约 25 倍，对直流漂移无衰减。0=不滤波
+#define R_RCY_TAU_DEFAULT       (2.0f)         // 飞轮回收环反馈低通时间常数(s)，0=不滤波
+// 角度环输出是给角速度内环的角速度命令(°/s)，pid_loc_calc() 不限输出。
+// 不夹住的话大倾角时会命令出几百 °/s，车根本转不了那么快，内环只会一路顶到饱和。
+// 两个参考独轮工程每个环都有独立输出限幅。0=不限
+// 这个值同时决定静态倾角下能拿到多少输出：静止时 roll_rate=0，
+// 内环误差就等于角度环输出，所以 最大占空比 = |R_RATE_KP| × R_ANGLE_LIMIT。
+// 要让角度环单独就能打满，R_ANGLE_LIMIT >= FLYWHEEL_OUT_LIMIT / |R_RATE_KP|，
+// 按 |kp|=40 算就是 250。给小了 angle_kp 加多大都没用，早就顶在这儿了
+#define R_ANGLE_LIMIT_DEFAULT   (250.0f)       // 横滚角度环输出限幅(°/s)，0=不限
 #define R_ANGLE_KP_DEFAULT      (0.0f)         // 横滚角度环 P
 #define R_ANGLE_KI_DEFAULT      (0.0f)         // 横滚角度环 I
 #define R_ANGLE_KD_DEFAULT      (0.0f)         // 横滚角度环 D
-#define R_ANGLE_IMAX            (50.0f)        // 横滚角度环积分限幅
+// 横滚角度环积分限幅。这一路是整条 Roll 链里唯一的回正来源，必须留够量程。
+// 反作用轮力矩 = -J·dω/dt，占空比≈飞轮转速，所以：
+//   占空比 ∝ 角度   -> 力矩 ∝ 角速度 = 阻尼，回正为 0
+//   占空比 ∝ ∫角度  -> 力矩 ∝ 角度   = 回正      <- 只有积分项给得出
+// 角度环 5ms 一拍，imax=50 时 5° 倾角十拍就顶满，I 项退化成常数偏置等于没有。
+// 2000 允许 1° 持续 10 秒或 5° 持续 2 秒，配合 R_ANGLE_LIMIT 做二级限幅
+#define R_ANGLE_IMAX            (2000.0f)      // 横滚角度环积分限幅
 #define R_RATE_KP_DEFAULT       (0.0f)         // 横滚角速度环 P
 #define R_RATE_KI_DEFAULT       (0.0f)         // 横滚角速度环 I
 #define R_RATE_KD_DEFAULT       (0.0f)         // 横滚角速度环 D
@@ -116,11 +138,12 @@
 #define DRIVE_OUT_LIMIT         (8000)         // C轮输出限幅
 #define DRIVE_DEAD_ZONE         (120)          // C轮死区补偿
 
-// Test 专用限幅。整定直立要给足力矩，太小根本压不住车体。
-// 注意 BAL_TEST_DRIVE_LIMIT 高于 DRIVE_OUT_LIMIT，Pitch 在台架上能出的力矩比实跑时大，
-// 台架整定完的 P_RATE/P_ANGLE 落地后会更容易饱和，实跑前按 DRIVE_OUT_LIMIT 复核一遍
-#define BAL_TEST_FLY_LIMIT      (8000)          // 飞轮测试输出限幅
-#define BAL_TEST_DRIVE_LIMIT    (8000)          // 行进轮测试输出限幅
+// Test 专用限幅，与实跑限幅一致，台架整定完的值落地后饱和点不变。
+// 两轴都不要再压低：反作用轮的极速正比于占空比上限，压低限幅等于直接砍掉动量预算。
+// 实测 8000 占空比下飞轮极速约 4335 RPM，到极速 dω/dt=0 就完全没有力矩，车必倒；
+// 放到 10000 极速约 5400 RPM，动量和峰值力矩各多约 25%
+#define BAL_TEST_FLY_LIMIT      (10000)         // 飞轮测试输出限幅，与 FLYWHEEL_OUT_LIMIT 一致
+#define BAL_TEST_DRIVE_LIMIT    (8000)          // 行进轮测试输出限幅，与 DRIVE_OUT_LIMIT 一致
 
 // Motor 页架空点动测试。占空比满量程 10000，运行参数，Params -> Motor 可调。
 // 点动没有时限，按同一行或返回键停；MCU 跑飞时 A/B 靠驱动固件的失控保护兜底
@@ -129,7 +152,7 @@
 
 // 飞轮超速保护。Rate/Angle 测试时回收环被旁路，增量式输出停在非零值上飞轮就会一路加速，
 // 到极速会触发驱动的堵转保护而且不报原因。这里先一步停测试并在菜单上说明。0 = 关闭
-#define FLY_SPEED_LIMIT_DEFAULT (4000)         // A/B 转速上限(RPM)
+#define FLY_SPEED_LIMIT_DEFAULT (7000)         // A/B 转速上限(RPM)
 
 // A/B 占空比变化率上限(每 1ms)。动量轮从 0 转速被一脚踩到满占空比时的电流波形
 // 和真堵转几乎一样，会误触发 CYT2BL3 的堵转保护。0 = 关闭斜坡

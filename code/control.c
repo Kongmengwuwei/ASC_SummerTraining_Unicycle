@@ -58,6 +58,7 @@ static pid_t p_vel_pid, p_angle_pid, p_rate_pid;    // Pitch：速度 / 角度 /
 static pid_t y_angle_pid, y_rate_pid;               // Yaw  ：转向外环 / 角速度内环
 
 static float s_speed_ramp;                      // 斜坡后的速度环实际目标(counts/20ms)
+static float s_rcy_fb;                          // 回收环反馈低通状态(RPM)，只在 20ms 拍更新
 static float s_lean_raw;                        // 压弯零点累加值，g_lean_offset 限速率跟随它
 
 // Test 状态，前台启停、1ms 中断读
@@ -183,6 +184,7 @@ static void cascade_reset(void)
     g_lean_offset = 0;
     s_lean_raw = 0;
     s_speed_ramp = 0.0f;
+    s_rcy_fb = 0.0f;                                 // 回收环反馈的低通状态
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -258,6 +260,66 @@ static float lean_slew_update(float target)
 // ====================== 三轴串级 ======================
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     跑一拍飞轮回收环(20ms)，返回它给角度环的零点偏移(°)，非 20ms 拍返回上一次的值
+// 参数说明     run20           20ms 分频标志
+// 返回参数     float           限幅后的零点偏移(°)，正值表示命令车体往一侧歪
+// 使用示例     float rcy = roll_recovery_offset(run20);
+//-------------------------------------------------------------------------------------------------------------------
+static float roll_recovery_offset(uint8 run20)
+{
+    float raw;
+
+    if (!run20) return r_rcy_pid.out;
+
+    // 回收环把飞轮差速拉回 0，防止动量轮越转越快最后饱和、失去可用力矩。
+    // 反馈是 CYT2BL3 每 10ms 回传的两轮转速差(RPM)
+    raw = -(float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1());
+
+    // 差速里同时有两样东西：要纠正的秒级直流漂移，和平衡环干活产生的交流纹波。
+    // 实测纹波幅值是直流漂移的十几倍，直接喂进去回收环就会跟着平衡环的节奏走，
+    // 把纹波反号灌回角度环误差，起等幅极限环 —— 减小 kp 没用，两者比例摆在那。
+    // 所以先一阶低通，只留慢漂移。R_RCY_TAU 秒，本函数 20ms 一拍
+    if (R_RCY_TAU > 0.0f)
+        s_rcy_fb += (raw - s_rcy_fb) * (0.02f / (R_RCY_TAU + 0.02f));
+    else
+        s_rcy_fb = raw;
+
+    pid_loc_calc(&r_rcy_pid, s_rcy_fb);
+
+    // 输出直接加进角度环误差，量纲是度，等于在挪横滚零点。
+    // pid_loc_calc() 只限积分不限输出，不夹住的话差速几千 RPM 时会命令出几十度，
+    // 角度环照着追就是一脚踹到饱和，表现就是一开回收环车就抖。
+    // 压弯零点那一路有 LEAN_LIMIT 管着，这一路对应 R_RCY_LIMIT。0 表示不限
+    if (R_RCY_LIMIT > 0.0f)
+        r_rcy_pid.out = constrain_float(r_rcy_pid.out, -R_RCY_LIMIT, R_RCY_LIMIT);
+    return r_rcy_pid.out;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     跑一拍 Roll 角速度内环(1ms)，位置式 + 输出限幅
+// 参数说明     limit           输出限幅，Test 用 BAL_TEST_FLY_LIMIT，三轴串级用 FLYWHEEL_OUT_LIMIT
+// 返回参数     float           限幅后的占空比输出
+// 使用示例     return roll_rate_ctrl((float)BAL_TEST_FLY_LIMIT);
+//-------------------------------------------------------------------------------------------------------------------
+static float roll_rate_ctrl(float limit)
+{
+    // 位置式，不是增量式。增量式的 out 是个永久累加器：误差回到 0 时输出停在原地不动，
+    // 占空比恒定 -> 飞轮到极速 -> dω/dt=0 -> 反作用力矩为零 -> 车必倒，
+    // 实测就是"能站 2~3 秒然后直接倒"，倒的瞬间飞轮都在 96%~99% 极速上。
+    // 位置式的输出跟当前误差绑定，误差回零输出就回零，飞轮自己会减速，跑不出这个失效模式。
+    // 两个参考独轮工程的飞轮串级也都是位置式，且积分项全为 0。
+    //
+    // R_RATE_KI 保持 0：R_RATE_IMAX 是 100，而这一环误差量级是几十到几百 °/s，
+    // 积分器一两拍就顶死，out_i 会变成 ±ki*imax 这么个只跟符号有关的常数偏置。
+    // R_RATE_KD 现在可用：位置式的 kd 是一阶差分(角加速度)，不是增量式那个二阶差分。
+    pid_loc_calc(&r_rate_pid, att.roll_rate + r_angle_pid.out);
+
+    // pid_loc_calc() 只限积分不限输出，这里补上
+    r_rate_pid.out = constrain_float(r_rate_pid.out, -limit, limit);
+    return r_rate_pid.out;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     Roll 串级，输出由 A/B 动量轮差动执行：回收环 -> 角度环 -> 角速度环
 // 参数说明     zero/run5/run20 横滚零点、5ms 分频标志、20ms 分频标志
 // 返回参数     float           横滚角速度环的累计输出 PWM_roll
@@ -265,14 +327,18 @@ static float lean_slew_update(float target)
 //-------------------------------------------------------------------------------------------------------------------
 static float roll_cascade_ctrl(float zero, uint8 run5, uint8 run20)
 {
-    // 回收环把飞轮差速拉回 0，防止动量轮越转越快最后饱和、失去可用力矩
-    if (run20) pid_loc_calc(&r_rcy_pid, -(float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1()));
-    if (run5)  pid_loc_calc(&r_angle_pid, r_rcy_pid.out + att.roll - zero);                    // 角度环，位置式
-    pid_inc_calc_limited(&r_rate_pid, att.roll_rate + r_angle_pid.out,
-                         -FLYWHEEL_OUT_LIMIT, FLYWHEEL_OUT_LIMIT);                              // 角速度环，增量式
+    float rcy = roll_recovery_offset(run20);         // 回收环给出的零点偏移(°)，已限幅
+
+    if (run5)
+    {
+        pid_loc_calc(&r_angle_pid, rcy + att.roll - zero);                                      // 角度环，位置式
+        if (R_ANGLE_LIMIT > 0.0f)                                                               // 输出是角速度命令(°/s)
+            r_angle_pid.out = constrain_float(r_angle_pid.out, -R_ANGLE_LIMIT, R_ANGLE_LIMIT);
+    }
+    roll_rate_ctrl((float)FLYWHEEL_OUT_LIMIT);                                                  // 角速度环，位置式
 
     g_bal_dbg.r_rcy_set  = 0.0f;
-    g_bal_dbg.r_rcy_fb   = (float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1());
+    g_bal_dbg.r_rcy_fb   = s_rcy_fb;                 // 低通之后的值，也就是回收环真正看到的
     g_bal_dbg.r_rcy_out  = r_rcy_pid.out;
     g_bal_dbg.r_ang_fb   = att.roll;
     g_bal_dbg.r_ang_out  = r_angle_pid.out;
@@ -327,6 +393,24 @@ static float yaw_cascade_ctrl(uint8 run5)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     安全闸把三轴串级停回 STOP，只在原来确实在跑时记下停机原因供菜单显示
+// 参数说明     reason          停机原因，菜单用 control_test_last_status() 读走
+// 返回参数     void
+// 使用示例     cascade_stop(CTRL_TEST_STATUS_BLDC_LOST);
+//-------------------------------------------------------------------------------------------------------------------
+static void cascade_stop(control_test_status_t reason)
+{
+    // start_flag 已经是 STOP 说明车本来就没跑，别用它去盖掉上一次 Test 的状态码
+    if (start_flag != START_STOP) s_test_status = reason;
+
+    cascade_reset();
+    g_pwm_roll = g_pwm_pitch = g_pwm_yaw = 0.0f;
+    g_motor_a = g_motor_b = g_motor_c = 0;
+    start_flag = START_STOP;
+    control_motor_stop();
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     跑一拍三轴串级：刷增益 -> 安全闸 -> 三轴串级 -> 混控 -> 保护角 -> 按状态机下发
 // 参数说明     void
 // 返回参数     void
@@ -347,16 +431,12 @@ static void cascade_run(void)
 
     cascade_gain_refresh();                              // 菜单或串口改的增益下一拍就生效
 
-    // IMU 或驱动通信断了就停机。驱动断链时输出发不出去，继续跑串级只会让增量式积分堆积
-    if (!g_imu_ok || imu_link_lost() || W_Motor_LinkLost())
-    {
-        cascade_reset();
-        g_pwm_roll = g_pwm_pitch = g_pwm_yaw = 0.0f;
-        g_motor_a = g_motor_b = g_motor_c = 0;
-        start_flag = START_STOP;
-        control_motor_stop();
-        return;
-    }
+    // IMU、标定或驱动通信不可信就停机。驱动断链时输出发不出去，继续跑串级只会让增量式积分堆积
+    if (!g_imu_ok)             { cascade_stop(CTRL_TEST_STATUS_IMU_FAIL);  return; }
+    if (imu_link_lost())       { cascade_stop(CTRL_TEST_STATUS_IMU_LOST);  return; }
+    if (imu_calib_state() != IMU_CALIB_OK)
+                               { cascade_stop(CTRL_TEST_STATUS_IMU_CALIB); return; }
+    if (W_Motor_LinkLost())    { cascade_stop(CTRL_TEST_STATUS_BLDC_LOST); return; }
 
     // 姿态出现 NaN/Inf 立即停机。这一判必须排在保护角之前，fabsf(NaN) > 阈值 恒假，拦不住 NaN
     if (attitude_diverged() ||
@@ -364,11 +444,15 @@ static void cascade_run(void)
         !ctrl_is_finite(att.roll_rate) || !ctrl_is_finite(att.pitch_rate) ||
         !ctrl_is_finite(imu.gyro_z))
     {
-        cascade_reset();
-        g_pwm_roll = g_pwm_pitch = g_pwm_yaw = 0.0f;
-        g_motor_a = g_motor_b = g_motor_c = 0;
-        start_flag = START_STOP;
-        control_motor_stop();
+        cascade_stop(CTRL_TEST_STATUS_ATT_DIVERGED);
+        return;
+    }
+
+    // 三轴一起跑时回收环在环内，但它整定不好飞轮照样会单向堆积。
+    // 抢在 CYT2BL3 的堵转保护闩死之前停，闩死了要重启驱动才恢复
+    if (start_flag == START_BALANCE && fly_overspeed())
+    {
+        cascade_stop(CTRL_TEST_STATUS_FLY_OVERSPEED);
         return;
     }
 
@@ -411,6 +495,9 @@ static void cascade_run(void)
     pitch_err = att.pitch - g_pitch_zero;
     if (fabsf(roll_err) > ROLL_PROTECT_ANGLE || fabsf(pitch_err) > PITCH_PROTECT_ANGLE)
     {
+        if (start_flag != START_STOP)
+            s_test_status = (fabsf(roll_err) > ROLL_PROTECT_ANGLE) ? CTRL_TEST_STATUS_ROLL_PROT
+                                                                   : CTRL_TEST_STATUS_PITCH_PROT;
         g_motor_a = g_motor_b = g_motor_c = 0;
         start_flag = START_STOP;
         W_Motor_Stop();
@@ -493,7 +580,7 @@ static float roll_test_ctrl(uint8 run5, uint8 run20)
 {
     if (s_test_ring >= TUNE_RING_VEL)
     {
-        if (run20) pid_loc_calc(&r_rcy_pid, -(float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1()));
+        (void)roll_recovery_offset(run20);           // 与三轴串级同一条路径，含 R_RCY_LIMIT 限幅
     }
     else
     {
@@ -502,18 +589,22 @@ static float roll_test_ctrl(uint8 run5, uint8 run20)
 
     if (s_test_ring >= TUNE_RING_ANGLE)
     {
-        if (run5) pid_loc_calc(&r_angle_pid, r_rcy_pid.out + att.roll - g_roll_zero);
+        if (run5)
+        {
+            pid_loc_calc(&r_angle_pid, r_rcy_pid.out + att.roll - g_roll_zero);
+            if (R_ANGLE_LIMIT > 0.0f)
+                r_angle_pid.out = constrain_float(r_angle_pid.out, -R_ANGLE_LIMIT, R_ANGLE_LIMIT);
+        }
     }
     else
     {
         pid_reset(&r_angle_pid);
     }
 
-    pid_inc_calc_limited(&r_rate_pid, att.roll_rate + r_angle_pid.out,
-                         -BAL_TEST_FLY_LIMIT, BAL_TEST_FLY_LIMIT);
+    roll_rate_ctrl((float)BAL_TEST_FLY_LIMIT);
 
     g_bal_dbg.r_rcy_set = 0.0f;
-    g_bal_dbg.r_rcy_fb  = (float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1());
+    g_bal_dbg.r_rcy_fb  = s_rcy_fb;                  // 低通之后的值，原始差速用 CH10-CH9 反算
     g_bal_dbg.r_rcy_out = r_rcy_pid.out;
     g_bal_dbg.r_ang_fb  = att.roll;
     g_bal_dbg.r_ang_out = r_angle_pid.out;
@@ -868,9 +959,70 @@ void control_stop(void)
 {
     control_test_stop();
     control_jog_stop();
+    cascade_reset();                    // 三轴一起跑时的积分与增量累积也要清掉
+    g_pwm_roll = g_pwm_pitch = g_pwm_yaw = 0.0f;
+    g_motor_a = g_motor_b = g_motor_c = 0;
     g_target_distance = 0;
     start_flag = START_STOP;
+    if (g_vofa_mode == VOFA_BAL) g_vofa_mode = VOFA_OFF;
     control_motor_stop();
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     启动三轴同时闭环，原地平衡，速度目标恒 0，视觉与转向命令都不参与
+// 参数说明     void
+// 返回参数     uint8           1=已启动 0=被安全条件阻止，原因见 control_test_last_status()
+// 使用示例     if (!control_balance_start()) menu_status(...);
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_balance_start(void)
+{
+    control_block_t block;
+
+    // 不和单轴 Test、架空点动叠加，两边都在写同一批 PID 实例和同一批电机
+    if (s_test_running || s_jog_target != MOTOR_JOG_NONE)
+    {
+        s_test_status = CTRL_TEST_STATUS_INVALID;
+        return 0;
+    }
+
+    block = control_attitude_block_reason();
+    if (block != CTRL_BLOCK_NONE)
+    {
+        s_test_status = control_block_to_test_status(block);
+        return 0;
+    }
+
+    // A/B 要松刹车，驱动必须在线
+    if (W_Motor_LinkLost())
+    {
+        s_test_status = CTRL_TEST_STATUS_BLDC_LOST;
+        return 0;
+    }
+
+    // 起步时车必须已经扶到保护角以内。倒着按下去等于松刹车瞬间就给一个满幅冲击，
+    // 而且下一拍保护角照样会把它停掉，白折腾一次起停
+    if (fabsf(att.roll - g_roll_zero) > ROLL_PROTECT_ANGLE)
+    {
+        s_test_status = CTRL_TEST_STATUS_ROLL_PROT;
+        return 0;
+    }
+    if (fabsf(att.pitch - g_pitch_zero) > PITCH_PROTECT_ANGLE)
+    {
+        s_test_status = CTRL_TEST_STATUS_PITCH_PROT;
+        return 0;
+    }
+
+    cascade_reset();
+    g_pwm_roll = g_pwm_pitch = g_pwm_yaw = 0.0f;
+    g_motor_a = g_motor_b = g_motor_c = 0;
+    g_target_distance = 0;              // 原地平衡，速度环目标恒 0，Run 接进来之前不给非零速度
+    g_yaw_target = imu_get_angle_yaw(); // 目标跟随当前航向，防松刹车瞬间的航向阶跃
+    Y_Motor_EncoderClear();
+
+    s_test_status = CTRL_TEST_STATUS_OK;
+    start_flag = START_BALANCE;
+    g_vofa_mode = VOFA_BAL;
+    return 1;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
