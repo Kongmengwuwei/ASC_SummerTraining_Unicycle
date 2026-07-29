@@ -40,11 +40,13 @@ static uint8 s_cmd_ovf = 0;                     // 命令行溢出标志
 #define VOFA_TX_FIFO_DEPTH  (16u)               // ASCLIN 硬件发送 FIFO 深度
 #define VOFA_TX_SIZE        (2048u)             // 发送环长度，必须是 2 的幂
 #define VOFA_RX_SIZE        (256u)              // 接收环长度，必须是 2 的幂
+#define VOFA_TX_REPLY_RESERVE (96u)             // 为命令 ACK/回读保留空间，波形不能占用
 #define VOFA_TX_MASK        (VOFA_TX_SIZE - 1u)
 #define VOFA_RX_MASK        (VOFA_RX_SIZE - 1u)
 
 typedef char vofa_ring_size_is_pow2[((VOFA_TX_SIZE & VOFA_TX_MASK) == 0u &&
-                                     (VOFA_RX_SIZE & VOFA_RX_MASK) == 0u) ? 1 : -1];
+                                     (VOFA_RX_SIZE & VOFA_RX_MASK) == 0u &&
+                                     VOFA_TX_REPLY_RESERVE < VOFA_TX_SIZE) ? 1 : -1];
 
 static uint8 s_tx_buf[VOFA_TX_SIZE];            // 上行字节环
 static volatile uint32 s_tx_head;               // 写下标，只由前台写
@@ -53,6 +55,7 @@ static volatile uint32 s_tx_tail;               // 读下标，只由 1ms 中断
 static uint8 s_rx_buf[VOFA_RX_SIZE];            // 下行字节环
 static volatile uint32 s_rx_head;               // 写下标，只由 1ms 中断写
 static volatile uint32 s_rx_tail;               // 读下标，只由前台写
+static volatile uint8  s_rx_overflow;           // 接收环溢出，本行命令必须作废
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     把一整帧压进上行环，装不下就整帧丢弃，绝不写半截
@@ -72,6 +75,21 @@ static uint8 tx_push(const uint8 *dat, uint32 len)
     for (i = 0; i < len; i++) s_tx_buf[(head + i) & VOFA_TX_MASK] = dat[i];
     s_tx_head = head + len;                     // 数据写完再发布下标
     return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将一整帧波形压入上行环，并为命令回复预留空间
+// 参数说明     dat/len         波形数据地址与长度
+// 返回参数     uint8           1=写入成功 0=空间不足已丢帧
+// 使用示例     (void)tx_push_wave((const uint8 *)line, (uint32)len);
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 tx_push_wave(const uint8 *dat, uint32 len)
+{
+    uint32 used = s_tx_head - s_tx_tail;
+    uint32 wave_capacity = VOFA_TX_SIZE - VOFA_TX_REPLY_RESERVE;
+
+    if (used >= wave_capacity || len > (wave_capacity - used)) return 0;
+    return tx_push(dat, len);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -103,6 +121,9 @@ static const char *const s_tune_tbl[TUNE_AXIS_MAX][TUNE_RING_MAX][3] =
                   { "y_angle_kp", "y_angle_ki", "y_angle_kd" },
                   { 0,            0,            0            } },
 };
+
+// 下行放行的就是上表这 24 个环 PID，没有别的。
+// 回收环额外低通、回收环输出限幅、角度环输出限幅和反电动势前馈均未启用。
 
 // 字符串工具
 
@@ -295,9 +316,24 @@ static void cmd_ack(uint8 ok)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     判断参数名是否属于八个环的 PID，只有它们能用命令改
+// 函数简介     返回参数当前实际值，用于确认串口修改和范围处理结果
+// 参数说明     value           参数当前值
+// 返回参数     void
+// 使用示例     cmd_value(0.002f);
+//-------------------------------------------------------------------------------------------------------------------
+static void cmd_value(float value)
+{
+    char line[48];
+    int len = snprintf(line, sizeof(line), "value:%.6f\n", (double)value);
+
+    if (len > 0 && len < (int)sizeof(line))
+        (void)tx_push((const uint8 *)line, (uint32)len);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     判断参数名是否属于串口调参白名单
 // 参数说明     name            参数名
-// 返回参数     uint8           1 表示是八环 PID 之一
+// 返回参数     uint8           1=允许串口读写 0=不允许
 // 使用示例     if (!cmd_pid_param(tok[0])) cmd_ack(0);
 //-------------------------------------------------------------------------------------------------------------------
 static uint8 cmd_pid_param(const char *name)
@@ -316,7 +352,7 @@ static uint8 cmd_pid_param(const char *name)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     解析并执行一行下行命令。协议只有一条：<参数名> <值>，以 CR LF 结尾
+// 函数简介     解析并执行一行下行命令，支持修改参数和 get 读取参数
 // 参数说明     line            已去掉换行符的命令字符串
 // 返回参数     void
 // 使用示例     cmd_execute("r_rate_kp 12.5");
@@ -326,11 +362,26 @@ static void cmd_execute(char *line)
     char *tok[3];
     int ntok = cmd_tokenize(line, tok);
     float value;
+    const param_desc_t *desc;
 
     if (ntok == 0) return;                      // 空行不当错误
     if (ntok != 2) { cmd_ack(0); return; }
 
-    // 只放行八个环的 PID，其余参数一律用车上的按键改
+    // 查询不改变车辆状态，运行中也允许。回复先给 ACK，再给 value:<实际值>。
+    if (cmd_icmp(tok[0], "get") == 0)
+    {
+        if (!cmd_pid_param(tok[1]) ||
+            !param_get_by_name(tok[1], &value))
+        {
+            cmd_ack(0);
+            return;
+        }
+        cmd_ack(1);
+        cmd_value(value);
+        return;
+    }
+
+    // 只放行八个环的 PID 与整定相关限幅/滤波参数
     if (!cmd_pid_param(tok[0])) { cmd_ack(0); return; }
 
     // 发车或架空点动期间不接受改参数
@@ -340,7 +391,20 @@ static void cmd_execute(char *line)
     if (control_test_running() && !cmd_test_param_allowed(tok[0])) { cmd_ack(0); return; }
 
     if (!cmd_parse_float_strict(tok[1], &value)) { cmd_ack(0); return; }
-    cmd_ack(param_set_by_name(tok[0], value));
+    desc = param_find(tok[0]);
+    if (desc == 0 || value < desc->vmin || value > desc->vmax)
+    {
+        cmd_ack(0);
+        return;
+    }
+    if (!param_set_by_name(tok[0], value) ||
+        !param_get_by_name(tok[0], &value))
+    {
+        cmd_ack(0);
+        return;
+    }
+    cmd_ack(1);
+    cmd_value(value);
 }
 
 
@@ -377,7 +441,8 @@ void vofa_snapshot(void)
         s_ch[10] = (float)W_Motor_GetSpeed2();
         // 末尾四路是当前正在用的增益本身。整定时波形和参数得对得上，
         // 否则回放录下来的曲线根本分不清哪一段是哪组增益
-        s_ch[11] = R_RATE_KP;  s_ch[12] = R_RATE_KI;
+        // Roll 内环是位置式，R_RATE_KI 恒为 0，发它没信息量，改发正在用的 kd
+        s_ch[11] = R_RATE_KP;  s_ch[12] = R_RATE_KD;
         s_ch[13] = R_ANGLE_KP; s_ch[14] = R_RCY_KP;
         break;
     case VOFA_PITCH:
@@ -487,7 +552,7 @@ void vofa_poll(void)
     if (len <= 0) return;                                           // 格式化失败
     if (len > (int)sizeof(line) - 2) len = (int)sizeof(line) - 2;   // 限制实际缓冲长度
     line[len++] = '\n'; line[len] = '\0';
-    (void)tx_push((const uint8 *)line, (uint32)len);                // 写入上行环，装不下就丢这一帧
+    (void)tx_push_wave((const uint8 *)line, (uint32)len);           // 写入上行环，装不下就丢帧并保留回复空间
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -505,6 +570,7 @@ void vofa_init(void)
 
     s_tx_head = 0; s_tx_tail = 0;
     s_rx_head = 0; s_rx_tail = 0;
+    s_rx_overflow = 0;
     s_cmd_len = 0; s_cmd_ovf = 0;
 }
 
@@ -533,7 +599,11 @@ void vofa_tick1ms(void)
     head = s_rx_head;
     for (i = 0; i < got; i++)
     {
-        if ((uint32)(head - s_rx_tail) >= VOFA_RX_SIZE) break;  // 前台没来得及取，丢掉多的
+        if ((uint32)(head - s_rx_tail) >= VOFA_RX_SIZE)
+        {
+            s_rx_overflow = 1;                                // 当前命令已截断，前台必须整行作废
+            break;
+        }
         s_rx_buf[head & VOFA_RX_MASK] = buf[i];
         head++;
     }
@@ -566,6 +636,15 @@ void vofa_tick1ms(void)
 void vofa_cmd_poll(void)
 {
     uint32 tail = s_rx_tail;
+    uint32 interrupt_state;
+
+    interrupt_state = interrupt_global_disable();
+    if (s_rx_overflow)
+    {
+        s_rx_overflow = 0;
+        s_cmd_ovf = 1;                      // 丢弃直到本行结束，防止截断命令被误执行
+    }
+    interrupt_global_enable(interrupt_state);
 
     while (tail != s_rx_head)
     {
@@ -574,7 +653,11 @@ void vofa_cmd_poll(void)
 
         if (c == '\n' || c == '\r')
         {
-            if (!s_cmd_ovf && s_cmd_len > 0)
+            if (s_cmd_ovf)
+            {
+                cmd_ack(0);
+            }
+            else if (s_cmd_len > 0)
             {
                 s_cmd_line[s_cmd_len] = '\0';
                 cmd_execute(s_cmd_line);

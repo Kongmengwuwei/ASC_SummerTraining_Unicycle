@@ -23,12 +23,9 @@ typedef struct
     float r_rcy_kp;                     // 飞轮回收环 P
     float r_rcy_ki;                     // 飞轮回收环 I
     float r_rcy_kd;                     // 飞轮回收环 D
-    float r_rcy_limit;                  // 飞轮回收环输出限幅(°)，0=不限
-    float r_rcy_tau;                    // 飞轮回收环反馈低通时间常数(s)，0=不滤波
     float r_angle_kp;                   // 横滚角度环 P
     float r_angle_ki;                   // 横滚角度环 I
     float r_angle_kd;                   // 横滚角度环 D
-    float r_angle_limit;                // 横滚角度环输出限幅(°/s)，0=不限
     float r_rate_kp;                    // 横滚角速度环 P
     float r_rate_ki;                    // 横滚角速度环 I
     float r_rate_kd;                    // 横滚角速度环 D
@@ -112,12 +109,9 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define R_RCY_KP                (g_param.r_rcy_kp)
 #define R_RCY_KI                (g_param.r_rcy_ki)
 #define R_RCY_KD                (g_param.r_rcy_kd)
-#define R_RCY_LIMIT             (g_param.r_rcy_limit)
-#define R_RCY_TAU               (g_param.r_rcy_tau)
 #define R_ANGLE_KP              (g_param.r_angle_kp)
 #define R_ANGLE_KI              (g_param.r_angle_ki)
 #define R_ANGLE_KD              (g_param.r_angle_kd)
-#define R_ANGLE_LIMIT           (g_param.r_angle_limit)
 #define R_RATE_KP               (g_param.r_rate_kp)
 #define R_RATE_KI               (g_param.r_rate_ki)
 #define R_RATE_KD               (g_param.r_rate_kd)

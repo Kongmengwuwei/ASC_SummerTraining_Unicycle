@@ -97,12 +97,9 @@ static const menu_param_item_t s_roll_items[] =
     { "Angle Kp", "r_angle_kp", 0.2f,   2 },    // 落点 2~20
     { "Angle Ki", "r_angle_ki", 0.01f,  3 },
     { "Angle Kd", "r_angle_kd", 0.2f,   2 },    // 位置式内环之后这一路可用
-    { "Ang Lim",  "r_angle_limit", 5.0f, 0 },   // 角度环输出限幅(°/s)
-    { "Speed Kp", "r_rcy_kp",   0.001f, 3 },    // 落点 0.003~0.03，飞轮转速差(RPM)换倾角(°)
+    { "Speed Kp", "r_rcy_kp",   0.001f, 3 },    // 落点 0.003~0.03，飞轮转速差(RPM)换倾角(°)。符号为正
     { "Speed Ki", "r_rcy_ki",   0.001f, 3 },
-    { "Speed Kd", "r_rcy_kd",   0.001f, 3 },
-    { "Rcy Lim",  "r_rcy_limit", 0.5f,  1 },    // 回收环输出限幅(°)
-    { "Rcy Tau",  "r_rcy_tau",   0.2f,  1 }     // 回收环反馈低通(s)，抖起来先加大它
+    { "Speed Kd", "r_rcy_kd",   0.001f, 3 }
 };
 
 static const menu_param_item_t s_pitch_items[] =
@@ -189,20 +186,21 @@ static const char * const s_motor_action_names[] =
     "Jog C Fwd", "Jog C Rev"
 };
 
+#define MENU_ITEMS_OF(a) ((uint8)(sizeof(a) / sizeof((a)[0])))
+
 static const menu_group_t s_groups[] =
 {
-    { "Roll",   s_roll_items,   9, TUNE_AXIS_ROLL,  3, GROUP_KIND_AXIS   },
-    { "Pitch",  s_pitch_items,  9, TUNE_AXIS_PITCH, 3, GROUP_KIND_AXIS   },
-    { "Yaw",    s_yaw_items,    6, TUNE_AXIS_YAW,   2, GROUP_KIND_AXIS   },
+    { "Roll",   s_roll_items,   MENU_ITEMS_OF(s_roll_items),   TUNE_AXIS_ROLL,  3, GROUP_KIND_AXIS   },
+    { "Pitch",  s_pitch_items,  MENU_ITEMS_OF(s_pitch_items),  TUNE_AXIS_PITCH, 3, GROUP_KIND_AXIS   },
+    { "Yaw",    s_yaw_items,    MENU_ITEMS_OF(s_yaw_items),    TUNE_AXIS_YAW,   2, GROUP_KIND_AXIS   },
     // 下面四页不走 control_test_start()，axis 填什么都不会被读到
-    { "Camera",  s_camera_items,  8, TUNE_AXIS_YAW,  0, GROUP_KIND_CAMERA  },
-    { "Element", s_element_items, 14, TUNE_AXIS_YAW, 0, GROUP_KIND_ELEMENT },
-    { "Motor",   s_motor_items,   8, TUNE_AXIS_ROLL, 6, GROUP_KIND_MOTOR   },
-    { "Zero",    s_zero_items,    4, TUNE_AXIS_ROLL, 1, GROUP_KIND_ZERO    }
+    { "Camera",  s_camera_items,  MENU_ITEMS_OF(s_camera_items),  TUNE_AXIS_YAW,  0, GROUP_KIND_CAMERA  },
+    { "Element", s_element_items, MENU_ITEMS_OF(s_element_items), TUNE_AXIS_YAW,  0, GROUP_KIND_ELEMENT },
+    { "Motor",   s_motor_items,   MENU_ITEMS_OF(s_motor_items),   TUNE_AXIS_ROLL, 6, GROUP_KIND_MOTOR   },
+    { "Zero",    s_zero_items,    MENU_ITEMS_OF(s_zero_items),    TUNE_AXIS_ROLL, 1, GROUP_KIND_ZERO    }
 };
 
 // save_group_action() 在栈上开 UI_MAX_GROUP_ITEMS 个名字指针，任何一页的行数超了都会越界写
-#define MENU_ITEMS_OF(a) (sizeof(a) / sizeof((a)[0]))
 typedef char menu_group_items_fit[
     (MENU_ITEMS_OF(s_roll_items)    <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_pitch_items)   <= UI_MAX_GROUP_ITEMS &&
@@ -1210,7 +1208,19 @@ static uint8 group_param_edit_allowed(const menu_group_t *group, uint8 item_inde
 
     if (group->kind != GROUP_KIND_AXIS || !control_test_running()) return 1;
     if (group->axis != g_tune_axis) return 0;
-    item_ring = (uint8)(item_index / 3u);
+
+    // Roll 在角度环之后插入 Ang Lim，不能再用 item_index / 3 推断所属环。
+    // 0~2 为角速度环，3~6 为角度环，7~11 为飞轮速度回收环。
+    if (group->axis == TUNE_AXIS_ROLL)
+    {
+        if (item_index <= 2u)      item_ring = (uint8)TUNE_RING_RATE;
+        else if (item_index <= 6u) item_ring = (uint8)TUNE_RING_ANGLE;
+        else                       item_ring = (uint8)TUNE_RING_VEL;
+    }
+    else
+    {
+        item_ring = (uint8)(item_index / 3u);
+    }
     return (uint8)(item_ring <= (uint8)g_tune_ring);
 }
 

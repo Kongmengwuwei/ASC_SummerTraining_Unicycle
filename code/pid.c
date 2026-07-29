@@ -38,15 +38,25 @@ void pid_reset(pid_t *p)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     算一拍位置式 PID，只对积分限幅，输出不限幅
-// 参数说明     p/error         PID 实例与当前误差
-// 返回参数     float           本次绝对输出
-// 使用示例     pid_loc_calc(&p_angle_pid, p_vel_pid.out - att.pitch + zero);
+// 函数简介     位置式 PID 的公共计算，hold 为 1 时本拍不累积积分
+// 参数说明     p/error/hold    PID 实例、当前误差、是否暂停积分
+// 返回参数     float           限幅前的绝对输出
+// 使用示例     out = pid_loc_core(p, error, 0);
 //-------------------------------------------------------------------------------------------------------------------
-float pid_loc_calc(pid_t *p, float error)
+static float pid_loc_core(pid_t *p, float error, uint8 hold)
 {
-    p->integrator += error;
-    p->integrator = constrain_float(p->integrator, -p->imax, p->imax);  // 积分限幅
+    // ki 为 0 时把积分器按住在 0。否则它会在后台一路累积到 ±imax，
+    // 在线把 ki 从 0 调上去的那一拍，out_i 直接跳到 ki*imax，
+    // 实车表现是"一加 ki 飞轮立刻饱和"，而不是从 0 慢慢爬起来。
+    if (p->ki == 0.0f)
+    {
+        p->integrator = 0;
+    }
+    else if (!hold)
+    {
+        p->integrator += error;
+        p->integrator = constrain_float(p->integrator, -p->imax, p->imax);  // 积分限幅
+    }
 
     p->out_p = p->kp * error;
     p->out_i = p->ki * p->integrator;
@@ -54,6 +64,36 @@ float pid_loc_calc(pid_t *p, float error)
     p->last_error = error;
 
     p->out = p->out_p + p->out_i + p->out_d;
+    return p->out;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     算一拍位置式 PID，只对积分限幅，输出不限幅
+// 参数说明     p/error         PID 实例与当前误差
+// 返回参数     float           本次绝对输出
+// 使用示例     pid_loc_calc(&p_angle_pid, p_vel_pid.out - att.pitch + zero);
+//-------------------------------------------------------------------------------------------------------------------
+float pid_loc_calc(pid_t *p, float error)
+{
+    return pid_loc_core(p, error, 0);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     算一拍位置式 PID，带输出限幅与条件积分抗饱和
+// 参数说明     p/error/low/high PID 实例、当前误差、输出下限与上限
+// 返回参数     float           限幅后的输出
+// 使用示例     pid_loc_calc_limited(&r_rate_pid, error, -limit, limit);
+//-------------------------------------------------------------------------------------------------------------------
+float pid_loc_calc_limited(pid_t *p, float error, float low, float high)
+{
+    // 条件积分：输出已经贴在限幅上、而本拍的积分增量还要往同一个方向推时，本拍不累积。
+    // ki*error 才是 out_i 的增量方向 —— kp/ki 为负时(Roll 内环)误差符号是反的，不能只看 error。
+    float push = p->ki * error;
+    uint8 hold = (uint8)((p->out >= high && push > 0.0f) ||
+                         (p->out <= low  && push < 0.0f));
+
+    (void)pid_loc_core(p, error, hold);
+    p->out = constrain_float(p->out, low, high);
     return p->out;
 }
 

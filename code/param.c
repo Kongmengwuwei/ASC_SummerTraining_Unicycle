@@ -19,12 +19,9 @@ const param_desc_t g_param_table[] =
     { "r_rcy_kp",         &g_param.r_rcy_kp,         1, -50.0f,   50.0f  },
     { "r_rcy_ki",         &g_param.r_rcy_ki,         1, -20.0f,   20.0f  },
     { "r_rcy_kd",         &g_param.r_rcy_kd,         1, -50.0f,   50.0f  },
-    { "r_rcy_limit",      &g_param.r_rcy_limit,      1,  0.0f,    15.0f  },
-    { "r_rcy_tau",        &g_param.r_rcy_tau,        1,  0.0f,    10.0f  },
     { "r_angle_kp",       &g_param.r_angle_kp,       1, -2000.0f, 2000.0f},
     { "r_angle_ki",       &g_param.r_angle_ki,       1, -200.0f,  200.0f },
     { "r_angle_kd",       &g_param.r_angle_kd,       1, -500.0f,  500.0f },
-    { "r_angle_limit",    &g_param.r_angle_limit,    1,  0.0f,    500.0f },
     { "r_rate_kp",        &g_param.r_rate_kp,        1, -2000.0f, 2000.0f},
     { "r_rate_ki",        &g_param.r_rate_ki,        1, -200.0f,  200.0f },
     { "r_rate_kd",        &g_param.r_rate_kd,        1, -500.0f,  500.0f },
@@ -373,12 +370,9 @@ void param_load_defaults(void)
     g_param.r_rcy_kp   = R_RCY_KP_DEFAULT;
     g_param.r_rcy_ki   = R_RCY_KI_DEFAULT;
     g_param.r_rcy_kd   = R_RCY_KD_DEFAULT;
-    g_param.r_rcy_limit = R_RCY_LIMIT_DEFAULT;
-    g_param.r_rcy_tau   = R_RCY_TAU_DEFAULT;
     g_param.r_angle_kp = R_ANGLE_KP_DEFAULT;
     g_param.r_angle_ki = R_ANGLE_KI_DEFAULT;
     g_param.r_angle_kd = R_ANGLE_KD_DEFAULT;
-    g_param.r_angle_limit = R_ANGLE_LIMIT_DEFAULT;
     g_param.r_rate_kp  = R_RATE_KP_DEFAULT;
     g_param.r_rate_ki  = R_RATE_KI_DEFAULT;
     g_param.r_rate_kd  = R_RATE_KD_DEFAULT;

@@ -58,7 +58,7 @@ static pid_t p_vel_pid, p_angle_pid, p_rate_pid;    // Pitch：速度 / 角度 /
 static pid_t y_angle_pid, y_rate_pid;               // Yaw  ：转向外环 / 角速度内环
 
 static float s_speed_ramp;                      // 斜坡后的速度环实际目标(counts/20ms)
-static float s_rcy_fb;                          // 回收环反馈低通状态(RPM)，只在 20ms 拍更新
+static float s_rcy_fb;                          // 飞轮差速 A-B(RPM)，只在 20ms 拍更新
 static float s_lean_raw;                        // 压弯零点累加值，g_lean_offset 限速率跟随它
 
 // Test 状态，前台启停、1ms 中断读
@@ -184,7 +184,7 @@ static void cascade_reset(void)
     g_lean_offset = 0;
     s_lean_raw = 0;
     s_speed_ramp = 0.0f;
-    s_rcy_fb = 0.0f;                                 // 回收环反馈的低通状态
+    s_rcy_fb = 0.0f;                                 // 回收环反馈
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -225,9 +225,13 @@ static float lean_offset_update(float turn)
     float offset = s_lean_raw;
     float limit;
 
-    if (fabsf(turn) > LEAN_TURN_DEAD)                   // 有转向需求，按转角累加偏移
+    // 压弯是"过弯时车往内侧倾"，只在真的在走的时候才有意义。
+    // s_speed_ramp==0 就是原地(Balance 的 g_target_distance 恒 0)，此时没有弯可压，
+    // 再让 Yaw 外环的输出去挪横滚目标，就是拿一个没整定的环去命令车体歪几度。
+    // 实测这条路径能把 roll 目标顶到 ±LEAN_LIMIT(10°)，车追到 -23°、A/B 一半时间在极速
+    if (s_speed_ramp != 0.0f && fabsf(turn) > LEAN_TURN_DEAD)   // 在走且有转向需求，按转角累加偏移
         offset += turn * LEAN_K1;
-    else                                                // 直行或停车，缓慢衰减回 0
+    else                                                // 原地、直行或停车，缓慢衰减回 0
         offset *= LEAN_DECAY;
 
     if (LEAN_LIMIT_MODE == 0)                           // 固定限幅
@@ -262,36 +266,18 @@ static float lean_slew_update(float target)
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     跑一拍飞轮回收环(20ms)，返回它给角度环的零点偏移(°)，非 20ms 拍返回上一次的值
 // 参数说明     run20           20ms 分频标志
-// 返回参数     float           限幅后的零点偏移(°)，正值表示命令车体往一侧歪
+// 返回参数     float           零点偏移(°)，正值表示命令车体往一侧歪
 // 使用示例     float rcy = roll_recovery_offset(run20);
 //-------------------------------------------------------------------------------------------------------------------
 static float roll_recovery_offset(uint8 run20)
 {
-    float raw;
-
     if (!run20) return r_rcy_pid.out;
 
-    // 回收环把飞轮差速拉回 0，防止动量轮越转越快最后饱和、失去可用力矩。
-    // 反馈是 CYT2BL3 每 10ms 回传的两轮转速差(RPM)
-    raw = -(float)(W_Motor_GetSpeed2() - W_Motor_GetSpeed1());
+    // 回收环直接使用 CYT2BL3 回传的两轮转速差，不再增加额外低通。
+    s_rcy_fb = (float)(W_Motor_GetSpeed1() - W_Motor_GetSpeed2());
 
-    // 差速里同时有两样东西：要纠正的秒级直流漂移，和平衡环干活产生的交流纹波。
-    // 实测纹波幅值是直流漂移的十几倍，直接喂进去回收环就会跟着平衡环的节奏走，
-    // 把纹波反号灌回角度环误差，起等幅极限环 —— 减小 kp 没用，两者比例摆在那。
-    // 所以先一阶低通，只留慢漂移。R_RCY_TAU 秒，本函数 20ms 一拍
-    if (R_RCY_TAU > 0.0f)
-        s_rcy_fb += (raw - s_rcy_fb) * (0.02f / (R_RCY_TAU + 0.02f));
-    else
-        s_rcy_fb = raw;
-
+    // 输出直接加进角度环误差，不在回收环内附加输出限幅。
     pid_loc_calc(&r_rcy_pid, s_rcy_fb);
-
-    // 输出直接加进角度环误差，量纲是度，等于在挪横滚零点。
-    // pid_loc_calc() 只限积分不限输出，不夹住的话差速几千 RPM 时会命令出几十度，
-    // 角度环照着追就是一脚踹到饱和，表现就是一开回收环车就抖。
-    // 压弯零点那一路有 LEAN_LIMIT 管着，这一路对应 R_RCY_LIMIT。0 表示不限
-    if (R_RCY_LIMIT > 0.0f)
-        r_rcy_pid.out = constrain_float(r_rcy_pid.out, -R_RCY_LIMIT, R_RCY_LIMIT);
     return r_rcy_pid.out;
 }
 
@@ -312,11 +298,9 @@ static float roll_rate_ctrl(float limit)
     // R_RATE_KI 保持 0：R_RATE_IMAX 是 100，而这一环误差量级是几十到几百 °/s，
     // 积分器一两拍就顶死，out_i 会变成 ±ki*imax 这么个只跟符号有关的常数偏置。
     // R_RATE_KD 现在可用：位置式的 kd 是一阶差分(角加速度)，不是增量式那个二阶差分。
-    pid_loc_calc(&r_rate_pid, att.roll_rate + r_angle_pid.out);
-
-    // pid_loc_calc() 只限积分不限输出，这里补上
-    r_rate_pid.out = constrain_float(r_rate_pid.out, -limit, limit);
-    return r_rate_pid.out;
+    // 用带限幅的版本：限幅在 PID 内部，积分才能做条件抗饱和。
+    // 外面再 constrain 一次的话，PID 自己不知道输出被夹住了，积分会一路顶到 imax
+    return pid_loc_calc_limited(&r_rate_pid, att.roll_rate + r_angle_pid.out, -limit, limit);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -327,18 +311,17 @@ static float roll_rate_ctrl(float limit)
 //-------------------------------------------------------------------------------------------------------------------
 static float roll_cascade_ctrl(float zero, uint8 run5, uint8 run20)
 {
-    float rcy = roll_recovery_offset(run20);         // 回收环给出的零点偏移(°)，已限幅
+    float rcy = roll_recovery_offset(run20);         // 回收环给出的零点偏移(°)
 
     if (run5)
-    {
-        pid_loc_calc(&r_angle_pid, rcy + att.roll - zero);                                      // 角度环，位置式
-        if (R_ANGLE_LIMIT > 0.0f)                                                               // 输出是角速度命令(°/s)
-            r_angle_pid.out = constrain_float(r_angle_pid.out, -R_ANGLE_LIMIT, R_ANGLE_LIMIT);
-    }
-    roll_rate_ctrl((float)FLYWHEEL_OUT_LIMIT);                                                  // 角速度环，位置式
+        pid_loc_calc(&r_angle_pid, rcy + att.roll - zero);   // 角度环，位置式，输出是角速度命令(°/s)
+    roll_rate_ctrl((float)FLYWHEEL_OUT_LIMIT);               // 角速度环，位置式
 
+    // 角度环输出不单独限幅：内环 pid_loc_calc_limited() 已经把占空比夹在 ±FLYWHEEL_OUT_LIMIT，
+    // r_rate_ki 又是 0，没有会卷起来的积分。多一层限幅只会悄悄卡死静态输出上限
+    // (曾经 Ang Lim=150 把上限锁在 |kp|×150，角度环 kp 加多大都不动)。积分靠 R_ANGLE_IMAX 管
     g_bal_dbg.r_rcy_set  = 0.0f;
-    g_bal_dbg.r_rcy_fb   = s_rcy_fb;                 // 低通之后的值，也就是回收环真正看到的
+    g_bal_dbg.r_rcy_fb   = s_rcy_fb;                 // 回收环使用的 A-B 转速差
     g_bal_dbg.r_rcy_out  = r_rcy_pid.out;
     g_bal_dbg.r_ang_fb   = att.roll;
     g_bal_dbg.r_ang_out  = r_angle_pid.out;
@@ -482,8 +465,8 @@ static void cascade_run(void)
     yaw_room = (float)FLYWHEEL_OUT_LIMIT - fabsf(roll_cmd);
     yaw_cmd  = constrain_float(g_pwm_yaw, -yaw_room, yaw_room);
 
-    mix_a = (int32)(-roll_cmd + yaw_cmd);                // 动量轮 A：横滚分量取负
-    mix_b = (int32)(+roll_cmd + yaw_cmd);                // 动量轮 B：差动出平衡，同向出转向
+    mix_a = (int32)(-roll_cmd + yaw_cmd);                // A：横滚分量取负
+    mix_b = (int32)(+roll_cmd + yaw_cmd);                // B：差动出平衡，同向出转向
     mix_c = (int32)(g_pwm_pitch);                        // 行进轮 C
     // 浮点转整数前再限一次幅
     g_motor_a = (int16)func_limit(mix_a, FLYWHEEL_OUT_LIMIT);
@@ -580,7 +563,7 @@ static float roll_test_ctrl(uint8 run5, uint8 run20)
 {
     if (s_test_ring >= TUNE_RING_VEL)
     {
-        (void)roll_recovery_offset(run20);           // 与三轴串级同一条路径，含 R_RCY_LIMIT 限幅
+        (void)roll_recovery_offset(run20);           // 与三轴串级使用同一条回收路径
     }
     else
     {
@@ -590,11 +573,7 @@ static float roll_test_ctrl(uint8 run5, uint8 run20)
     if (s_test_ring >= TUNE_RING_ANGLE)
     {
         if (run5)
-        {
             pid_loc_calc(&r_angle_pid, r_rcy_pid.out + att.roll - g_roll_zero);
-            if (R_ANGLE_LIMIT > 0.0f)
-                r_angle_pid.out = constrain_float(r_angle_pid.out, -R_ANGLE_LIMIT, R_ANGLE_LIMIT);
-        }
     }
     else
     {
@@ -604,7 +583,7 @@ static float roll_test_ctrl(uint8 run5, uint8 run20)
     roll_rate_ctrl((float)BAL_TEST_FLY_LIMIT);
 
     g_bal_dbg.r_rcy_set = 0.0f;
-    g_bal_dbg.r_rcy_fb  = s_rcy_fb;                  // 低通之后的值，原始差速用 CH10-CH9 反算
+    g_bal_dbg.r_rcy_fb  = s_rcy_fb;                  // 回收环使用的 A-B 转速差
     g_bal_dbg.r_rcy_out = r_rcy_pid.out;
     g_bal_dbg.r_ang_fb  = att.roll;
     g_bal_dbg.r_ang_out = r_angle_pid.out;
@@ -674,8 +653,8 @@ static float yaw_test_ctrl(uint8 run5)
         pid_reset(&y_angle_pid);
     }
 
-    pid_loc_calc(&y_rate_pid, y_angle_pid.out - imu.gyro_z);
-    y_rate_pid.out = constrain_float(y_rate_pid.out, -BAL_TEST_FLY_LIMIT, BAL_TEST_FLY_LIMIT);
+    pid_loc_calc_limited(&y_rate_pid, y_angle_pid.out - imu.gyro_z,
+                         -(float)BAL_TEST_FLY_LIMIT, (float)BAL_TEST_FLY_LIMIT);
 
     g_bal_dbg.y_set     = g_yaw_target;
     g_bal_dbg.y_fb      = imu_get_angle_yaw();
@@ -787,8 +766,10 @@ static void test_run(void)
             return;
         }
         g_pwm_roll = output;
+        // 浮点转整数前限幅。内环已经夹在 ±BAL_TEST_FLY_LIMIT，这里是兜底
+        output = constrain_float(output, -(float)BAL_TEST_FLY_LIMIT, (float)BAL_TEST_FLY_LIMIT);
         g_motor_a = (int16)(-output);
-        g_motor_b = (int16)(output);
+        g_motor_b = (int16)(+output);
         W_Motor_Release();
         control_motor_output(g_motor_a, g_motor_b, 0);
     }
@@ -818,7 +799,9 @@ static void test_run(void)
             return;
         }
         g_pwm_yaw = output;
-        g_motor_a = (int16)output;
+        // 浮点转整数前限幅。内环已经夹在 ±BAL_TEST_FLY_LIMIT，这里是兜底
+        output = constrain_float(output, -(float)BAL_TEST_FLY_LIMIT, (float)BAL_TEST_FLY_LIMIT);
+        g_motor_a = (int16)output;                       // Yaw 同向，A/B 同号
         g_motor_b = (int16)output;
         W_Motor_Release();
         control_motor_output(g_motor_a, g_motor_b, 0);
@@ -1424,4 +1407,3 @@ uint8 control_camera_debug_start(void)
     g_cam_ok = (uint8)(state == VISION_CORE_READY);
     return g_cam_ok;
 }
-
