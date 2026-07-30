@@ -15,6 +15,8 @@ const param_desc_t g_param_table[] =
     { "cam_exposure",     &g_param.cam_exposure,     0,  4.0f,   1600.0f },
     { "road_wide_near",   &g_param.road_wide_near,   0,  8.0f,   176.0f  },
     { "road_wide_far",    &g_param.road_wide_far,    0,  8.0f,   176.0f  },
+    { "odom_counts_per_m",&g_param.odom_counts_per_m,1, 100.0f,  50000.0f },
+    { "odom_test_speed",  &g_param.odom_test_speed,  1, 0.05f,   0.50f    },
     // Roll 串级
     { "r_rcy_kp",         &g_param.r_rcy_kp,         1, -50.0f,   50.0f  },
     { "r_rcy_ki",         &g_param.r_rcy_ki,         1, -20.0f,   20.0f  },
@@ -366,6 +368,8 @@ void param_load_defaults(void)
     g_param.cam_exposure     = CAM_EXPOSURE_DEFAULT;
     g_param.road_wide_near   = ROAD_WIDE_NEAR_DEFAULT;
     g_param.road_wide_far    = ROAD_WIDE_FAR_DEFAULT;
+    g_param.odom_counts_per_m = ODOM_COUNTS_PER_M_DEFAULT;
+    g_param.odom_test_speed   = ODOM_TEST_SPEED_DEFAULT;
 
     g_param.r_rcy_kp   = R_RCY_KP_DEFAULT;
     g_param.r_rcy_ki   = R_RCY_KI_DEFAULT;

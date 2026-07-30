@@ -247,8 +247,22 @@
 #define CAM_EXPOSURE_DEFAULT    (48)           // 摄像头曝光时间，实车可用值在 48 附近
 #define VISION_FPS_WIN_MS       (500u)         // 帧率统计窗口(ms)，窗口越长读数越稳、跟随越慢
 
-// 斑马线、十字、环岛、坡道和路障均在 CPU1 每个有效图像帧中执行。
-// Run 尚未接入，因此元素结果当前只发布给 CPU0，不直接改变电机输出。
+// C 轮里程标定。初值只用于首次进入页面，必须用实车直行 1m 后按累计脉冲修正。
+#define ODOM_COUNTS_PER_M_DEFAULT   (11695.0f)
+#define ODOM_TEST_SPEED_DEFAULT     (0.10f)
+#define ODOM_TEST_DISTANCE_M        (1.0f)
+#define ODOM_TEST_SLOW_DISTANCE_M   (0.20f)
+#define ODOM_TEST_MIN_SPEED_MPS     (0.05f)
+
+// 无线 Run Test。speed:<turn>,<speed> 中 turn 是相对发车航向的目标角度(°)，
+// speed 是车速(m/s)。命令超时只停止移动，三轴平衡继续运行。
+#define REMOTE_STEER_ANGLE_LIMIT    (180.0f)
+#define REMOTE_SPEED_LIMIT_MPS      (1.0f)
+#define REMOTE_SPEED_COUNT_LIMIT    (200.0f)
+#define REMOTE_CMD_TIMEOUT_MS       (1000u)
+
+// 斑马线、十字、环岛和坡道均在 CPU1 每个有效图像帧中执行。
+// Run Test 只接受无线遥控目标，正式视觉 Run 后续再接元素结果。
 
 #include "param.h"
 

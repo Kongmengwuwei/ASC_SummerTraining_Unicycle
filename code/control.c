@@ -20,7 +20,6 @@ float g_pwm_roll, g_pwm_pitch, g_pwm_yaw;       // 三轴串级输出，混控�
 int16 g_motor_a, g_motor_b, g_motor_c;          // 混控后的三电机控制量
 int   g_target_distance = 0;                    // Pitch 速度环目标(counts/20ms)
 float g_yaw_target = 0;                         // 转向外环目标航向(°)
-balance_dbg_t g_bal_dbg;                        // 串级各环中间量，只给 vofa 波形用
 
 float g_dbg_error   = 0.0f;                     // 中线偏差，右偏为正
 uint8 g_imu_ok      = 0;                        // IMU660RB 初始化结果
@@ -73,6 +72,19 @@ static volatile control_test_status_t s_test_status;    // 最近一次启动结
 // 架空点动状态，没有时限，靠再按一次动作行、返回键或驱动掉线停
 static volatile motor_jog_t s_jog_target;       // 点动目标电机
 static volatile int16       s_jog_duty;         // 点动占空比，带符号
+
+// 无线 Run Test 状态。主循环写命令，1ms 中断读取并更新速度与航向目标。
+static volatile uint8  s_remote_active;          // 1=Run Test 已启动
+static volatile uint8  s_remote_cmd_seen;        // 1=至少收到过一条合法 speed 命令
+static volatile uint16 s_remote_cmd_age_ms;      // 距最新合法命令的时间
+static volatile float  s_remote_steer_angle;     // 相对发车航向的目标角度(°)
+static volatile float  s_remote_speed_mps;       // 行进速度目标(m/s)
+static float           s_remote_yaw_zero;        // Run Test 发车航向基准(°)
+
+// 1m 里程验证状态。目标更新在 1ms 中断，菜单只负责启停和显示。
+static volatile odom_test_state_t s_odom_test_state;
+static int32 s_odom_test_start_count;
+static float s_odom_test_yaw_zero;
 
 // 姿态与驱动通信的阻断原因，只在本文件内用来生成菜单提示
 typedef enum
@@ -185,6 +197,101 @@ static void cascade_reset(void)
     s_lean_raw = 0;
     s_speed_ramp = 0.0f;
     s_rcy_fb = 0.0f;                                 // 回收环反馈
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     清除无线 Run Test 与 1m 里程验证的运行状态
+// 参数说明     void
+// 返回参数     void
+// 使用示例     remote_state_reset();
+//-------------------------------------------------------------------------------------------------------------------
+static void remote_state_reset(void)
+{
+    s_remote_active = 0;
+    s_remote_cmd_seen = 0;
+    s_remote_cmd_age_ms = 0;
+    s_remote_steer_angle = 0.0f;
+    s_remote_speed_mps = 0.0f;
+    s_remote_yaw_zero = 0.0f;
+    s_odom_test_state = ODOM_TEST_IDLE;
+    s_odom_test_start_count = 0;
+    s_odom_test_yaw_zero = 0.0f;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将 m/s 速度目标换算并限制为 Pitch 速度环使用的 counts/20ms
+// 参数说明     speed_mps       目标线速度(m/s)
+// 返回参数     int             受保护的速度环目标(counts/20ms)
+// 使用示例     g_target_distance = speed_target_from_mps(0.20f);
+//-------------------------------------------------------------------------------------------------------------------
+static int speed_target_from_mps(float speed_mps)
+{
+    float target = Y_Motor_MpsToCount20ms(speed_mps);
+
+    target = constrain_float(target, -REMOTE_SPEED_COUNT_LIMIT, REMOTE_SPEED_COUNT_LIMIT);
+    return (target >= 0.0f) ? (int)(target + 0.5f) : (int)(target - 0.5f);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     更新无线遥控或 1m 验证的速度与航向目标
+// 参数说明     void
+// 返回参数     void
+// 使用示例     motion_target_update();
+//-------------------------------------------------------------------------------------------------------------------
+static void motion_target_update(void)
+{
+    if (s_odom_test_state == ODOM_TEST_DONE && start_flag == START_BALANCE)
+    {
+        g_target_distance = 0;
+        g_yaw_target = s_odom_test_yaw_zero;
+        return;
+    }
+
+    if (s_odom_test_state == ODOM_TEST_RUNNING && start_flag == START_BALANCE)
+    {
+        int32 count = Y_Motor_GetTotalCount() - s_odom_test_start_count;
+        float distance = fabsf(Y_Motor_CountToMeter(count));
+        float remain = ODOM_TEST_DISTANCE_M - distance;
+        float speed_mps = ODOM_TEST_SPEED;
+
+        g_yaw_target = s_odom_test_yaw_zero;
+        if (distance >= ODOM_TEST_DISTANCE_M)
+        {
+            s_odom_test_state = ODOM_TEST_DONE;
+            g_target_distance = 0;
+            s_speed_ramp = 0.0f;
+            pid_reset(&p_vel_pid);
+            return;
+        }
+
+        if (remain < ODOM_TEST_SLOW_DISTANCE_M)
+        {
+            speed_mps *= remain / ODOM_TEST_SLOW_DISTANCE_M;
+            if (speed_mps < ODOM_TEST_MIN_SPEED_MPS)
+                speed_mps = ODOM_TEST_MIN_SPEED_MPS;
+        }
+        g_target_distance = speed_target_from_mps(speed_mps);
+        return;
+    }
+
+    if (!s_remote_active || start_flag != START_BALANCE) return;
+
+    if (s_remote_cmd_age_ms < 0xFFFFu) s_remote_cmd_age_ms++;
+    if (!s_remote_cmd_seen)
+    {
+        g_target_distance = 0;
+        return;
+    }
+
+    if (s_remote_cmd_age_ms > REMOTE_CMD_TIMEOUT_MS)
+    {
+        s_remote_speed_mps = 0.0f;
+        g_target_distance = 0;
+        return;
+    }
+
+    g_target_distance = speed_target_from_mps(s_remote_speed_mps);
+    g_yaw_target = s_remote_yaw_zero + s_remote_steer_angle;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -320,13 +427,6 @@ static float roll_cascade_ctrl(float zero, uint8 run5, uint8 run20)
     // 角度环输出不单独限幅：内环 pid_loc_calc_limited() 已经把占空比夹在 ±FLYWHEEL_OUT_LIMIT，
     // r_rate_ki 又是 0，没有会卷起来的积分。多一层限幅只会悄悄卡死静态输出上限
     // (曾经 Ang Lim=150 把上限锁在 |kp|×150，角度环 kp 加多大都不动)。积分靠 R_ANGLE_IMAX 管
-    g_bal_dbg.r_rcy_set  = 0.0f;
-    g_bal_dbg.r_rcy_fb   = s_rcy_fb;                 // 回收环使用的 A-B 转速差
-    g_bal_dbg.r_rcy_out  = r_rcy_pid.out;
-    g_bal_dbg.r_ang_fb   = att.roll;
-    g_bal_dbg.r_ang_out  = r_angle_pid.out;
-    g_bal_dbg.r_rate_fb  = att.roll_rate;
-    g_bal_dbg.r_pwm      = r_rate_pid.out;
     return r_rate_pid.out;
 }
 
@@ -345,13 +445,6 @@ static float pitch_cascade_ctrl(float zero, uint8 run5, uint8 run20)
     pid_inc_calc_limited(&p_rate_pid, -att.pitch_rate + p_angle_pid.out,
                          -DRIVE_OUT_LIMIT, DRIVE_OUT_LIMIT);                             // 角速度环，增量式
 
-    g_bal_dbg.p_vel_set  = s_speed_ramp;
-    g_bal_dbg.p_vel_fb   = (float)Y_Motor_GetSpeed20ms();
-    g_bal_dbg.p_vel_out  = p_vel_pid.out;
-    g_bal_dbg.p_ang_fb   = att.pitch;
-    g_bal_dbg.p_ang_out  = p_angle_pid.out;
-    g_bal_dbg.p_rate_fb  = att.pitch_rate;
-    g_bal_dbg.p_pwm      = p_rate_pid.out;
     return p_rate_pid.out;
 }
 
@@ -367,11 +460,6 @@ static float yaw_cascade_ctrl(uint8 run5)
     if (run5) pid_loc_calc(&y_angle_pid, g_yaw_target - imu_get_angle_yaw());   // 转向外环，5ms
     pid_loc_calc(&y_rate_pid, y_angle_pid.out - imu.gyro_z);                    // 角速度内环，1ms
 
-    g_bal_dbg.y_set     = g_yaw_target;
-    g_bal_dbg.y_fb      = imu_get_angle_yaw();
-    g_bal_dbg.y_out     = y_angle_pid.out;
-    g_bal_dbg.y_rate_fb = imu.gyro_z;
-    g_bal_dbg.y_pwm     = y_rate_pid.out;
     return y_rate_pid.out;
 }
 
@@ -387,6 +475,7 @@ static void cascade_stop(control_test_status_t reason)
     if (start_flag != START_STOP) s_test_status = reason;
 
     cascade_reset();
+    remote_state_reset();
     g_pwm_roll = g_pwm_pitch = g_pwm_yaw = 0.0f;
     g_motor_a = g_motor_b = g_motor_c = 0;
     start_flag = START_STOP;
@@ -481,6 +570,7 @@ static void cascade_run(void)
         if (start_flag != START_STOP)
             s_test_status = (fabsf(roll_err) > ROLL_PROTECT_ANGLE) ? CTRL_TEST_STATUS_ROLL_PROT
                                                                    : CTRL_TEST_STATUS_PITCH_PROT;
+        remote_state_reset();
         g_motor_a = g_motor_b = g_motor_c = 0;
         start_flag = START_STOP;
         W_Motor_Stop();
@@ -582,13 +672,6 @@ static float roll_test_ctrl(uint8 run5, uint8 run20)
 
     roll_rate_ctrl((float)BAL_TEST_FLY_LIMIT);
 
-    g_bal_dbg.r_rcy_set = 0.0f;
-    g_bal_dbg.r_rcy_fb  = s_rcy_fb;                  // 回收环使用的 A-B 转速差
-    g_bal_dbg.r_rcy_out = r_rcy_pid.out;
-    g_bal_dbg.r_ang_fb  = att.roll;
-    g_bal_dbg.r_ang_out = r_angle_pid.out;
-    g_bal_dbg.r_rate_fb = att.roll_rate;
-    g_bal_dbg.r_pwm     = r_rate_pid.out;
     return r_rate_pid.out;
 }
 
@@ -626,13 +709,6 @@ static float pitch_test_ctrl(uint8 run5, uint8 run20)
     pid_inc_calc_limited(&p_rate_pid, -att.pitch_rate + p_angle_pid.out,
                          -BAL_TEST_DRIVE_LIMIT, BAL_TEST_DRIVE_LIMIT);
 
-    g_bal_dbg.p_vel_set  = s_speed_ramp;
-    g_bal_dbg.p_vel_fb   = (float)s_test_speed_c;
-    g_bal_dbg.p_vel_out  = p_vel_pid.out;
-    g_bal_dbg.p_ang_fb   = att.pitch;
-    g_bal_dbg.p_ang_out  = p_angle_pid.out;
-    g_bal_dbg.p_rate_fb  = att.pitch_rate;
-    g_bal_dbg.p_pwm      = p_rate_pid.out;
     return p_rate_pid.out;
 }
 
@@ -656,11 +732,6 @@ static float yaw_test_ctrl(uint8 run5)
     pid_loc_calc_limited(&y_rate_pid, y_angle_pid.out - imu.gyro_z,
                          -(float)BAL_TEST_FLY_LIMIT, (float)BAL_TEST_FLY_LIMIT);
 
-    g_bal_dbg.y_set     = g_yaw_target;
-    g_bal_dbg.y_fb      = imu_get_angle_yaw();
-    g_bal_dbg.y_out     = y_angle_pid.out;
-    g_bal_dbg.y_rate_fb = imu.gyro_z;
-    g_bal_dbg.y_pwm     = y_rate_pid.out;
     return y_rate_pid.out;
 }
 
@@ -885,6 +956,7 @@ void control_init(void)
     s_test_status = CTRL_TEST_STATUS_OK;
     s_jog_target = MOTOR_JOG_NONE;
     s_jog_duty = 0;
+    remote_state_reset();
 
     param_init();
     key_init(CTRL_DIV_KEY);             // 扫描周期必须等于下面 control_loop 里调 key_scanner 的分频
@@ -916,7 +988,7 @@ void control_init(void)
     s_test_tick = 0;
     s_test_speed_c = 0;
 
-    vofa_init();                        // 无线转串口模块，波形与调参的唯一通道
+    vofa_init();                        // 无线串口：Run Test 命令与姿态波形
 
     g_imu_ok = (imu_init() == 0) ? 1 : 0;
     if (g_imu_ok)
@@ -943,11 +1015,11 @@ void control_stop(void)
     control_test_stop();
     control_jog_stop();
     cascade_reset();                    // 三轴一起跑时的积分与增量累积也要清掉
+    remote_state_reset();
     g_pwm_roll = g_pwm_pitch = g_pwm_yaw = 0.0f;
     g_motor_a = g_motor_b = g_motor_c = 0;
     g_target_distance = 0;
     start_flag = START_STOP;
-    if (g_vofa_mode == VOFA_BAL) g_vofa_mode = VOFA_OFF;
     control_motor_stop();
 }
 
@@ -996,16 +1068,190 @@ uint8 control_balance_start(void)
     }
 
     cascade_reset();
+    remote_state_reset();
     g_pwm_roll = g_pwm_pitch = g_pwm_yaw = 0.0f;
     g_motor_a = g_motor_b = g_motor_c = 0;
-    g_target_distance = 0;              // 原地平衡，速度环目标恒 0，Run 接进来之前不给非零速度
+    g_target_distance = 0;              // 普通 Balance 原地平衡；Run Test 启动后再由无线命令更新
     g_yaw_target = imu_get_angle_yaw(); // 目标跟随当前航向，防松刹车瞬间的航向阶跃
     Y_Motor_EncoderClear();
 
     s_test_status = CTRL_TEST_STATUS_OK;
     start_flag = START_BALANCE;
-    g_vofa_mode = VOFA_BAL;
     return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     启动无线 Run Test，先按三轴平衡的全部安全条件完成发车
+// 参数说明     void
+// 返回参数     uint8           1=已启动 0=被安全条件阻止
+// 使用示例     if (!control_remote_start()) menu_status("RUN BLOCKED");
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_remote_start(void)
+{
+    if (start_flag != START_STOP)
+    {
+        s_test_status = CTRL_TEST_STATUS_INVALID;
+        return 0;
+    }
+    if (!control_balance_start()) return 0;
+
+    s_remote_active = 1;
+    s_remote_cmd_seen = 0;
+    s_remote_cmd_age_ms = 0;
+    s_remote_steer_angle = 0.0f;
+    s_remote_speed_mps = 0.0f;
+    s_remote_yaw_zero = imu_get_angle_yaw();
+    g_target_distance = 0;
+    g_yaw_target = s_remote_yaw_zero;
+    return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     停止无线 Run Test 并锁停全部电机
+// 参数说明     void
+// 返回参数     void
+// 使用示例     control_remote_stop();
+//-------------------------------------------------------------------------------------------------------------------
+void control_remote_stop(void)
+{
+    control_stop();
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     接收一条无线遥控命令并刷新命令看门狗
+// 参数说明     steer_angle/speed_mps 相对发车航向角度(°)与线速度(m/s)
+// 返回参数     uint8           1=已接受 0=未运行或数值越界
+// 使用示例     control_remote_command(30.0f, 0.20f);
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_remote_command(float steer_angle, float speed_mps)
+{
+    uint32 interrupt_state;
+
+    if (!ctrl_is_finite(steer_angle) || !ctrl_is_finite(speed_mps) ||
+        steer_angle < -REMOTE_STEER_ANGLE_LIMIT ||
+        steer_angle > REMOTE_STEER_ANGLE_LIMIT ||
+        speed_mps < -REMOTE_SPEED_LIMIT_MPS ||
+        speed_mps > REMOTE_SPEED_LIMIT_MPS)
+        return 0;
+
+    interrupt_state = interrupt_global_disable();
+    if (!s_remote_active || start_flag != START_BALANCE)
+    {
+        interrupt_global_enable(interrupt_state);
+        return 0;
+    }
+    s_remote_steer_angle = steer_angle;
+    s_remote_speed_mps = speed_mps;
+    s_remote_cmd_age_ms = 0;
+    s_remote_cmd_seen = 1;
+    interrupt_global_enable(interrupt_state);
+    return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     查询无线 Run Test 是否仍在运行
+// 参数说明     void
+// 返回参数     uint8           1=运行中 0=已停止或被安全保护切断
+// 使用示例     if (control_remote_running()) { ... }
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_remote_running(void)
+{
+    return (uint8)(s_remote_active && start_flag == START_BALANCE);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读取无线 Run Test 的最新命令状态
+// 参数说明     steer_angle/speed_mps/age_ms/seen 对应输出地址，可传 0 忽略
+// 返回参数     void
+// 使用示例     control_remote_status(&turn, &speed, &age, &seen);
+//-------------------------------------------------------------------------------------------------------------------
+void control_remote_status(float *steer_angle, float *speed_mps, uint16 *age_ms, uint8 *seen)
+{
+    uint32 interrupt_state = interrupt_global_disable();
+
+    if (steer_angle != 0) *steer_angle = s_remote_steer_angle;
+    if (speed_mps != 0) *speed_mps = s_remote_speed_mps;
+    if (age_ms != 0) *age_ms = s_remote_cmd_age_ms;
+    if (seen != 0) *seen = s_remote_cmd_seen;
+    interrupt_global_enable(interrupt_state);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     在停车状态清零 C 轮累计计数，用于手推 1m 读取脉冲数
+// 参数说明     void
+// 返回参数     uint8           1=已清零 0=电机正在运行
+// 使用示例     control_odometry_counter_reset();
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_odometry_counter_reset(void)
+{
+    if (start_flag != START_STOP || control_test_running() ||
+        control_jog_running() != MOTOR_JOG_NONE)
+        return 0;
+
+    Y_Motor_EncoderClear();
+    return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     启动带三轴平衡的直行 1m 里程验证
+// 参数说明     void
+// 返回参数     uint8           1=已启动 0=被安全条件阻止
+// 使用示例     if (!control_odometry_test_start()) menu_status("1M BLOCKED");
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_odometry_test_start(void)
+{
+    if (start_flag != START_STOP)
+    {
+        s_test_status = CTRL_TEST_STATUS_INVALID;
+        return 0;
+    }
+    if (!control_balance_start()) return 0;
+
+    s_odom_test_start_count = Y_Motor_GetTotalCount();
+    s_odom_test_yaw_zero = imu_get_angle_yaw();
+    s_odom_test_state = ODOM_TEST_RUNNING;
+    g_target_distance = 0;
+    g_yaw_target = s_odom_test_yaw_zero;
+    return 1;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     停止 1m 里程验证并锁停全部电机
+// 参数说明     void
+// 返回参数     void
+// 使用示例     control_odometry_test_stop();
+//-------------------------------------------------------------------------------------------------------------------
+void control_odometry_test_stop(void)
+{
+    control_stop();
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     查询 1m 里程验证状态
+// 参数说明     void
+// 返回参数     odom_test_state_t 当前状态
+// 使用示例     state = control_odometry_test_state();
+//-------------------------------------------------------------------------------------------------------------------
+odom_test_state_t control_odometry_test_state(void)
+{
+    return s_odom_test_state;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读取 1m 标定页需要的原始计数、距离和速度
+// 参数说明     count/distance/speed 输出地址，可传 0 忽略
+// 返回参数     void
+// 使用示例     control_odometry_status(&count, &distance, &speed);
+//-------------------------------------------------------------------------------------------------------------------
+void control_odometry_status(int32 *count, float *distance, float *speed)
+{
+    int32 current = Y_Motor_GetTotalCount();
+
+    if (s_odom_test_state != ODOM_TEST_IDLE)
+        current -= s_odom_test_start_count;
+    if (count != 0) *count = current;
+    if (distance != 0) *distance = Y_Motor_CountToMeter(current);
+    if (speed != 0) *speed = Y_Motor_GetSpeedMps();
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -1047,7 +1293,6 @@ uint8 control_jog_start(motor_jog_t target, uint8 forward)
 
     if (target != MOTOR_JOG_C) W_Motor_Release();
     s_jog_duty = duty;
-    g_vofa_mode = VOFA_MOTOR;
     s_jog_target = target;              // 最后赋值：1ms 中断读到 target 时其余字段已就绪
     s_test_status = CTRL_TEST_STATUS_OK;
     return 1;
@@ -1061,14 +1306,11 @@ uint8 control_jog_start(motor_jog_t target, uint8 forward)
 //-------------------------------------------------------------------------------------------------------------------
 void control_jog_stop(void)
 {
-    uint8 was_running = (uint8)(s_jog_target != MOTOR_JOG_NONE);
-
     s_jog_target = MOTOR_JOG_NONE;
     s_jog_duty = 0;
     g_motor_a = 0;
     g_motor_b = 0;
     g_motor_c = 0;
-    if (was_running && g_vofa_mode == VOFA_MOTOR) g_vofa_mode = VOFA_OFF;
     control_motor_stop();
 }
 
@@ -1153,9 +1395,6 @@ uint8 control_test_start(tune_axis_t axis, tune_ring_t ring)
 
     g_tune_axis = axis;
     g_tune_ring = ring;
-    if (axis == TUNE_AXIS_ROLL) g_vofa_mode = VOFA_ROLL;
-    else if (axis == TUNE_AXIS_PITCH) g_vofa_mode = VOFA_PITCH;
-    else g_vofa_mode = VOFA_YAW;
 
     s_control_test_active = 1;
     s_test_status = CTRL_TEST_STATUS_OK;
@@ -1163,7 +1402,7 @@ uint8 control_test_start(tune_axis_t axis, tune_ring_t ring)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     立即停止 Test 并关闭波形输出
+// 函数简介     立即停止单轴 Test
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_test_stop();
@@ -1172,7 +1411,6 @@ void control_test_stop(void)
 {
     if (s_test_running) test_stop();
     s_control_test_active = 0;
-    g_vofa_mode = VOFA_OFF;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -1359,14 +1597,9 @@ void control_loop(void)
         if (tick == 0)
             attitude_update();
 
-        g_bal_dbg.r_ang_fb  = att.roll;
-        g_bal_dbg.r_rate_fb = att.roll_rate;
-        g_bal_dbg.p_ang_fb  = att.pitch;
-        g_bal_dbg.p_rate_fb = att.pitch_rate;
-        g_bal_dbg.y_fb      = att.yaw;
-        g_bal_dbg.y_rate_fb = att.yaw_rate;
     }
 
+    motion_target_update();
     control_vision_exchange((uint8)(tick == 0));
 
     // 三个输出分支互斥，每拍必有一个给 W_Motor 下发帧，喂住驱动侧失控保护看门狗

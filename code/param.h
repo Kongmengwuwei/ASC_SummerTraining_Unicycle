@@ -18,6 +18,8 @@ typedef struct
     int   cam_exposure;                 // 摄像头曝光时间
     int   road_wide_near;               // 近端标准赛道宽度(像素)，算法行 IMG_H-1
     int   road_wide_far;                // 远端标准赛道宽度(像素)，算法行 0
+    float odom_counts_per_m;            // C 轮每行进 1m 的编码器脉冲数
+    float odom_test_speed;              // 1m 里程验证速度(m/s)
 
     // Roll 串级
     float r_rcy_kp;                     // 飞轮回收环 P
@@ -104,6 +106,8 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define CAM_EXPOSURE            (g_param.cam_exposure)
 #define ROAD_WIDE_NEAR          (g_param.road_wide_near)
 #define ROAD_WIDE_FAR           (g_param.road_wide_far)
+#define ODOM_COUNTS_PER_M       (g_param.odom_counts_per_m)
+#define ODOM_TEST_SPEED         (g_param.odom_test_speed)
 
 // Roll 串级
 #define R_RCY_KP                (g_param.r_rcy_kp)

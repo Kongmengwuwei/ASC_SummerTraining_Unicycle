@@ -1,7 +1,4 @@
 #include "vofa.h"
-#include "W_Motor.h"
-#include "Y_Motor.h"
-#include "param.h"
 #include "attitude.h"
 #include "control.h"
 #include <stdio.h>
@@ -11,28 +8,41 @@ volatile vofa_mode_t g_vofa_mode = VOFA_OFF;    // 当前波形模式
 volatile uint8       g_vofa_div  = 20;          // 发送分频，单位为 1ms
 volatile tune_axis_t g_tune_axis = TUNE_AXIS_ROLL;  // 当前调参轴
 volatile tune_ring_t g_tune_ring = TUNE_RING_RATE;  // 当前调参环
+volatile uint32      g_vofa_rx_bytes = 0;       // 无线下行累计接收字节数
+volatile uint32      g_vofa_cmd_lines = 0;      // 已提交解析的整行数，只由主循环写
+volatile uint32      g_vofa_cmd_ok = 0;         // 已写入控制目标的命令数，只由主循环写
+volatile vofa_cmd_result_t g_vofa_cmd_last = VOFA_CMD_NONE;  // 最近一行的处理结果
+volatile float       g_vofa_cmd_turn = 0.0f;    // 最近一次解析成功的转向值(°)，与是否被接受无关
+volatile float       g_vofa_cmd_speed = 0.0f;   // 最近一次解析成功的速度值(m/s)，与是否被接受无关
 
-// 波形快照
-// 单帧最大通道数。16 通道每帧约 170 字节，20ms 一帧就是 8.5KB/s，
-// 115200 的线速率是 11.5KB/s，够用。再往上加通道要同时把 g_vofa_div 调大
-#define VOFA_CH_MAX     (16)
+// 姿态波形快照
+#define VOFA_CH_COUNT   (3u)
 
 static volatile uint32      s_seq = 0;          // 快照序号
-static volatile float       s_ch[VOFA_CH_MAX];  // 通道值
-static volatile uint8       s_n = 0;            // 通道数
-static volatile const char *s_tag = "off";      // 帧标签
+static volatile float       s_ch[VOFA_CH_COUNT];// Roll、Pitch、Yaw
 
 // 下行命令缓冲
 #define VOFA_CMD_LINE_MAX   (64)                // 单行命令长度
+// 无 CR/LF 时靠接收静默断行，这个窗口是双边约束，两头都不能碰：
+//   下界 —— 上位机和无线模块会把一行拆成两段发，间隔几到几十毫秒。窗口小于这个间隔时
+//           半截 "speed:0," 会被当成一行提交并判 FORMAT 错，紧跟的 "0.1" 又判 PREFIX 错，
+//           两半都丢，只有整行恰好落进同一个窗口才偶尔成功一次。
+//   上界 —— 不带换行的周期发送，命令间隔就是发送周期(10Hz 即 100ms)。窗口大于它的话
+//           静默永远不触发，两条命令拼成一行、逗号变两个，同样一条都收不到。
+// 所以取 40ms：够长，能扛住行内拆包；够短，10Hz 无换行的周期发送每条都能断出来。
+// 另外提交的判据是"缓冲已像一条完整命令"而不是单纯静默够久，见 cmd_line_looks_complete()
+#define VOFA_CMD_IDLE_MS    (40u)               // 缓冲已像完整命令时的断行静默时间
+#define VOFA_CMD_STALE_MS   (1000u)             // 残行作废时间：这么久还凑不成完整命令就丢掉
 
 static char  s_cmd_line[VOFA_CMD_LINE_MAX];     // 命令行缓冲
 static uint8 s_cmd_len = 0;                     // 命令行长度
 static uint8 s_cmd_ovf = 0;                     // 命令行溢出标志
+static volatile uint16 s_rx_idle_ms = 0;        // 距最后一个下行字节的时间
 
 // 收发环形缓冲。
 // 刷屏走 SPI，一次实时行刷新要十几毫秒，主循环被它拖住的时候串口不能跟着停：
 // 发慢了波形会一阵一阵地涌，收慢了库里那 64 字节接收缓冲会溢出，
-// 命令中间少几个字节还能解析成功，"r_rate_kp 12.5" 少个 2 就变成 1.5，静默改错增益。
+// speed 命令中间少字节可能变成另一组合法目标，因此接收溢出时必须整行作废。
 // 所以两个方向都由 1ms 中断搬运，前台只负责格式化和解析。
 //
 // 单生产者单消费者，前台只写 head、中断只写 tail，各自是自己那个下标的唯一写者，
@@ -40,13 +50,11 @@ static uint8 s_cmd_ovf = 0;                     // 命令行溢出标志
 #define VOFA_TX_FIFO_DEPTH  (16u)               // ASCLIN 硬件发送 FIFO 深度
 #define VOFA_TX_SIZE        (2048u)             // 发送环长度，必须是 2 的幂
 #define VOFA_RX_SIZE        (256u)              // 接收环长度，必须是 2 的幂
-#define VOFA_TX_REPLY_RESERVE (96u)             // 为命令 ACK/回读保留空间，波形不能占用
 #define VOFA_TX_MASK        (VOFA_TX_SIZE - 1u)
 #define VOFA_RX_MASK        (VOFA_RX_SIZE - 1u)
 
 typedef char vofa_ring_size_is_pow2[((VOFA_TX_SIZE & VOFA_TX_MASK) == 0u &&
-                                     (VOFA_RX_SIZE & VOFA_RX_MASK) == 0u &&
-                                     VOFA_TX_REPLY_RESERVE < VOFA_TX_SIZE) ? 1 : -1];
+                                     (VOFA_RX_SIZE & VOFA_RX_MASK) == 0u) ? 1 : -1];
 
 static uint8 s_tx_buf[VOFA_TX_SIZE];            // 上行字节环
 static volatile uint32 s_tx_head;               // 写下标，只由前台写
@@ -77,73 +85,7 @@ static uint8 tx_push(const uint8 *dat, uint32 len)
     return 1;
 }
 
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将一整帧波形压入上行环，并为命令回复预留空间
-// 参数说明     dat/len         波形数据地址与长度
-// 返回参数     uint8           1=写入成功 0=空间不足已丢帧
-// 使用示例     (void)tx_push_wave((const uint8 *)line, (uint32)len);
-//-------------------------------------------------------------------------------------------------------------------
-static uint8 tx_push_wave(const uint8 *dat, uint32 len)
-{
-    uint32 used = s_tx_head - s_tx_tail;
-    uint32 wave_capacity = VOFA_TX_SIZE - VOFA_TX_REPLY_RESERVE;
-
-    if (used >= wave_capacity || len > (wave_capacity - used)) return 0;
-    return tx_push(dat, len);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将一行 ASCII 数据写入上行环
-// 参数说明     line            以 '\0' 结尾且包含换行符的字符串
-// 返回参数     void
-// 使用示例     cmd_send("ack:1.000\n");
-//-------------------------------------------------------------------------------------------------------------------
-static void cmd_send(const char *line)
-{
-    uint32 n = 0;
-    while (line[n] != '\0' && n < 200u) n++;
-    if (n) (void)tx_push((const uint8 *)line, n);
-}
-
-// 调参轴、环与参数名的对应表
-static const char *const s_tune_tbl[TUNE_AXIS_MAX][TUNE_RING_MAX][3] =
-{
-    // Roll
-                { { "r_rate_kp",  "r_rate_ki",  "r_rate_kd"  },
-                  { "r_angle_kp", "r_angle_ki", "r_angle_kd" },
-                  { "r_rcy_kp",   "r_rcy_ki",   "r_rcy_kd"   } },
-    // Pitch
-                { { "p_rate_kp",  "p_rate_ki",  "p_rate_kd"  },
-                  { "p_angle_kp", "p_angle_ki", "p_angle_kd" },
-                  { "p_vel_kp",   "p_vel_ki",   "p_vel_kd"   } },
-    // Yaw
-                { { "y_rate_kp",  "y_rate_ki",  "y_rate_kd"  },
-                  { "y_angle_kp", "y_angle_ki", "y_angle_kd" },
-                  { 0,            0,            0            } },
-};
-
-// 下行放行的就是上表这 24 个环 PID，没有别的。
-// 回收环额外低通、回收环输出限幅、角度环输出限幅和反电动势前馈均未启用。
-
 // 字符串工具
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     比较两个 ASCII 字符串并忽略大小写
-// 参数说明     a 第一个字符串，b 第二个字符串
-// 返回参数     int             0 表示相等
-// 使用示例     if (cmd_icmp(tok, "r_rate_kp") == 0)
-//-------------------------------------------------------------------------------------------------------------------
-static int cmd_icmp(const char *a, const char *b)
-{
-    while (*a && *b)
-    {
-        char ca = (*a >= 'A' && *a <= 'Z') ? (char)(*a + 32) : *a;
-        char cb = (*b >= 'A' && *b <= 'Z') ? (char)(*b + 32) : *b;
-        if (ca != cb) return (int)ca - (int)cb;
-        a++; b++;
-    }
-    return (int)(uint8)*a - (int)(uint8)*b;
-}
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     判断单精度浮点数是否为有限值
@@ -167,7 +109,7 @@ static uint8 cmd_float_is_finite(float value)
 // 函数简介     严格解析一个十进制浮点参数
 // 参数说明     text/value      输入字符串与解析结果地址
 // 返回参数     uint8           1 解析成功, 0 表示格式或数值非法
-// 使用示例     if (!cmd_parse_float_strict(tok[1], &value)) cmd_ack(0);
+// 使用示例     if (!cmd_parse_float_strict(text, &value)) return;
 //-------------------------------------------------------------------------------------------------------------------
 static uint8 cmd_parse_float_strict(const char *text, float *value)
 {
@@ -239,279 +181,168 @@ static uint8 cmd_parse_float_strict(const char *text, float *value)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     将命令行严格拆分为不超过三个字段
-// 参数说明     line/tokens      可写命令行与字段指针数组
-// 返回参数     int             字段数, -1 表示字段过多
-// 使用示例     ntok = cmd_tokenize(line, tok);
+// 函数简介     判断命令是否以 speed: 开头，忽略 speed 的大小写
+// 参数说明     line            命令行
+// 返回参数     uint8           1=无线遥控命令 0=其他命令
+// 使用示例     if (cmd_is_speed(line)) { ... }
 //-------------------------------------------------------------------------------------------------------------------
-static int cmd_tokenize(char *line, char **tokens)
+static uint8 cmd_is_speed(const char *line)
 {
-    char *p = line;
-    int count = 0;
+    static const char prefix[] = "speed:";
+    uint8 i;
 
-    while (*p)
+    if (line == 0) return 0;
+    for (i = 0; i < 6u; i++)
     {
-        while (*p == ' ' || *p == '\t') p++;
-        if (*p == '\0') break;
-        if (count >= 3) return -1;
-        tokens[count++] = p;
-        while (*p && *p != ' ' && *p != '\t') p++;
-        if (*p) *p++ = '\0';
+        char c = line[i];
+        char p = prefix[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        if (c != p) return 0;
     }
-    return count;
+    return 1;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     判断当前运行状态是否禁止在线改 PID
-// 参数说明     void
-// 返回参数     uint8           1 表示拒绝改参数
-// 使用示例     if (cmd_motion_active()) cmd_ack(0);
+// 函数简介     去掉字段首尾的空格和制表符
+// 参数说明     text            可写字符串
+// 返回参数     char*           去掉前导空白后的首地址
+// 使用示例     field = cmd_trim(field);
 //-------------------------------------------------------------------------------------------------------------------
-static uint8 cmd_motion_active(void)
+static char *cmd_trim(char *text)
 {
-    // 架空点动是开环下发固定占空比，PID 根本不在环里，改了没有意义，拒
-    if (control_jog_running() != MOTOR_JOG_NONE) return 1;
+    char *end;
 
-    // START_BALANCE 是三轴一起跑的整定状态，八个环全在环里，整定本来就要边跑边改，放行。
-    // 越界值仍由 param.c 钳位，NaN/Inf 仍由 cmd_parse_float_strict() 拒掉。
-    // 其余发车状态照旧拒绝：START_DRIVE_ONLY 只有 C 轮在跑，改 Roll/Yaw 的增益看不出任何变化
-    return (uint8)(start_flag != START_STOP && start_flag != START_BALANCE);
+    while (*text == ' ' || *text == '\t') text++;
+    end = text;
+    while (*end != '\0') end++;
+    while (end > text && (end[-1] == ' ' || end[-1] == '\t')) end--;
+    *end = '\0';
+    return text;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     判断参数名是否属于当前测试轴已启用的串级范围
-// 参数说明     name            参数名
-// 返回参数     uint8           1 表示测试中允许在线修改
-// 使用示例     if (!cmd_test_param_allowed(tok[1])) cmd_ack(0);
-//-------------------------------------------------------------------------------------------------------------------
-static uint8 cmd_test_param_allowed(const char *name)
-{
-    uint8 ring;
-    uint8 gain;
-
-    if (name == 0 || g_tune_axis >= TUNE_AXIS_MAX ||
-        g_tune_ring >= TUNE_RING_MAX)
-        return 0;
-
-    for (ring = 0; ring <= (uint8)g_tune_ring; ring++)
-    {
-        for (gain = 0; gain < 3u; gain++)
-        {
-            const char *allowed = s_tune_tbl[g_tune_axis][ring][gain];
-            if (allowed != 0 && cmd_icmp(name, allowed) == 0) return 1;
-        }
-    }
-    return 0;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     发送命令执行状态帧
-// 参数说明     ok              1 成功，0 失败
-// 返回参数     void
-// 使用示例     cmd_ack(1);
-//-------------------------------------------------------------------------------------------------------------------
-static void cmd_ack(uint8 ok)
-{
-    cmd_send(ok ? "ack:1.000\n" : "ack:0.000\n");
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     返回参数当前实际值，用于确认串口修改和范围处理结果
-// 参数说明     value           参数当前值
-// 返回参数     void
-// 使用示例     cmd_value(0.002f);
-//-------------------------------------------------------------------------------------------------------------------
-static void cmd_value(float value)
-{
-    char line[48];
-    int len = snprintf(line, sizeof(line), "value:%.6f\n", (double)value);
-
-    if (len > 0 && len < (int)sizeof(line))
-        (void)tx_push((const uint8 *)line, (uint32)len);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     判断参数名是否属于串口调参白名单
-// 参数说明     name            参数名
-// 返回参数     uint8           1=允许串口读写 0=不允许
-// 使用示例     if (!cmd_pid_param(tok[0])) cmd_ack(0);
-//-------------------------------------------------------------------------------------------------------------------
-static uint8 cmd_pid_param(const char *name)
-{
-    uint8 axis, ring, gain;
-
-    if (name == 0) return 0;
-    for (axis = 0; axis < (uint8)TUNE_AXIS_MAX; axis++)
-        for (ring = 0; ring < (uint8)TUNE_RING_MAX; ring++)
-            for (gain = 0; gain < 3u; gain++)
-            {
-                const char *entry = s_tune_tbl[axis][ring][gain];
-                if (entry != 0 && cmd_icmp(name, entry) == 0) return 1;
-            }
-    return 0;
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     解析并执行一行下行命令，支持修改参数和 get 读取参数
+// 函数简介     解析并执行 speed:<相对航向角>,<线速度> 无线遥控命令
 // 参数说明     line            已去掉换行符的命令字符串
-// 返回参数     void
-// 使用示例     cmd_execute("r_rate_kp 12.5");
+// 返回参数     vofa_cmd_result_t 处理结果，APPLIED 表示目标已写入控制层
+// 使用示例     result = cmd_execute_speed(line);
 //-------------------------------------------------------------------------------------------------------------------
-static void cmd_execute(char *line)
+static vofa_cmd_result_t cmd_execute_speed(char *line)
 {
-    char *tok[3];
-    int ntok = cmd_tokenize(line, tok);
-    float value;
-    const param_desc_t *desc;
+    char *turn_text;
+    char *speed_text;
+    char *comma;
+    float steer_angle;
+    float speed_value;
 
-    if (ntok == 0) return;                      // 空行不当错误
-    if (ntok != 2) { cmd_ack(0); return; }
+    if (!cmd_is_speed(line)) return VOFA_CMD_PREFIX;
 
-    // 查询不改变车辆状态，运行中也允许。回复先给 ACK，再给 value:<实际值>。
-    if (cmd_icmp(tok[0], "get") == 0)
+    turn_text = line + 6;
+    comma = turn_text;
+    while (*comma != '\0' && *comma != ',') comma++;
+    if (*comma != ',')
     {
-        if (!cmd_pid_param(tok[1]) ||
-            !param_get_by_name(tok[1], &value))
+        return VOFA_CMD_FORMAT;                 // 没有逗号分隔
+    }
+    *comma = '\0';
+    speed_text = comma + 1;
+    if (*speed_text == '\0')
+    {
+        return VOFA_CMD_FORMAT;                 // 逗号后面是空的
+    }
+    comma = speed_text;
+    while (*comma != '\0')
+    {
+        if (*comma == ',')
         {
-            cmd_ack(0);
-            return;
+            return VOFA_CMD_FORMAT;             // 多于一个逗号
         }
-        cmd_ack(1);
-        cmd_value(value);
-        return;
+        comma++;
     }
 
-    // 只放行八个环的 PID 与整定相关限幅/滤波参数
-    if (!cmd_pid_param(tok[0])) { cmd_ack(0); return; }
-
-    // 发车或架空点动期间不接受改参数
-    if (cmd_motion_active()) { cmd_ack(0); return; }
-
-    // 闭环测试期间锁定调参轴，只放行当前轴、当前最高启用环之内的 PID
-    if (control_test_running() && !cmd_test_param_allowed(tok[0])) { cmd_ack(0); return; }
-
-    if (!cmd_parse_float_strict(tok[1], &value)) { cmd_ack(0); return; }
-    desc = param_find(tok[0]);
-    if (desc == 0 || value < desc->vmin || value > desc->vmax)
+    turn_text = cmd_trim(turn_text);
+    speed_text = cmd_trim(speed_text);
+    if (!cmd_parse_float_strict(turn_text, &steer_angle) ||
+        !cmd_parse_float_strict(speed_text, &speed_value))
     {
-        cmd_ack(0);
-        return;
+        return VOFA_CMD_FORMAT;                 // 数字本身非法
     }
-    if (!param_set_by_name(tok[0], value) ||
-        !param_get_by_name(tok[0], &value))
-    {
-        cmd_ack(0);
-        return;
-    }
-    cmd_ack(1);
-    cmd_value(value);
+
+    // 解析成功就先回显，不管控制层收不收。停车状态下也能在屏幕上看到发进来的数值，
+    // 这样"链路通不通"和"发车了没有"是两件能分开验证的事
+    g_vofa_cmd_turn = steer_angle;
+    g_vofa_cmd_speed = speed_value;
+
+    if (control_remote_command(steer_angle, speed_value)) return VOFA_CMD_APPLIED;
+
+    // control_remote_command() 只有两种失败：数值越界，或者 Run Test 没在跑。
+    // 用已导出的运行标志把这两种分开，不必改它的签名
+    return control_remote_running() ? VOFA_CMD_RANGE : VOFA_CMD_NOT_RUNNING;
 }
 
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     判断当前命令行缓冲是否已经凑成一条完整的 speed 命令，供静默断行判据用
+// 参数说明     void
+// 返回参数     uint8           1=前缀、逗号和逗号后的数字都齐了 0=还是半截
+// 使用示例     if (cmd_line_looks_complete()) cmd_submit_line();
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 cmd_line_looks_complete(void)
+{
+    uint8 i;
+    uint8 comma = 0;                    // 逗号个数
+    uint8 tail_digit = 0;               // 逗号后面出现过数字
+
+    if (s_cmd_len < 8u) return 0;       // "speed:" 之后至少还要各有一个字符
+    s_cmd_line[s_cmd_len] = '\0';       // 写入侧钳在 VOFA_CMD_LINE_MAX-1，这里写 NUL 不越界
+    if (!cmd_is_speed(s_cmd_line)) return 0;
+
+    for (i = 6u; i < s_cmd_len; i++)
+    {
+        char c = s_cmd_line[i];
+
+        if (c == ',') { comma++; continue; }
+        if (comma == 1u && c >= '0' && c <= '9') tail_digit = 1;
+    }
+    return (uint8)(comma == 1u && tail_digit);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     提交一整行下行命令并记账，两个断行入口共用
+// 参数说明     void
+// 返回参数     void
+// 使用示例     cmd_submit_line();
+//-------------------------------------------------------------------------------------------------------------------
+static void cmd_submit_line(void)
+{
+    vofa_cmd_result_t result;
+
+    g_vofa_cmd_lines++;
+    if (s_cmd_ovf)
+    {
+        g_vofa_cmd_last = VOFA_CMD_OVERFLOW;    // 整行作废，绝不拿截断的命令去发车
+        return;
+    }
+
+    s_cmd_line[s_cmd_len] = '\0';
+    result = cmd_execute_speed(cmd_trim(s_cmd_line));
+    g_vofa_cmd_last = result;
+    if (result == VOFA_CMD_APPLIED) g_vofa_cmd_ok++;
+}
 
 // 外部接口
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     根据波形模式更新通道快照
+// 函数简介     更新 Roll、Pitch、Yaw 姿态波形快照
 // 参数说明     void
 // 返回参数     void
 // 使用示例     vofa_snapshot();
 //-------------------------------------------------------------------------------------------------------------------
 void vofa_snapshot(void)
 {
-    vofa_mode_t m = g_vofa_mode;
-    if (m == VOFA_OFF) return;
+    if (g_vofa_mode != VOFA_ATT) return;
 
     s_seq++;                                    // 奇数表示正在写入
-    switch (m)
-    {
-    case VOFA_ATT:
-        // FireWater 通道顺序为 Roll、Pitch、Yaw
-        s_tag = "att"; s_n = 3;
-        s_ch[0] = att.roll;
-        s_ch[1] = att.pitch;
-        s_ch[2] = att.yaw;
-        break;
-    case VOFA_ROLL:
-        // r_rcy_fb 是 B、A 两个飞轮的转速差(RPM)，由 CYT2BL3 每 10ms 回传
-        s_tag = "roll"; s_n = 15;
-        s_ch[0] = g_bal_dbg.r_rcy_set;  s_ch[1] = g_bal_dbg.r_rcy_fb;  s_ch[2] = g_bal_dbg.r_rcy_out;
-        s_ch[3] = g_bal_dbg.r_ang_fb;   s_ch[4] = g_bal_dbg.r_ang_out;
-        s_ch[5] = g_bal_dbg.r_rate_fb;  s_ch[6] = g_bal_dbg.r_pwm;
-        s_ch[7] = (float)g_motor_a;     s_ch[8] = (float)g_motor_b;
-        s_ch[9] = (float)W_Motor_GetSpeed1();
-        s_ch[10] = (float)W_Motor_GetSpeed2();
-        // 末尾四路是当前正在用的增益本身。整定时波形和参数得对得上，
-        // 否则回放录下来的曲线根本分不清哪一段是哪组增益
-        // Roll 内环是位置式，R_RATE_KI 恒为 0，发它没信息量，改发正在用的 kd
-        s_ch[11] = R_RATE_KP;  s_ch[12] = R_RATE_KD;
-        s_ch[13] = R_ANGLE_KP; s_ch[14] = R_RCY_KP;
-        break;
-    case VOFA_PITCH:
-        s_tag = "pit"; s_n = 11;
-        s_ch[0] = g_bal_dbg.p_vel_set;  s_ch[1] = g_bal_dbg.p_vel_fb;  s_ch[2] = g_bal_dbg.p_vel_out;
-        s_ch[3] = g_bal_dbg.p_ang_fb;   s_ch[4] = g_bal_dbg.p_ang_out;
-        s_ch[5] = g_bal_dbg.p_rate_fb;  s_ch[6] = g_bal_dbg.p_pwm;
-        s_ch[7] = P_RATE_KP;   s_ch[8] = P_RATE_KI;
-        s_ch[9] = P_ANGLE_KP;  s_ch[10] = P_VEL_KP;
-        break;
-    case VOFA_YAW:
-        s_tag = "yaw"; s_n = 8;
-        s_ch[0] = g_bal_dbg.y_set;      s_ch[1] = g_bal_dbg.y_fb;      s_ch[2] = g_bal_dbg.y_out;
-        s_ch[3] = g_bal_dbg.y_rate_fb;  s_ch[4] = g_bal_dbg.y_pwm;     s_ch[5] = g_lean_offset;
-        // Yaw 内环是位置式，ki/kd 恒 0，只发两个真正在调的
-        s_ch[6] = Y_RATE_KP;   s_ch[7] = Y_ANGLE_KP;
-        break;
-    case VOFA_TRACK:
-        // track_valid=0 时 err 被强制回 0，看 err 必须同时看 valid 和 both_lost
-        s_tag = "trk"; s_n = 13;
-        s_ch[0] = g_dbg_error;                  // 中线偏差，右偏为正
-        s_ch[1] = (float)g_track_valid;         // 本帧循迹是否有效
-        s_ch[2] = (float)g_vision_search_stop;  // 有效前瞻行数
-        s_ch[3] = (float)g_vision_left_lost;    // 左边线丢线行数
-        s_ch[4] = (float)g_vision_right_lost;   // 右边线丢线行数
-        s_ch[5] = (float)g_vision_both_lost;    // 双边丢线行数
-        s_ch[6] = (float)g_vision_threshold;    // 大津阈值
-        s_ch[7] = (float)g_track_lost_frames;   // 连续无效帧计数
-        s_ch[8] = (float)g_vision_heartbeat;    // CPU1 心跳
-        s_ch[9] = (float)g_vision_age_ms;       // 距上一帧的时间(ms)
-        s_ch[10] = (float)g_vision_active_elem; // 元素编号
-        s_ch[11] = g_vision_speed_scale;        // 元素建议速度倍率
-        s_ch[12] = (float)g_vision_stop_request;// 元素停车请求
-        break;
-    case VOFA_MOTOR:
-        // 架空验方向用: 指令与回传转速同号才说明 MOTOR_DIR 配对，
-        // 指令过零时看 rpm 是平滑穿零还是被驱动硬刹车拽到 0。
-        s_tag = "mot"; s_n = 5;
-        s_ch[0] = (float)g_motor_a;             // A 轮占空比指令
-        s_ch[1] = (float)g_motor_b;             // B 轮占空比指令
-        s_ch[2] = (float)W_Motor_GetSpeed1();   // A 轮回传转速(RPM)
-        s_ch[3] = (float)W_Motor_GetSpeed2();   // B 轮回传转速(RPM)
-        s_ch[4] = (float)Y_Motor_GetSpeed20ms();// C 轮编码器增量(counts/20ms)
-        break;
-    case VOFA_BAL:
-        // 三轴一起跑时看的是"站没站住"和"飞轮有没有单向堆积"，各环内部量看单轴波形。
-        // CH0/CH1 与 CH2/CH3 成对，角度贴住目标就是站住了；
-        // CH8/CH9 同向一起爬升说明回收环压不住，再跑下去就要闩驱动堵转保护。
-        s_tag = "bal"; s_n = 15;
-        s_ch[0] = att.roll;                     // 横滚角(°)
-        s_ch[1] = g_roll_zero + g_lean_offset;  // 横滚有效目标(°)，含压弯动态零点
-        s_ch[2] = att.pitch;                    // 俯仰角(°)
-        s_ch[3] = g_pitch_zero;                 // 俯仰机械零点(°)
-        s_ch[4] = g_bal_dbg.y_set - g_bal_dbg.y_fb;     // 航向误差(°)，连续角相减
-        s_ch[5] = (float)g_motor_a;             // 混控后 A 轮指令
-        s_ch[6] = (float)g_motor_b;             // 混控后 B 轮指令
-        s_ch[7] = (float)g_motor_c;             // 混控后 C 轮指令
-        s_ch[8] = (float)W_Motor_GetSpeed1();   // A 轮回传转速(RPM)
-        s_ch[9] = (float)W_Motor_GetSpeed2();   // B 轮回传转速(RPM)
-        s_ch[10] = (float)Y_Motor_GetSpeed20ms();       // C 轮编码器增量(counts/20ms)
-        // 三轴一起跑的时候只带两个内环的增益，它俩决定站不站得住；
-        // 外环增益去对应轴的单轴波形上看
-        s_ch[11] = R_RATE_KP;  s_ch[12] = R_RATE_KI;
-        s_ch[13] = P_RATE_KP;  s_ch[14] = P_RATE_KI;
-        break;
-    default:
-        s_n = 0;
-        break;
-    }
+    s_ch[0] = att.roll;
+    s_ch[1] = att.pitch;
+    s_ch[2] = att.yaw;
     s_seq++;                                    // 偶数表示写入完成
 }
 
@@ -524,35 +355,30 @@ void vofa_snapshot(void)
 void vofa_poll(void)
 {
     static uint32 last_seq = 0;                 // 上次已发送的快照序号
-    float  ch[VOFA_CH_MAX];
-    char   line[256];
+    float  ch[VOFA_CH_COUNT];
+    char   line[96];
     uint32 seq1, seq2;
-    uint8  n, i;
-    const char *tag;
     int    len;
 
-    if (g_vofa_mode == VOFA_OFF) { last_seq = s_seq; return; }
+    if (g_vofa_mode != VOFA_ATT) { last_seq = s_seq; return; }
 
     seq1 = s_seq;
     if (seq1 & 1u) return;                                          // 快照正在更新
     if ((seq1 - last_seq) < (uint32)(2u * g_vofa_div)) return;      // 未达到发送分频
 
-    n = s_n; tag = (const char *)s_tag;
-    if (n == 0 || n > VOFA_CH_MAX) return;
-    for (i = 0; i < n; i++) ch[i] = s_ch[i];
+    ch[0] = s_ch[0];
+    ch[1] = s_ch[1];
+    ch[2] = s_ch[2];
     seq2 = s_seq;
     if (seq1 != seq2) return;                                       // 快照读取不完整
 
     last_seq = seq1;
 
-    // FireWater 格式为 <tag>:v0,v1,...\n
-    len = snprintf(line, sizeof(line), "%s:", tag);
-    for (i = 0; i < n && len > 0 && len < (int)sizeof(line) - 16; i++)
-        len += snprintf(line + len, sizeof(line) - (uint32)len, (i == 0) ? "%.3f" : ",%.3f", (double)ch[i]);
+    len = snprintf(line, sizeof(line), "att:%.3f,%.3f,%.3f\n",
+                   (double)ch[0], (double)ch[1], (double)ch[2]);
     if (len <= 0) return;                                           // 格式化失败
-    if (len > (int)sizeof(line) - 2) len = (int)sizeof(line) - 2;   // 限制实际缓冲长度
-    line[len++] = '\n'; line[len] = '\0';
-    (void)tx_push_wave((const uint8 *)line, (uint32)len);           // 写入上行环，装不下就丢帧并保留回复空间
+    if (len >= (int)sizeof(line)) return;                            // 格式化结果不完整
+    (void)tx_push((const uint8 *)line, (uint32)len);                // 写入上行环，装不下就丢弃整帧
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -572,6 +398,13 @@ void vofa_init(void)
     s_rx_head = 0; s_rx_tail = 0;
     s_rx_overflow = 0;
     s_cmd_len = 0; s_cmd_ovf = 0;
+    s_rx_idle_ms = 0;
+    g_vofa_rx_bytes = 0;
+    g_vofa_cmd_lines = 0;
+    g_vofa_cmd_ok = 0;
+    g_vofa_cmd_last = VOFA_CMD_NONE;
+    g_vofa_cmd_turn = 0.0f;
+    g_vofa_cmd_speed = 0.0f;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -594,6 +427,15 @@ void vofa_tick1ms(void)
         uint32 interrupt_state = interrupt_global_disable();
         got = wireless_uart_read_buffer(buf, (uint32)sizeof(buf));
         interrupt_global_enable(interrupt_state);
+    }
+    if (got > 0u)
+    {
+        g_vofa_rx_bytes += got;
+        s_rx_idle_ms = 0;
+    }
+    else if (s_rx_idle_ms < 0xFFFFu)
+    {
+        s_rx_idle_ms++;
     }
 
     head = s_rx_head;
@@ -628,7 +470,7 @@ void vofa_tick1ms(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     解析并执行无线串口下行调参命令，由主循环调用
+// 函数简介     解析并执行无线串口 Run Test 命令，由主循环调用
 // 参数说明     void
 // 返回参数     void
 // 使用示例     vofa_cmd_poll();
@@ -653,15 +495,8 @@ void vofa_cmd_poll(void)
 
         if (c == '\n' || c == '\r')
         {
-            if (s_cmd_ovf)
-            {
-                cmd_ack(0);
-            }
-            else if (s_cmd_len > 0)
-            {
-                s_cmd_line[s_cmd_len] = '\0';
-                cmd_execute(s_cmd_line);
-            }
+            // 长度为 0 说明是 "\r\n" 的第二个字符或空行，不算一行命令
+            if (s_cmd_len > 0) cmd_submit_line();
             s_cmd_len = 0;
             s_cmd_ovf = 0;
             continue;
@@ -672,4 +507,26 @@ void vofa_cmd_poll(void)
             s_cmd_ovf = 1;                      // 标记命令行溢出，整行作废
     }
     s_rx_tail = tail;
+
+    // 某些串口上位机不追加 CR/LF，这里靠接收静默断行。判据是"缓冲已经像一条完整命令"，
+    // 不是"静默够久"：一行被拆成两段发进来时，前半段永远凑不齐逗号后的数字，
+    // 于是继续等后半段，而不是把半截命令提交上去判错。
+    if (s_cmd_len > 0u && tail == s_rx_head)
+    {
+        if (s_rx_idle_ms >= VOFA_CMD_IDLE_MS && (s_cmd_ovf || cmd_line_looks_complete()))
+        {
+            cmd_submit_line();
+            s_cmd_len = 0;
+            s_cmd_ovf = 0;
+        }
+        else if (s_rx_idle_ms >= VOFA_CMD_STALE_MS)
+        {
+            // 等到这里还凑不成完整命令，说明本来就是错的或者后半段丢了。
+            // 必须丢掉，否则残字节会和下一条命令拼在一起，把后面每一条都带坏
+            g_vofa_cmd_lines++;
+            g_vofa_cmd_last = VOFA_CMD_FORMAT;
+            s_cmd_len = 0;
+            s_cmd_ovf = 0;
+        }
+    }
 }

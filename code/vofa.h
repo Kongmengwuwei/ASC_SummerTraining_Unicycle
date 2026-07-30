@@ -3,29 +3,10 @@
 
 #include "zf_common_headfile.h"
 
-// 无线转串口上行波形，VOFA+ FireWater 格式 <tag>:v0,v1,...\n，通道按位置对应。
-// 同一模式下通道数必须恒定，否则 FireWater 会错位。
-// 三个单轴模式和 bal 的末尾几路发的是当前正在用的增益本身：
-// 录下来的曲线要能自己说明是哪组增益跑出来的，否则回放时分不清哪一段对应哪次改动。
-// 物理层是逐飞无线转串口模块，挂在 UART2 @115200：
-// P10_5(MCU TX) -> 模块 RX、P10_6(MCU RX) <- 模块 TX、P10_2 读模块 RTS 流控。
-// 模式不是给人选的，完全由当前菜单页和正在跑什么决定：
-//   主菜单/Image/Params 列表        VOFA_OFF
-//   Params → Attitude 按 Test       VOFA_ATT
-//   Params → Roll/Pitch/Yaw 开测试  VOFA_ROLL / VOFA_PITCH / VOFA_YAW，由 control_test_start() 按轴给
-//   Params → Motor 点动             VOFA_MOTOR，由 control_jog_start() 给
-//   进 Params → Camera / Element    VOFA_TRACK
-//   主菜单 → Balance                VOFA_BAL，由 control_balance_start() 给，翻页也不断
 typedef enum
 {
     VOFA_OFF = 0,       // 关闭波形输出
-    VOFA_ATT,           // att  : Roll、Pitch、Yaw，3 通道
-    VOFA_ROLL,          // roll : Roll 串级、双轮命令与转速 + 本轴 4 个增益，15 通道
-    VOFA_PITCH,         // pit  : Pitch 串级各环 + 本轴 4 个增益，11 通道
-    VOFA_YAW,           // yaw  : Yaw 串级各环 + 本轴 2 个增益，8 通道
-    VOFA_TRACK,         // trk  : 循迹偏差与丢线统计，13 通道
-    VOFA_MOTOR,         // mot  : 三电机指令与转速回读，5 通道
-    VOFA_BAL,           // bal  : 三轴同时闭环的角度、目标、三电机 + 两个内环增益，15 通道
+    VOFA_ATT,           // att: Roll、Pitch、Yaw，3 通道
 } vofa_mode_t;
 
 // 调参轴
@@ -46,10 +27,29 @@ typedef enum
     TUNE_RING_MAX
 } tune_ring_t;
 
+// 一整行下行命令的处理结果。Run Test 页显示最近一行的分类，
+// 用来把"命令没生效"拆成收不到、格式错、没发车三种互不相同的原因。
+typedef enum
+{
+    VOFA_CMD_NONE = 0,      // 还没有提交过整行
+    VOFA_CMD_APPLIED,       // 已写入控制目标
+    VOFA_CMD_NOT_RUNNING,   // 格式合法但 Run Test 没在跑，目标未写入
+    VOFA_CMD_RANGE,         // 数值超出允许范围，被控制层拒绝
+    VOFA_CMD_PREFIX,        // 不是 speed: 开头
+    VOFA_CMD_FORMAT,        // 缺逗号、字段为空或数字非法
+    VOFA_CMD_OVERFLOW,      // 接收环或命令行溢出，整行作废
+} vofa_cmd_result_t;
+
 extern volatile vofa_mode_t g_vofa_mode;    // 当前波形模式
 extern volatile uint8       g_vofa_div;     // 发送分频
 extern volatile tune_axis_t g_tune_axis;    // 当前调参轴
 extern volatile tune_ring_t g_tune_ring;    // 当前调参环
+extern volatile uint32      g_vofa_rx_bytes;// 无线下行累计接收字节数
+extern volatile uint32      g_vofa_cmd_lines;// 已提交解析的整行数
+extern volatile uint32      g_vofa_cmd_ok;  // 已写入控制目标的命令数
+extern volatile vofa_cmd_result_t g_vofa_cmd_last;  // 最近一行的处理结果
+extern volatile float       g_vofa_cmd_turn; // 最近一次解析成功的转向值(°)
+extern volatile float       g_vofa_cmd_speed;// 最近一次解析成功的速度值(m/s)
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     初始化无线转串口模块与上行发送队列
@@ -68,7 +68,7 @@ void vofa_init(void);
 void vofa_tick1ms(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     根据波形模式更新通道快照
+// 函数简介     更新 Roll、Pitch、Yaw 姿态波形快照
 // 参数说明     void
 // 返回参数     void
 // 使用示例     vofa_snapshot();
@@ -83,20 +83,13 @@ void vofa_snapshot(void);
 //-------------------------------------------------------------------------------------------------------------------
 void vofa_poll(void);
 
-// 下行命令为 ASCII 行，以 '\r\n' 或 '\n' 结束：
-//   <参数名> <值>        修改参数
-//   get <参数名>         读取参数
-// 参数白名单包含各控制环 PID 与 BEMF K；实际条目以 vofa.c 参数表为准。
-// 修改或读取成功回复 ack:1.000，再回复 value:<实际值>；失败回复 ack:0.000。
-// 数值必须完整解析且位于参数范围内，NaN、无穷和越界值一律拒绝。
-// 架空点动期间拒绝改参数；闭环测试期间只放行当前轴、当前最高启用环之内的增益；
-// 三轴平衡(START_BALANCE)期间 24 个全放行，整定本来就要边跑边改。
-// 波形模式由菜单页决定，命令侧不能切波形。
-// 本协议只做看波形和调参，不提供任何电机启停命令，发车与停车只能用车上的实体键。
-// 24 条命令的完整清单见 调参命令.md。
+// 下行只接收 Run Test 遥控命令，以 '\r\n' 或 '\n' 结束：
+//   speed:<转向>,<速度>
+// 转向是相对发车航向角(°)，速度单位为 m/s。
+// speed 命令只在主菜单 Run Test 已启动后生效；无线命令不能发车，返回键始终急停。
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     解析并执行无线串口下行调参命令，由主循环调用
+// 函数简介     解析并执行无线串口 Run Test 命令，由主循环调用
 // 参数说明     void
 // 返回参数     void
 // 使用示例     vofa_cmd_poll();

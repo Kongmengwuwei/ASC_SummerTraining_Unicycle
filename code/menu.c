@@ -51,6 +51,7 @@ typedef enum
     MENU_PAGE_ATTITUDE,
     MENU_PAGE_GROUP,
     MENU_PAGE_IMAGE,
+    MENU_PAGE_RUN_TEST,
     MENU_PAGE_COUNT
 } menu_page_t;
 
@@ -62,6 +63,7 @@ typedef enum
     GROUP_KIND_MOTOR,       // 架空点动，验证转向与转速回读符号
     GROUP_KIND_ZERO,        // 在线抓当前姿态角当机械零点
     GROUP_KIND_ELEMENT,     // 元素使能与阈值，实时显示识别到的元素，无动作行
+    GROUP_KIND_ODOMETRY,    // C 轮每米脉冲标定与 1m 验证
 } group_kind_t;
 
 // 一个可编辑参数行
@@ -97,9 +99,12 @@ static const menu_param_item_t s_roll_items[] =
     { "Angle Kp", "r_angle_kp", 0.2f,   2 },    // 落点 2~20
     { "Angle Ki", "r_angle_ki", 0.01f,  3 },
     { "Angle Kd", "r_angle_kd", 0.2f,   2 },    // 位置式内环之后这一路可用
-    { "Speed Kp", "r_rcy_kp",   0.001f, 3 },    // 落点 0.003~0.03，飞轮转速差(RPM)换倾角(°)。符号为正
-    { "Speed Ki", "r_rcy_ki",   0.001f, 3 },
-    { "Speed Kd", "r_rcy_kd",   0.001f, 3 }
+    // 回收环 kp。实测落点在 0.002 附近，比原先估的 0.003~0.03 小一个量级，
+    // 所以步长不按"落点下限的 1/10"给：0.001 一按就改 50%，停不到 0.0021 这种值上。
+    // 0.0001 是一按约 5%，显示同步到 4 位小数才看得见改动
+    { "Speed Kp", "r_rcy_kp",   0.0001f, 4 },   // 飞轮转速差(RPM)换倾角(°)，符号为正
+    { "Speed Ki", "r_rcy_ki",   0.0001f, 4 },  // 与同环 kp 同尺度，见本表头的约定
+    { "Speed Kd", "r_rcy_kd",   0.0001f, 4 }   // 同上
 };
 
 static const menu_param_item_t s_pitch_items[] =
@@ -178,6 +183,12 @@ static const menu_param_item_t s_zero_items[] =
     { "Pitch Prot", "pitch_protect",   1.0f, 1 }
 };
 
+static const menu_param_item_t s_odometry_items[] =
+{
+    { "Counts / m", "odom_counts_per_m", 10.0f, 0 },
+    { "Test Speed", "odom_test_speed",     0.01f, 2 }
+};
+
 // 点动动作行的顺序与 motor_jog_action() 的解码一一对应，改一处必须改另一处。
 static const char * const s_motor_action_names[] =
 {
@@ -193,11 +204,12 @@ static const menu_group_t s_groups[] =
     { "Roll",   s_roll_items,   MENU_ITEMS_OF(s_roll_items),   TUNE_AXIS_ROLL,  3, GROUP_KIND_AXIS   },
     { "Pitch",  s_pitch_items,  MENU_ITEMS_OF(s_pitch_items),  TUNE_AXIS_PITCH, 3, GROUP_KIND_AXIS   },
     { "Yaw",    s_yaw_items,    MENU_ITEMS_OF(s_yaw_items),    TUNE_AXIS_YAW,   2, GROUP_KIND_AXIS   },
-    // 下面四页不走 control_test_start()，axis 填什么都不会被读到
+    // 下面五页不走 control_test_start()，axis 填什么都不会被读到
     { "Camera",  s_camera_items,  MENU_ITEMS_OF(s_camera_items),  TUNE_AXIS_YAW,  0, GROUP_KIND_CAMERA  },
     { "Element", s_element_items, MENU_ITEMS_OF(s_element_items), TUNE_AXIS_YAW,  0, GROUP_KIND_ELEMENT },
     { "Motor",   s_motor_items,   MENU_ITEMS_OF(s_motor_items),   TUNE_AXIS_ROLL, 6, GROUP_KIND_MOTOR   },
-    { "Zero",    s_zero_items,    MENU_ITEMS_OF(s_zero_items),    TUNE_AXIS_ROLL, 1, GROUP_KIND_ZERO    }
+    { "Zero",    s_zero_items,    MENU_ITEMS_OF(s_zero_items),    TUNE_AXIS_ROLL, 1, GROUP_KIND_ZERO    },
+    { "Odometry",s_odometry_items,MENU_ITEMS_OF(s_odometry_items),TUNE_AXIS_PITCH,2, GROUP_KIND_ODOMETRY}
 };
 
 // save_group_action() 在栈上开 UI_MAX_GROUP_ITEMS 个名字指针，任何一页的行数超了都会越界写
@@ -208,7 +220,8 @@ typedef char menu_group_items_fit[
      MENU_ITEMS_OF(s_camera_items)  <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_element_items) <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_motor_items)   <= UI_MAX_GROUP_ITEMS &&
-     MENU_ITEMS_OF(s_zero_items)    <= UI_MAX_GROUP_ITEMS) ? 1 : -1];
+     MENU_ITEMS_OF(s_zero_items)    <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_odometry_items)<= UI_MAX_GROUP_ITEMS) ? 1 : -1];
 
 static const char * const s_param_page_names[] =
 {
@@ -220,6 +233,7 @@ static const char * const s_param_page_names[] =
     "Element",
     "Motor",
     "Zero",
+    "Odometry",
     "Save",
     "Reset",
     "Back"
@@ -415,9 +429,10 @@ static uint8 key_event(key_index_enum key, uint8 repeat)
 //-------------------------------------------------------------------------------------------------------------------
 static uint8 current_count(void)
 {
-    if (s_page == MENU_PAGE_MAIN)            return 3;
+    if (s_page == MENU_PAGE_MAIN)            return 4;
     if (s_page == MENU_PAGE_PARAMS)          return PARAM_PAGE_COUNT;
     if (s_page == MENU_PAGE_ATTITUDE)        return 2;
+    if (s_page == MENU_PAGE_RUN_TEST)        return 2;
     if (s_page == MENU_PAGE_GROUP)
         return (uint8)(s_groups[s_group_index].item_count +
                        s_groups[s_group_index].action_count + 2u);
@@ -425,7 +440,7 @@ static uint8 current_count(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     停止当前测试并关闭对应波形
+// 函数简介     停止当前页面的测试
 // 参数说明     void
 // 返回参数     void
 // 使用示例     stop_local_test();
@@ -434,6 +449,11 @@ static void stop_local_test(void)
 {
     // control_jog_stop() 会锁刹车, 平衡运行中翻页不能误触发, 所以先确认确实在点动。
     if (control_jog_running() != MOTOR_JOG_NONE) control_jog_stop();
+    if (control_odometry_test_state() != ODOM_TEST_IDLE)
+    {
+        control_odometry_test_stop();
+        s_balance_on = 0;
+    }
     if (s_test_on || control_test_running())
     {
         control_test_stop();
@@ -583,18 +603,8 @@ static void set_page(menu_page_t page)
     s_page = page;
     load_page_position(page);
 
-    // 波形完全由页面和正在跑什么决定，没有任何地方让人选，无线串口侧也没有切波形的命令。
-    // Camera/Element 进页面就出 trk；三轴页由 control_test_start() 按轴给；
-    // Motor 由 control_jog_start() 给 mot；Attitude 页的动作行给 att。
-    // 三轴平衡是唯一跨页面存活的运行状态（stop_local_test() 有意不碰 start_flag），
-    // 所以它的波形也不能因为翻页就断掉，否则翻一次页波形就少一段
+    // 只有 Attitude 页开启 Test 时发送姿态波形，离开页面立即关闭。
     g_vofa_mode = VOFA_OFF;
-    if (start_flag == START_BALANCE)
-        g_vofa_mode = VOFA_BAL;
-    else if (page == MENU_PAGE_GROUP &&
-             (s_groups[s_group_index].kind == GROUP_KIND_CAMERA ||
-              s_groups[s_group_index].kind == GROUP_KIND_ELEMENT))
-        g_vofa_mode = VOFA_TRACK;
 
     s_editing = 0;
     s_dirty = 2;
@@ -711,11 +721,101 @@ static void render_main_live(void)
 //-------------------------------------------------------------------------------------------------------------------
 static void render_main(void)
 {
-    ui_header("MENU", s_cursor, 3);
+    ui_header("MENU", s_cursor, 4);
     draw_action_row(0, 0, "Params");
     draw_action_row(1, 1, "Image");
     draw_action_row(2, 2, (start_flag == START_BALANCE) ? "Balance: ON" : "Balance: OFF");
+    draw_action_row(3, 3, control_remote_running() ? "Run Test: ON" : "Run Test");
     render_main_live();
+    draw_status();
+    ui_footer();
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     把最近一行下行命令的处理结果翻译成屏幕文本
+// 参数说明     result          vofa 侧记录的分类结果
+// 返回参数     const char*     结果说明
+// 使用示例     ui_line(184, cmd_result_text(g_vofa_cmd_last), UI_YELLOW);
+//-------------------------------------------------------------------------------------------------------------------
+static const char *cmd_result_text(vofa_cmd_result_t result)
+{
+    switch (result)
+    {
+        case VOFA_CMD_APPLIED:     return "CMD APPLIED";
+        case VOFA_CMD_NOT_RUNNING: return "CMD DROP: NOT RUNNING";
+        case VOFA_CMD_RANGE:       return "CMD DROP: OUT OF RANGE";
+        case VOFA_CMD_PREFIX:      return "CMD DROP: BAD PREFIX";
+        case VOFA_CMD_FORMAT:      return "CMD DROP: BAD FORMAT";
+        case VOFA_CMD_OVERFLOW:    return "CMD DROP: OVERFLOW";
+        default:                   return "CMD NONE";
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     刷新无线 Run Test 的命令与反馈状态
+// 参数说明     void
+// 返回参数     void
+// 使用示例     render_run_test_live();
+//-------------------------------------------------------------------------------------------------------------------
+static void render_run_test_live(void)
+{
+    char line[30];
+    float steer_angle = 0.0f;
+    float speed_mps = 0.0f;
+    uint16 age_ms = 0;
+    uint8 seen = 0;
+    vofa_cmd_result_t result = g_vofa_cmd_last;
+
+    control_remote_status(&steer_angle, &speed_mps, &age_ms, &seen);
+    (void)snprintf(line, sizeof(line), "Steer %8.1f deg", (double)steer_angle);
+    ui_line(72, line, UI_CYAN);
+    (void)snprintf(line, sizeof(line), "Speed %8.2f m/s", (double)speed_mps);
+    ui_line(96, line, UI_CYAN);
+    (void)snprintf(line, sizeof(line), "C Fdb %8.2f m/s", (double)Y_Motor_GetSpeedMps());
+    ui_line(120, line, UI_CYAN);
+    // RX 是收到的字节，LN 是断出的整行，OK 是真正写进控制目标的条数。
+    // 三个数分别对应链路、断行和接受三级，哪一级不涨就说明卡在那一级
+    (void)snprintf(line, sizeof(line), "RX%6lu LN%5lu OK%5lu",
+                   (unsigned long)g_vofa_rx_bytes,
+                   (unsigned long)g_vofa_cmd_lines,
+                   (unsigned long)g_vofa_cmd_ok);
+    ui_line(144, line, UI_CYAN);
+    ui_line(184, cmd_result_text(result),
+            (result == VOFA_CMD_APPLIED) ? UI_GREEN
+                                         : ((result == VOFA_CMD_NONE) ? UI_GRAY : UI_YELLOW));
+    // 解析成功就回显，与是否被接受无关：停车状态下也能靠这一行确认链路和格式都对了
+    (void)snprintf(line, sizeof(line), "Parsed %+7.1f %+6.2f",
+                   (double)g_vofa_cmd_turn, (double)g_vofa_cmd_speed);
+    ui_line(232, line, UI_GRAY);
+
+    if (!control_remote_running())
+        ui_line(160, "REMOTE STOPPED", UI_YELLOW);
+    else if (!seen)
+        ui_line(160, "REMOTE WAIT COMMAND", UI_YELLOW);
+    else if (age_ms > REMOTE_CMD_TIMEOUT_MS)
+        ui_line(160, "REMOTE COMMAND TIMEOUT", UI_RED);
+    else
+    {
+        (void)snprintf(line, sizeof(line), "REMOTE OK  AGE %u ms", (unsigned)age_ms);
+        ui_line(160, line, UI_GREEN);
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     绘制无线 Run Test 页面
+// 参数说明     void
+// 返回参数     void
+// 使用示例     render_run_test();
+//-------------------------------------------------------------------------------------------------------------------
+static void render_run_test(void)
+{
+    ui_header("Run Test", s_cursor, 2);
+    draw_action_row(0, 0, control_remote_running() ? "Remote: ON" : "Remote: OFF");
+    draw_action_row(1, 1, "Back");
+    render_run_test_live();
+    ui_line(208, "speed:turn,speed", UI_WHITE);
+    // 232 行由 render_run_test_live() 画最近一次解析到的数值
+    ui_line(256, "Send command at least 2 Hz", UI_GRAY);
     draw_status();
     ui_footer();
 }
@@ -781,7 +881,7 @@ static void render_attitude_live(void)
 static void render_attitude(void)
 {
     ui_header("Attitude", s_cursor, 2);
-    draw_action_row(0, 0, s_test_on ? "Test: ON" : "Test: OFF");
+    draw_action_row(0, 0, s_test_on ? "Wave: ON" : "Wave: OFF");
     draw_action_row(1, 1, "Back");
     render_attitude_live();
     ui_line(224, "WIRELESS 115200 / FIREWATER", UI_GRAY);
@@ -873,7 +973,7 @@ static void render_group_live(void)
         return;
     }
 
-    // Element 页一直显示识别到的元素与环岛状态，不用先开波形。
+    // Element 页直接显示识别到的元素与环岛状态。
     // 两行停在 261 以上，把 UI_STATUS_Y 留给 draw_status()
     if (group->kind == GROUP_KIND_ELEMENT)
     {
@@ -883,6 +983,29 @@ static void render_group_live(void)
         (void)snprintf(line, sizeof(line), "SCALE%5.2f  STOP %d",
                        (double)g_vision_speed_scale, (int)g_vision_stop_request);
         ui_line(261, line, UI_CYAN);
+        return;
+    }
+
+    if (group->kind == GROUP_KIND_ODOMETRY)
+    {
+        int32 count = 0;
+        float distance = 0.0f;
+        float speed = 0.0f;
+        odom_test_state_t state = control_odometry_test_state();
+
+        control_odometry_status(&count, &distance, &speed);
+        (void)snprintf(line, sizeof(line), "COUNT %+10ld", (long)count);
+        ui_line(197, line, UI_CYAN);
+        (void)snprintf(line, sizeof(line), "DIST  %+8.3f m", (double)distance);
+        ui_line(213, line, UI_CYAN);
+        (void)snprintf(line, sizeof(line), "SPEED %+8.3f m/s", (double)speed);
+        ui_line(229, line, UI_CYAN);
+        if (state == ODOM_TEST_RUNNING)
+            ui_line(253, "1M TEST RUNNING", UI_YELLOW);
+        else if (state == ODOM_TEST_DONE)
+            ui_line(253, "1M DONE / BALANCING", UI_GREEN);
+        else
+            ui_line(253, "RESET, PUSH 1M, READ COUNT", UI_GRAY);
         return;
     }
 
@@ -943,6 +1066,12 @@ static const char *action_name(uint8 action_index)
 
     if (group->kind == GROUP_KIND_MOTOR) return s_motor_action_names[action_index];
     if (group->kind == GROUP_KIND_ZERO) return "Capture Zero";
+    if (group->kind == GROUP_KIND_ODOMETRY)
+    {
+        if (action_index == 0u) return "Reset Counter";
+        return (control_odometry_test_state() == ODOM_TEST_IDLE) ?
+               "Start 1m Test" : "Stop 1m Test";
+    }
     if (action_index == 0u) return "Rate";
     if (action_index == 1u) return "Angle";
     return "Speed";
@@ -1010,7 +1139,8 @@ static void render_group(void)
         {
             uint8 action = (uint8)(index - action_begin);
 
-            if (group->kind == GROUP_KIND_MOTOR || group->kind == GROUP_KIND_ZERO)
+            if (group->kind == GROUP_KIND_MOTOR || group->kind == GROUP_KIND_ZERO ||
+                group->kind == GROUP_KIND_ODOMETRY)
                 (void)snprintf(label, sizeof(label), "%s", action_name(action));
             else
                 (void)snprintf(label, sizeof(label), "%s %s Test",
@@ -1051,6 +1181,7 @@ static void render_page(void)
         case MENU_PAGE_ATTITUDE:        render_attitude(); break;
         case MENU_PAGE_GROUP:           render_group(); break;
         case MENU_PAGE_IMAGE:           break;
+        case MENU_PAGE_RUN_TEST:        render_run_test(); break;
         default:                        break;
     }
     s_dirty = 0;
@@ -1082,7 +1213,6 @@ static void motor_jog_action(uint8 action_index)
         menu_status("JOG RUNNING");
     else
     {
-        if (g_vofa_mode == VOFA_MOTOR) g_vofa_mode = VOFA_OFF;
         menu_status(test_status_text(control_test_last_status()));
     }
     s_dirty = 1;
@@ -1150,6 +1280,34 @@ static void toggle_group_action(uint8 action_index)
         return;
     }
 
+    if (group->kind == GROUP_KIND_ODOMETRY)
+    {
+        if (action_index == 0u)
+        {
+            if (control_odometry_counter_reset())
+                menu_status("COUNTER RESET / PUSH 1M");
+            else
+                menu_status("STOP MOTORS FIRST");
+        }
+        else if (control_odometry_test_state() != ODOM_TEST_IDLE)
+        {
+            control_odometry_test_stop();
+            s_balance_on = 0;
+            menu_status("1M TEST STOPPED");
+        }
+        else if (control_odometry_test_start())
+        {
+            s_balance_on = 1;
+            menu_status("1M TEST RUNNING");
+        }
+        else
+        {
+            menu_status(test_status_text(control_test_last_status()));
+        }
+        s_dirty = 1;
+        return;
+    }
+
     if (s_test_on && s_active_test == action_index)
     {
         stop_local_test();
@@ -1169,7 +1327,7 @@ static void toggle_group_action(uint8 action_index)
         return;
     }
 
-    // g_tune_axis / g_tune_ring / g_vofa_mode 都由 control_test_start() 负责，这里不重复赋值
+    // g_tune_axis / g_tune_ring 由 control_test_start() 记录，供菜单标识当前测试范围。
     s_test_on = 1;
     s_active_test = action_index;
     menu_status("TEST ON");
@@ -1206,6 +1364,9 @@ static uint8 group_param_edit_allowed(const menu_group_t *group, uint8 item_inde
 {
     uint8 item_ring;
 
+    if (group->kind == GROUP_KIND_ODOMETRY &&
+        control_odometry_test_state() != ODOM_TEST_IDLE)
+        return 0;
     if (group->kind != GROUP_KIND_AXIS || !control_test_running()) return 1;
     if (group->axis != g_tune_axis) return 0;
 
@@ -1300,11 +1461,62 @@ static void handle_main(uint8 up, uint8 down, uint8 enter)
         s_last_image_frame_seq = 0u;
         s_image_redraw_pending = 1u;
         s_last_image_state = 0xFFu;
-        // 图像页只看屏幕，不发波形。上面 set_page() 已经把 g_vofa_mode 关成 VOFA_OFF
+        // 图像页只看屏幕，不发送波形。
+    }
+    else if (s_cursor == 2u)
+    {
+        balance_action();
     }
     else
     {
-        balance_action();
+        set_page(MENU_PAGE_RUN_TEST);
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     处理无线 Run Test 页的启停与返回
+// 参数说明     up/down/enter/back 上移/下移/确认/返回事件
+// 返回参数     void
+// 使用示例     handle_run_test(up, down, enter, back);
+//-------------------------------------------------------------------------------------------------------------------
+static void handle_run_test(uint8 up, uint8 down, uint8 enter, uint8 back)
+{
+    if (back)
+    {
+        if (control_remote_running()) control_remote_stop();
+        s_balance_on = 0;
+        set_page(MENU_PAGE_MAIN);
+        return;
+    }
+
+    if (up) move_cursor(-1);
+    if (down) move_cursor(1);
+    if (!enter) return;
+
+    if (s_cursor == 0u)
+    {
+        if (control_remote_running())
+        {
+            control_remote_stop();
+            s_balance_on = 0;
+            menu_status("REMOTE STOPPED");
+        }
+        else if (control_remote_start())
+        {
+            s_balance_on = 1;
+            menu_status("REMOTE RUNNING");
+        }
+        else
+        {
+            menu_status(test_status_text(control_test_last_status()));
+        }
+        s_dirty = 1;
+    }
+    else
+    {
+        if (control_remote_running()) control_remote_stop();
+        s_balance_on = 0;
+        set_page(MENU_PAGE_MAIN);
     }
 }
 
@@ -1440,7 +1652,10 @@ static void handle_group(uint8 up, uint8 down, uint8 enter, uint8 back)
     {
         if (!group_param_edit_allowed(group, s_cursor))
         {
-            menu_status("PARAM NOT IN TEST");
+            if (group->kind == GROUP_KIND_ODOMETRY)
+                menu_status("STOP 1M TEST FIRST");
+            else
+                menu_status("PARAM NOT IN TEST");
             return;
         }
         s_editing = 1;
@@ -1632,7 +1847,6 @@ void menu_run(void)
     if (s_balance_on && start_flag != START_BALANCE)
     {
         s_balance_on = 0;
-        if (g_vofa_mode == VOFA_BAL) g_vofa_mode = VOFA_OFF;
         menu_status(test_status_text(control_test_last_status()));
         s_dirty = 1;
     }
@@ -1654,6 +1868,9 @@ void menu_run(void)
         case MENU_PAGE_IMAGE:
             handle_image(up, down, enter, back);
             return;
+        case MENU_PAGE_RUN_TEST:
+            handle_run_test(up, down, enter, back);
+            break;
         default:
             set_page(MENU_PAGE_MAIN);
             break;
@@ -1661,12 +1878,14 @@ void menu_run(void)
 
     if ((s_page == MENU_PAGE_MAIN ||
          s_page == MENU_PAGE_ATTITUDE ||
-         s_page == MENU_PAGE_GROUP) &&
+         s_page == MENU_PAGE_GROUP ||
+         s_page == MENU_PAGE_RUN_TEST) &&
         (uint32)(now - s_last_live_ms) >= UI_LIVE_PERIOD_MS)
     {
         s_last_live_ms = now;
         if (s_page == MENU_PAGE_MAIN)          render_main_live();
         else if (s_page == MENU_PAGE_ATTITUDE) render_attitude_live();
+        else if (s_page == MENU_PAGE_RUN_TEST) render_run_test_live();
         else
         {
             render_group_live();

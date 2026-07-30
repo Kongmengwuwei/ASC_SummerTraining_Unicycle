@@ -2,8 +2,6 @@
 
 #include "board_config.h"
 
-// CYT2BL3 双路无刷驱动的 UART3 协议层
-
 #define W_MOTOR_FRAME_HEAD       (0xA5u)    // 帧头
 #define W_MOTOR_SET_DUTY_CMD     (0x01u)    // 设占空比功能字
 #define W_MOTOR_GET_SPEED_CMD    (0x02u)    // 请求/回传转速功能字

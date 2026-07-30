@@ -1,12 +1,6 @@
 #include "Y_Motor.h"
-
 #include <stddef.h>
-
 #include "board_config.h"
-
-// 行进轮 C：DRV8701E 通道 1，DIR = P21_4，PWM = P21_5。
-// 编码器是 TIM2 的脉冲方向模式，P33_7 收脉冲、P33_6 收方向。
-// 5ms 读一次硬件计数并清零，内部再累计成 20ms 速度窗口供 Pitch 速度环使用。
 
 #define Y_MOTOR_SPEED_WINDOW_SAMPLES  (CTRL_DIV_SPEED / Y_MOTOR_ENCODER_PERIOD_MS)
 
@@ -184,4 +178,61 @@ int32 Y_Motor_GetTotalCount(void)
 
     interrupt_global_enable(interrupt_state);
     return total;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将 C 轮 20ms 编码器增量换算为实际线速度
+// 参数说明     count_20ms      C 轮编码器增量(counts/20ms)
+// 返回参数     float           实际线速度(m/s)
+// 使用示例     float speed = Y_Motor_Count20msToMps(Y_Motor_GetSpeed20ms());
+//-------------------------------------------------------------------------------------------------------------------
+float Y_Motor_Count20msToMps(float count_20ms)
+{
+    if (ODOM_COUNTS_PER_M <= 0.0f) return 0.0f;
+    return count_20ms * 1000.0f / (ODOM_COUNTS_PER_M * (float)CTRL_DIV_SPEED);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将目标线速度换算为 Pitch 速度环使用的 20ms 编码器目标
+// 参数说明     speed_mps       目标线速度(m/s)
+// 返回参数     float           编码器速度目标(counts/20ms)
+// 使用示例     float target = Y_Motor_MpsToCount20ms(0.20f);
+//-------------------------------------------------------------------------------------------------------------------
+float Y_Motor_MpsToCount20ms(float speed_mps)
+{
+    return speed_mps * ODOM_COUNTS_PER_M * (float)CTRL_DIV_SPEED / 1000.0f;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将 C 轮累计编码器计数换算为实际行进距离
+// 参数说明     count           C 轮累计编码器计数
+// 返回参数     float           有符号行进距离(m)
+// 使用示例     float distance = Y_Motor_CountToMeter(Y_Motor_GetTotalCount());
+//-------------------------------------------------------------------------------------------------------------------
+float Y_Motor_CountToMeter(int32 count)
+{
+    if (ODOM_COUNTS_PER_M <= 0.0f) return 0.0f;
+    return (float)count / ODOM_COUNTS_PER_M;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读取 C 轮当前实际线速度
+// 参数说明     void
+// 返回参数     float           实际线速度(m/s)
+// 使用示例     float speed = Y_Motor_GetSpeedMps();
+//-------------------------------------------------------------------------------------------------------------------
+float Y_Motor_GetSpeedMps(void)
+{
+    return Y_Motor_Count20msToMps((float)Y_Motor_GetSpeed20ms());
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读取 C 轮自上次清零以来的实际行进距离
+// 参数说明     void
+// 返回参数     float           有符号行进距离(m)
+// 使用示例     float distance = Y_Motor_GetDistanceMeter();
+//-------------------------------------------------------------------------------------------------------------------
+float Y_Motor_GetDistanceMeter(void)
+{
+    return Y_Motor_CountToMeter(Y_Motor_GetTotalCount());
 }

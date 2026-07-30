@@ -191,10 +191,6 @@ static void mahony_update(float gyro_x_dps,
         ey = az * predicted_x - ax * predicted_z;
         ez = ax * predicted_y - ay * predicted_x;
 
-        // 零偏估计走 Mahony 原式 b_dot = -Ki * e，下面再用 gyro - b 扣掉，两处一负一负才是负反馈。
-        // 这里与 imu.py 有意不同：imu.py 用的是 b += Ki*e 再减，I 路与 P 路反号，
-        // 闭环是鞍点，零偏会以约 250s 的时间常数单向跑到钳位。
-        // imu.py 只输出 yaw，而六轴下 ez≈0，X/Y 这条路在那边从未被激励，所以没暴露出来。
         if (PY_MAHONY_KI > 0.0f)
         {
             gyro_bias_x = constrain_float(
