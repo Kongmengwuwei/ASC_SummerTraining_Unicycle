@@ -64,6 +64,7 @@ typedef enum
     GROUP_KIND_ZERO,        // 在线抓当前姿态角当机械零点
     GROUP_KIND_ELEMENT,     // 元素使能与阈值，实时显示识别到的元素，无动作行
     GROUP_KIND_ODOMETRY,    // C 轮每米脉冲标定与 1m 验证
+    GROUP_KIND_LEAN,        // 压弯动态零点，纯参数页，无动作行也无实时行
 } group_kind_t;
 
 // 一个可编辑参数行
@@ -128,6 +129,18 @@ static const menu_param_item_t s_yaw_items[] =
     { "Angle Kp", "y_angle_kp", 0.1f,   2 },    // 落点 1~5
     { "Angle Ki", "y_angle_ki", 0.01f,  3 },
     { "Angle Kd", "y_angle_kd", 0.1f,   2 }
+};
+
+// 压弯动态零点。稳态倾角在模式 1 下等于 K2×v×ω，所以 K2 是唯一的物理增益
+// （理论值 0.102，推导见 board_config.h），K1 只决定多快趋近，不决定倾多少。
+// Mode 步长给 2 保证一次按键就在 0/1 之间翻。
+static const menu_param_item_t s_lean_items[] =
+{
+    { "K1 Rate",  "lean_k1",         0.0002f, 4 },   // 趋近速率，落点 0.002 附近
+    { "K2 v*w",   "lean_k2",         0.005f,  3 },   // 物理增益，理论 0.102，实车 0.05~0.2
+    { "Limit",    "lean_limit",      0.5f,    1 },   // 模式 0 的固定限幅，模式 1 的兜底(°)
+    { "Mode 0/1", "lean_limit_mode", 2.0f,    0 },   // 0=固定限幅 1=动态限幅
+    { "Slew",     "lean_slew",       0.01f,   2 }    // 零点变化速率(°/5ms 拍)
 };
 
 static const menu_param_item_t s_camera_items[] =
@@ -204,7 +217,8 @@ static const menu_group_t s_groups[] =
     { "Roll",   s_roll_items,   MENU_ITEMS_OF(s_roll_items),   TUNE_AXIS_ROLL,  3, GROUP_KIND_AXIS   },
     { "Pitch",  s_pitch_items,  MENU_ITEMS_OF(s_pitch_items),  TUNE_AXIS_PITCH, 3, GROUP_KIND_AXIS   },
     { "Yaw",    s_yaw_items,    MENU_ITEMS_OF(s_yaw_items),    TUNE_AXIS_YAW,   2, GROUP_KIND_AXIS   },
-    // 下面五页不走 control_test_start()，axis 填什么都不会被读到
+    // 下面六页不走 control_test_start()，axis 填什么都不会被读到
+    { "Lean",    s_lean_items,    MENU_ITEMS_OF(s_lean_items),    TUNE_AXIS_ROLL, 0, GROUP_KIND_LEAN    },
     { "Camera",  s_camera_items,  MENU_ITEMS_OF(s_camera_items),  TUNE_AXIS_YAW,  0, GROUP_KIND_CAMERA  },
     { "Element", s_element_items, MENU_ITEMS_OF(s_element_items), TUNE_AXIS_YAW,  0, GROUP_KIND_ELEMENT },
     { "Motor",   s_motor_items,   MENU_ITEMS_OF(s_motor_items),   TUNE_AXIS_ROLL, 6, GROUP_KIND_MOTOR   },
@@ -217,6 +231,7 @@ typedef char menu_group_items_fit[
     (MENU_ITEMS_OF(s_roll_items)    <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_pitch_items)   <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_yaw_items)     <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_lean_items)    <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_camera_items)  <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_element_items) <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_motor_items)   <= UI_MAX_GROUP_ITEMS &&
@@ -229,6 +244,7 @@ static const char * const s_param_page_names[] =
     "Roll",
     "Pitch",
     "Yaw",
+    "Lean",
     "Camera",
     "Element",
     "Motor",

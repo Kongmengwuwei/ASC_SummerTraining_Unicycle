@@ -322,29 +322,34 @@ static void speed_ramp_update(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     更新压弯动态零点的目标值：有转向需求时按转角累加，直行时按 LEAN_DECAY 衰减回 0
-// 参数说明     turn            转向外环输出，即内环目标角速度，代表期望转弯快慢
+// 函数简介     更新压弯动态零点的目标值：真的在转弯时按横摆角速度累加，直行时按 LEAN_DECAY 衰减回 0
+// 参数说明     yaw_rate        实测横摆角速度(°/s)，即 tan φ = v·ω/g 里的 ω
 // 返回参数     float           压弯零点目标值(°)，再经 lean_slew_update() 限速率后才生效
-// 使用示例     s_lean_raw = lean_offset_update(y_angle_pid.out);
+// 使用示例     s_lean_raw = lean_offset_update(imu.gyro_z);
 //-------------------------------------------------------------------------------------------------------------------
-static float lean_offset_update(float turn)
+static float lean_offset_update(float yaw_rate)
 {
     float offset = s_lean_raw;
     float limit;
 
-    // 压弯是"过弯时车往内侧倾"，只在真的在走的时候才有意义。
-    // s_speed_ramp==0 就是原地(Balance 的 g_target_distance 恒 0)，此时没有弯可压，
-    // 再让 Yaw 外环的输出去挪横滚目标，就是拿一个没整定的环去命令车体歪几度。
-    // 实测这条路径能把 roll 目标顶到 ±LEAN_LIMIT(10°)，车追到 -23°、A/B 一半时间在极速
-    if (s_speed_ramp != 0.0f && fabsf(turn) > LEAN_TURN_DEAD)   // 在走且有转向需求，按转角累加偏移
-        offset += turn * LEAN_K1;
-    else                                                // 原地、直行或停车，缓慢衰减回 0
-        offset *= LEAN_DECAY;
+    // 驱动量必须是"车实际在转多快"，不能用 y_angle_pid.out(航向误差×kp)。
+    // 用航向误差的后果：直行时航向必然慢慢漂，5° 的静态误差在 y_angle_kp=14 下就是 70 的"需求"，
+    // 车根本没转，偏移却按 70×K1 每 5ms 累加，0.36 秒顶到限幅，横滚角度环老老实实把车歪过去然后倒。
+    // 而且车歪了会真的转向，与 Yaw 环形成一条没人整定过的正反馈。
+    // 换成实测 ω 之后，直行时它自然接近 0，静态航向误差再大也不会凭空产生压弯；
+    // 转向仍然完全由 Yaw 串级按航向误差执行，这里只管"该歪多少"。
+    //
+    // 压弯只在真的在走的时候有意义：原地(Balance 的 g_target_distance 恒 0)没有弯可压。
+    // 模式 1 下 limit ∝ v，v=0 时限幅自然为 0，这道判据是冗余保护
+    if (s_speed_ramp != 0.0f && fabsf(yaw_rate) > LEAN_TURN_DEAD)
+        offset += yaw_rate * LEAN_K1;                   // 在走且真的在转，按横摆角速度累加
+    else
+        offset *= LEAN_DECAY;                           // 原地、直行或停车，缓慢衰减回 0
 
-    if (LEAN_LIMIT_MODE == 0)                           // 固定限幅
+    if (LEAN_LIMIT_MODE == 0)                           // 固定限幅，K2 未标定前的安全兜底
         limit = LEAN_LIMIT;
-    else                                                // 动态限幅：速度越快转得越急，允许倾得越多
-        limit = fabsf((float)Y_Motor_GetSpeed20ms() * turn * LEAN_K2);
+    else                                                // 动态限幅 = K2·v·ω，即协调转弯的理论倾角
+        limit = fabsf(Y_Motor_GetSpeedMps() * yaw_rate * LEAN_K2);
 
     limit = constrain_float(limit, 0, LEAN_LIMIT_MAX);  // 压弯角硬上限
     s_lean_raw = constrain_float(offset, -limit, limit);
@@ -543,8 +548,10 @@ static void cascade_run(void)
     }
 
     g_pwm_yaw = yaw_cascade_ctrl(run5);
-    if (run5)                                            // 压弯零点与转向外环同拍，系数按 5ms 节拍整定
-        g_lean_offset = lean_slew_update(lean_offset_update(y_angle_pid.out));
+    // 压弯零点 5ms 一拍，系数按这个节拍整定。驱动量是实测横摆角速度，不是转向外环输出，
+    // 理由见 lean_offset_update()。转向本身仍由上面的 yaw_cascade_ctrl() 按航向误差执行
+    if (run5)
+        g_lean_offset = lean_slew_update(lean_offset_update(imu.gyro_z));
     if (run20) speed_ramp_update();                      // 速度目标斜坡与速度环同拍
     g_pwm_roll  = roll_cascade_ctrl(g_roll_zero + g_lean_offset, run5, run20);
     g_pwm_pitch = pitch_cascade_ctrl(g_pitch_zero, run5, run20);

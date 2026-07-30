@@ -107,15 +107,30 @@
 #define Y_RATE_KD_DEFAULT       (0.0f)         // 航向角速度内环 D
 #define Y_RATE_IMAX             (100.0f)       // 航向角速度内环积分限幅
 
-// 压弯动态零点
-#define LEAN_K1_DEFAULT         (0.002f)       // 转向比例系数
-#define LEAN_K2_DEFAULT         (0.0001f)      // 速度相关限幅系数
-#define LEAN_LIMIT_DEFAULT      (10.0f)        // 固定限幅(°)
-#define LEAN_LIMIT_MODE_DEFAULT (0)            // 0=固定限幅，1=动态限幅
+// 压弯动态零点。转弯时主动把车体往弯道内侧歪，让重力分量提供向心力，
+// 从而减少对动量轮差速的需求 —— 目的不是转得更快，是省下动量预算。
+//
+// 物理关系是标准的协调转弯：tan φ = v·ω / g，小角度下
+//     φ(°) = 57.3 × v(m/s) × ω(rad/s) / 9.81 = 0.102 × v(m/s) × ω(°/s)
+// 所以动态限幅取 LEAN_K2 × v × ω，K2 的理论值就是 0.102。
+// v 用 Y_Motor_GetSpeedMps() 而不是 counts/20ms：K2 才能是与里程标定无关的物理量，
+// 否则 odom_counts_per_m 一改 K2 就得重标。
+// 验算：v=0.5 m/s、ω=30°/s → 0.102×0.5×30 = 1.53°，与 v·ω/g = 0.262/9.81 一致。
+//
+// 累加式 (raw += ω×K1) 只是趋近手段，稳态值等于限幅本身，所以：
+//     模式 1：稳态 = K2×v×ω，K2 是物理增益，K1 只决定多快趋近  ← 默认走这条
+//     模式 0：稳态 = LEAN_LIMIT 固定值，与速度转角都无关，只作为 K2 未标定前的安全兜底
+// 模式 0 的限幅必须给小（2~3°）。曾经默认是 10°，配上只加不减的累加器，
+// 结果是任何持续转弯都恒定歪 10°，实车直接倒。
+#define LEAN_K1_DEFAULT         (0.002f)       // 趋近速率系数(°/(°/s)/拍)，不决定稳态倾角
+#define LEAN_K2_DEFAULT         (0.102f)       // 动态限幅系数，= tan φ ≈ v·ω/g 的理论值
+#define LEAN_LIMIT_DEFAULT      (3.0f)         // 模式 0 的固定限幅，也是模式 1 的兜底(°)
+#define LEAN_LIMIT_MODE_DEFAULT (1)            // 0=固定限幅，1=动态限幅 K2×v×ω
 #define LEAN_SLEW_DEFAULT       (0.08f)        // 零点变化速率(°/5ms 拍)，0=不限速率
-#define LEAN_TURN_DEAD          (1.0f)         // 转向死区
-#define LEAN_DECAY              (0.98f)        // 回零衰减系数
-#define LEAN_LIMIT_MAX          (15.0f)        // 最大限幅(°)
+// 死区作用在实测横摆角速度上，挡住陀螺噪声，不再是"航向误差死区"
+#define LEAN_TURN_DEAD          (1.0f)         // 横摆角速度死区(°/s)
+#define LEAN_DECAY              (0.98f)        // 回零衰减系数(每 5ms 拍)，时间常数约 250ms
+#define LEAN_LIMIT_MAX          (15.0f)        // 压弯角硬上限(°)
 
 // 电机输出限幅与死区
 // A/B 的起转死区由驱动内部处理，主控不做死区补偿。

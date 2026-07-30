@@ -46,7 +46,8 @@ const param_desc_t g_param_table[] =
     { "y_rate_kd",        &g_param.y_rate_kd,        1, -200.0f,  200.0f },
     // 压弯
     { "lean_k1",          &g_param.lean_k1,          1, -1.0f,    1.0f   },
-    { "lean_k2",          &g_param.lean_k2,          1, -0.1f,    0.1f   },
+    // 上限必须大于理论值 0.102，原来的 0.1 会把默认值钳掉
+    { "lean_k2",          &g_param.lean_k2,          1, -1.0f,    1.0f   },
     { "lean_limit",       &g_param.lean_limit,       1, 0.0f,     15.0f  },
     { "lean_limit_mode",  &g_param.lean_limit_mode,  0, 0.0f,     1.0f   },
     { "lean_slew",        &g_param.lean_slew,        1, 0.0f,     5.0f   },
