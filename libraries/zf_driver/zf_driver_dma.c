@@ -1,35 +1,35 @@
 /*********************************************************************************************************************
-* TC264 Opensourec Library ¼´£¨TC264 ¿ªÔ´¿â£©ÊÇÒ»¸ö»ùÓÚ¹Ù·½ SDK ½Ó¿ÚµÄµÚÈý·½¿ªÔ´¿â
-* Copyright (c) 2022 SEEKFREE Öð·É¿Æ¼¼
+* TC264 Opensourec Library å³ï¼ˆTC264 å¼€æºåº“ï¼‰æ˜¯ä¸€ä¸ªåŸºäºŽå®˜æ–¹ SDK æŽ¥å£çš„ç¬¬ä¸‰æ–¹å¼€æºåº“
+* Copyright (c) 2022 SEEKFREE é€é£žç§‘æŠ€
 *
-* ±¾ÎÄ¼þÊÇ TC264 ¿ªÔ´¿âµÄÒ»²¿·Ö
+* æœ¬æ–‡ä»¶æ˜¯ TC264 å¼€æºåº“çš„ä¸€éƒ¨åˆ†
 *
-* TC264 ¿ªÔ´¿â ÊÇÃâ·ÑÈí¼þ
-* Äú¿ÉÒÔ¸ù¾Ý×ÔÓÉÈí¼þ»ù½ð»á·¢²¼µÄ GPL£¨GNU General Public License£¬¼´ GNUÍ¨ÓÃ¹«¹²Ðí¿ÉÖ¤£©µÄÌõ¿î
-* ¼´ GPL µÄµÚ3°æ£¨¼´ GPL3.0£©»ò£¨ÄúÑ¡ÔñµÄ£©ÈÎºÎºóÀ´µÄ°æ±¾£¬ÖØÐÂ·¢²¼ºÍ/»òÐÞ¸ÄËü
+* TC264 å¼€æºåº“ æ˜¯å…è´¹è½¯ä»¶
+* æ‚¨å¯ä»¥æ ¹æ®è‡ªç”±è½¯ä»¶åŸºé‡‘ä¼šå‘å¸ƒçš„ GPLï¼ˆGNU General Public Licenseï¼Œå³ GNUé€šç”¨å…¬å…±è®¸å¯è¯ï¼‰çš„æ¡æ¬¾
+* å³ GPL çš„ç¬¬3ç‰ˆï¼ˆå³ GPL3.0ï¼‰æˆ–ï¼ˆæ‚¨é€‰æ‹©çš„ï¼‰ä»»ä½•åŽæ¥çš„ç‰ˆæœ¬ï¼Œé‡æ–°å‘å¸ƒå’Œ/æˆ–ä¿®æ”¹å®ƒ
 *
-* ±¾¿ªÔ´¿âµÄ·¢²¼ÊÇÏ£ÍûËüÄÜ·¢»Ó×÷ÓÃ£¬µ«²¢Î´¶ÔÆä×÷ÈÎºÎµÄ±£Ö¤
-* ÉõÖÁÃ»ÓÐÒþº¬µÄÊÊÏúÐÔ»òÊÊºÏÌØ¶¨ÓÃÍ¾µÄ±£Ö¤
-* ¸ü¶àÏ¸½ÚÇë²Î¼û GPL
+* æœ¬å¼€æºåº“çš„å‘å¸ƒæ˜¯å¸Œæœ›å®ƒèƒ½å‘æŒ¥ä½œç”¨ï¼Œä½†å¹¶æœªå¯¹å…¶ä½œä»»ä½•çš„ä¿è¯
+* ç”šè‡³æ²¡æœ‰éšå«çš„é€‚é”€æ€§æˆ–é€‚åˆç‰¹å®šç”¨é€”çš„ä¿è¯
+* æ›´å¤šç»†èŠ‚è¯·å‚è§ GPL
 *
-* ÄúÓ¦¸ÃÔÚÊÕµ½±¾¿ªÔ´¿âµÄÍ¬Ê±ÊÕµ½Ò»·Ý GPL µÄ¸±±¾
-* Èç¹ûÃ»ÓÐ£¬Çë²ÎÔÄ<https://www.gnu.org/licenses/>
+* æ‚¨åº”è¯¥åœ¨æ”¶åˆ°æœ¬å¼€æºåº“çš„åŒæ—¶æ”¶åˆ°ä¸€ä»½ GPL çš„å‰¯æœ¬
+* å¦‚æžœæ²¡æœ‰ï¼Œè¯·å‚é˜…<https://www.gnu.org/licenses/>
 *
-* ¶îÍâ×¢Ã÷£º
-* ±¾¿ªÔ´¿âÊ¹ÓÃ GPL3.0 ¿ªÔ´Ðí¿ÉÖ¤Ð­Òé ÒÔÉÏÐí¿ÉÉêÃ÷ÎªÒëÎÄ°æ±¾
-* Ðí¿ÉÉêÃ÷Ó¢ÎÄ°æÔÚ libraries/doc ÎÄ¼þ¼ÐÏÂµÄ GPL3_permission_statement.txt ÎÄ¼þÖÐ
-* Ðí¿ÉÖ¤¸±±¾ÔÚ libraries ÎÄ¼þ¼ÐÏÂ ¼´¸ÃÎÄ¼þ¼ÐÏÂµÄ LICENSE ÎÄ¼þ
-* »¶Ó­¸÷Î»Ê¹ÓÃ²¢´«²¥±¾³ÌÐò µ«ÐÞ¸ÄÄÚÈÝÊ±±ØÐë±£ÁôÖð·É¿Æ¼¼µÄ°æÈ¨ÉùÃ÷£¨¼´±¾ÉùÃ÷£©
+* é¢å¤–æ³¨æ˜Žï¼š
+* æœ¬å¼€æºåº“ä½¿ç”¨ GPL3.0 å¼€æºè®¸å¯è¯åè®® ä»¥ä¸Šè®¸å¯ç”³æ˜Žä¸ºè¯‘æ–‡ç‰ˆæœ¬
+* è®¸å¯ç”³æ˜Žè‹±æ–‡ç‰ˆåœ¨ libraries/doc æ–‡ä»¶å¤¹ä¸‹çš„ GPL3_permission_statement.txt æ–‡ä»¶ä¸­
+* è®¸å¯è¯å‰¯æœ¬åœ¨ libraries æ–‡ä»¶å¤¹ä¸‹ å³è¯¥æ–‡ä»¶å¤¹ä¸‹çš„ LICENSE æ–‡ä»¶
+* æ¬¢è¿Žå„ä½ä½¿ç”¨å¹¶ä¼ æ’­æœ¬ç¨‹åº ä½†ä¿®æ”¹å†…å®¹æ—¶å¿…é¡»ä¿ç•™é€é£žç§‘æŠ€çš„ç‰ˆæƒå£°æ˜Žï¼ˆå³æœ¬å£°æ˜Žï¼‰
 *
-* ÎÄ¼þÃû³Æ          zf_driver_dma
-* ¹«Ë¾Ãû³Æ          ³É¶¼Öð·É¿Æ¼¼ÓÐÏÞ¹«Ë¾
-* °æ±¾ÐÅÏ¢          ²é¿´ libraries/doc ÎÄ¼þ¼ÐÄÚ version ÎÄ¼þ °æ±¾ËµÃ÷
-* ¿ª·¢»·¾³          ADS v1.10.2
-* ÊÊÓÃÆ½Ì¨          TC264D
-* µêÆÌÁ´½Ó          https://seekfree.taobao.com/
+* æ–‡ä»¶åç§°          zf_driver_dma
+* å…¬å¸åç§°          æˆéƒ½é€é£žç§‘æŠ€æœ‰é™å…¬å¸
+* ç‰ˆæœ¬ä¿¡æ¯          æŸ¥çœ‹ libraries/doc æ–‡ä»¶å¤¹å†… version æ–‡ä»¶ ç‰ˆæœ¬è¯´æ˜Ž
+* å¼€å‘çŽ¯å¢ƒ          ADS v1.10.2
+* é€‚ç”¨å¹³å°          TC264D
+* åº—é“ºé“¾æŽ¥          https://seekfree.taobao.com/
 *
-* ÐÞ¸Ä¼ÇÂ¼
-* ÈÕÆÚ              ×÷Õß                ±¸×¢
+* ä¿®æ”¹è®°å½•
+* æ—¥æœŸ              ä½œè€…                å¤‡æ³¨
 * 2022-09-15       pudding            first version
 ********************************************************************************************************************/
 
@@ -41,37 +41,39 @@
 
 typedef struct
 {
-    Ifx_DMA_CH linked_list[10];              // DMAÁ´±í
-    IfxDma_Dma_Channel channel;             // DMAÍ¨µÀ¾ä±ú
+    Ifx_DMA_CH linked_list[10];              // DMAé“¾è¡¨
+    IfxDma_Dma_Channel channel;             // DMAé€šé“å¥æŸ„
 }DMA_LINK;
 
-#if(0 == DMA_INT_SERVICE)
+#if(0 == DMA_DATA_CORE_ID)
 #pragma section all "cpu0_dsram"
 IFX_ALIGN(256) DMA_LINK dma_link_list;
 
-#elif(1 == DMA_INT_SERVICE)
+#elif(1 == DMA_DATA_CORE_ID)
 #pragma section all "cpu1_dsram"
 IFX_ALIGN(256) DMA_LINK dma_link_list;
 
+#else
+#error "DMA_DATA_CORE_ID must be 0 or 1"
 #endif
 #pragma section all restore
 //-------------------------------------------------------------------------------------------------------------------
-// º¯Êý¼ò½é      dma³õÊ¼»¯
-// ²ÎÊýËµÃ÷      dma_ch              Ñ¡ÔñDMAÍ¨µÀ
-// ²ÎÊýËµÃ÷      source_addr         ÉèÖÃÔ´µØÖ·
-// ²ÎÊýËµÃ÷      destination_addr    ÉèÖÃÄ¿µÄµØÖ·
-// ²ÎÊýËµÃ÷      exti_pin            ÉèÖÃ´¥·¢µÄeruÍ¨µÀ
-// ²ÎÊýËµÃ÷      trigger             ÉèÖÃ´¥·¢·½Ê½
-// ²ÎÊýËµÃ÷      dma_count           ÉèÖÃdma°áÒÆ´ÎÊý
-// ·µ»Ø²ÎÊý      uint8
-// Ê¹ÓÃÊ¾Àý      dma_init(MT9V03X_DMA_CH, MT9V03X_DATA_ADD, mt9v03x_image[0], MT9V03X_PCLK_PIN, EXTI_TRIGGER_RISING, MT9V03X_IMAGE_SIZE);
-// ±¸×¢ÐÅÏ¢
+// å‡½æ•°ç®€ä»‹      dmaåˆå§‹åŒ–
+// å‚æ•°è¯´æ˜Ž      dma_ch              é€‰æ‹©DMAé€šé“
+// å‚æ•°è¯´æ˜Ž      source_addr         è®¾ç½®æºåœ°å€
+// å‚æ•°è¯´æ˜Ž      destination_addr    è®¾ç½®ç›®çš„åœ°å€
+// å‚æ•°è¯´æ˜Ž      exti_pin            è®¾ç½®è§¦å‘çš„erué€šé“
+// å‚æ•°è¯´æ˜Ž      trigger             è®¾ç½®è§¦å‘æ–¹å¼
+// å‚æ•°è¯´æ˜Ž      dma_count           è®¾ç½®dmaæ¬ç§»æ¬¡æ•°
+// è¿”å›žå‚æ•°      uint8
+// ä½¿ç”¨ç¤ºä¾‹      dma_init(MT9V03X_DMA_CH, MT9V03X_DATA_ADD, mt9v03x_image[0], MT9V03X_PCLK_PIN, EXTI_TRIGGER_RISING, MT9V03X_IMAGE_SIZE);
+// å¤‡æ³¨ä¿¡æ¯
 //-------------------------------------------------------------------------------------------------------------------
 uint8 dma_init (IfxDma_ChannelId dma_ch, uint8 *source_addr, uint8 *destination_addr, exti_pin_enum exti_pin, exti_trigger_enum trigger, uint32 dma_count)
 {
     IfxDma_Dma_Channel dmaChn;
 
-    exti_init(exti_pin, trigger);               // eru´¥·¢DMAÍ¨µÀºÅ   ÔÚeruÎÄ¼þÖÐÉèÖÃeruµÄÓÅÏÈ¼¶£¬¼´Îª´¥·¢µÄÍ¨µÀ
+    exti_init(exti_pin, trigger);               // eruè§¦å‘DMAé€šé“å·   åœ¨eruæ–‡ä»¶ä¸­è®¾ç½®eruçš„ä¼˜å…ˆçº§ï¼Œå³ä¸ºè§¦å‘çš„é€šé“
 
     IfxDma_Dma_Config        dmaConfig;
     IfxDma_Dma_initModuleConfig(&dmaConfig, &MODULE_DMA);
@@ -85,7 +87,7 @@ uint8 dma_init (IfxDma_ChannelId dma_ch, uint8 *source_addr, uint8 *destination_
     uint8  list_num, i;
     uint32 single_channel_dma_count;
 
-    zf_assert(!(dma_count % 8));                  // ´«Êä´ÎÊý±ØÐëÎª8µÄ±¶Êý
+    zf_assert(!(dma_count % 8));                  // ä¼ è¾“æ¬¡æ•°å¿…é¡»ä¸º8çš„å€æ•°
 
 
     list_num = 1;
@@ -166,18 +168,18 @@ uint8 dma_init (IfxDma_ChannelId dma_ch, uint8 *source_addr, uint8 *destination_
         }
     }
 
-    IfxDma_Dma_getSrcPointer(&dma_link_list.channel)->B.CLRR = 1;
+    IfxDma_Dma_getSrcPointer(&dmaChn)->B.CLRR = 1;
 
     return list_num;
 }
 
 
 //-------------------------------------------------------------------------------------------------------------------
-// º¯Êý¼ò½é     dma ´«Êä½ûÖ¹
-// ²ÎÊýËµÃ÷     ch              Ñ¡Ôñ dma Í¨µÀ (Ïê¼û zf_driver_dma.h ÖÐÃ¶¾Ù dma_channel_enum ¶¨Òå)
-// ·µ»Ø²ÎÊý     void
-// Ê¹ÓÃÊ¾Àý     dma_disable(MT9V03X_DMA_CH);
-// ±¸×¢ÐÅÏ¢
+// å‡½æ•°ç®€ä»‹     dma ä¼ è¾“ç¦æ­¢
+// å‚æ•°è¯´æ˜Ž     ch              é€‰æ‹© dma é€šé“ (è¯¦è§ zf_driver_dma.h ä¸­æžšä¸¾ dma_channel_enum å®šä¹‰)
+// è¿”å›žå‚æ•°     void
+// ä½¿ç”¨ç¤ºä¾‹     dma_disable(MT9V03X_DMA_CH);
+// å¤‡æ³¨ä¿¡æ¯
 //-------------------------------------------------------------------------------------------------------------------
 void dma_disable (IfxDma_ChannelId dma_ch)
 {
@@ -186,11 +188,11 @@ void dma_disable (IfxDma_ChannelId dma_ch)
 
 
 //-------------------------------------------------------------------------------------------------------------------
-// º¯Êý¼ò½é     dma ´«ÊäÊ¹ÄÜ
-// ²ÎÊýËµÃ÷     ch              Ñ¡Ôñ dma Í¨µÀ (Ïê¼û zf_driver_dma.h ÖÐÃ¶¾Ù dma_channel_enum ¶¨Òå)
-// ·µ»Ø²ÎÊý     void
-// Ê¹ÓÃÊ¾Àý     dma_enable(MT9V03X_DMA_CH);
-// ±¸×¢ÐÅÏ¢
+// å‡½æ•°ç®€ä»‹     dma ä¼ è¾“ä½¿èƒ½
+// å‚æ•°è¯´æ˜Ž     ch              é€‰æ‹© dma é€šé“ (è¯¦è§ zf_driver_dma.h ä¸­æžšä¸¾ dma_channel_enum å®šä¹‰)
+// è¿”å›žå‚æ•°     void
+// ä½¿ç”¨ç¤ºä¾‹     dma_enable(MT9V03X_DMA_CH);
+// å¤‡æ³¨ä¿¡æ¯
 //-------------------------------------------------------------------------------------------------------------------
 void dma_enable (IfxDma_ChannelId dma_ch)
 {
