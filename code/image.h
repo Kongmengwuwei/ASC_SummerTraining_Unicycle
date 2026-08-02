@@ -4,10 +4,17 @@
 #include "zf_common_headfile.h"
 #include "board_config.h"
 
-// 循迹算法：大津二值化 -> 八邻域提左右边线 -> 单边补线出中线 -> 多行平均取偏差
-
 #define IMG_WHITE   255                 // 白色像素
 #define IMG_BLACK   0                   // 黑色像素
+
+typedef enum
+{
+    IMAGE_POINT_NONE = 0,
+    IMAGE_POINT_MEASURED,
+    IMAGE_POINT_REPAIRED,
+    IMAGE_POINT_PREDICTED,
+} image_point_source_t;
+
 
 // 一帧的全部中间结果。行号 0 为远端，IMG_H-1 为近端；列号 0 在左，IMG_W-1 在右
 typedef struct
@@ -17,18 +24,25 @@ typedef struct
     int Left_Line[IMG_H];                       // 左边线列坐标
     int Right_Line[IMG_H];                      // 右边线列坐标
     int Mid_Line[IMG_H];                        // 中线列坐标
-    int Road_Wide[IMG_H];                       // 当前赛道宽度
+    int Road_Wide[IMG_H];                       // 沿行方向量到的赛道宽度(Right-Left)
+    int Road_Perp_Wide[IMG_H];                  // 折算到垂直赛道方向的宽度，0=本行没扫到
 
-    int Left_Lost_Flag[IMG_H];                  // 左边线丢失标志
-    int Right_Lost_Flag[IMG_H];                 // 右边线丢失标志
+    int Left_Lost_Flag[IMG_H];                  // 左边线不可用于几何拟合
+    int Right_Lost_Flag[IMG_H];                 // 右边线不可用于几何拟合
     int Mid_Lost_Flag[IMG_H];                   // 中线无效标志
+    uint8 Left_Source[IMG_H];                   // 左边线来源，image_point_source_t
+    uint8 Right_Source[IMG_H];                  // 右边线来源，image_point_source_t
+    uint8 Mid_Source[IMG_H];                    // 中线来源，image_point_source_t
 
     int Search_Stop_Line;                       // 有效前瞻行数
+    int Left_Row_Bottom;                        // 左边线真正量到的最下面一行，-1=没量到
+    int Right_Row_Bottom;                       // 右边线真正量到的最下面一行，-1=没量到
+    int Edge_Row_Bottom;                        // 两侧都实测到的最近行
     int Left_Lost_Counter;                      // 左边线丢失行数
     int Right_Lost_Counter;                     // 右边线丢失行数
     int Both_Lost_Counter;                      // 双边丢失行数
-    int Boundry_Start_Left;                     // 左边线向远端延伸到的最小行号
-    int Boundry_Start_Right;                    // 右边线向远端延伸到的最小行号
+    int Boundry_Start_Left;                     // 从底部向上找到的首个左实测行，-1=未测得
+    int Boundry_Start_Right;                    // 从底部向上找到的首个右实测行，-1=未测得
 
     int Threshold;                              // 本帧大津阈值
     int Contrast;                               // 本帧灰度对比度
@@ -37,26 +51,16 @@ typedef struct
     int Valid_Row_Top;                          // 有效中线远端行
     int Track_Valid;                            // 本帧循迹有效标志
 
-    int Left_Up_Find;                           // 左上角点行
-    int Right_Up_Find;                          // 右上角点行
-    int continuity_change_flag_left;            // 左边线不连续行
-    int continuity_change_flag_right;           // 右边线不连续断点行
 } Image;
 
-// CPU1 图像主链最近一帧耗时，单位为微秒
-typedef struct
-{
-    uint32 binarize_us;                          // 大津阈值与整帧二值化
-    uint32 border_us;                            // 二值图边框处理
-    uint32 edge_us;                              // 八邻域提取左右边线
-    uint32 midline_us;                           // 中线构建
-    uint32 total_us;                             // image_process 总耗时
-} image_profile_t;
-
 extern Image my_image;                          // 图像处理结果
-extern int   Standard_Road_Wide[IMG_H];         // 标准赛宽表
-extern float g_mid_error;                       // 当前中线偏差
-extern image_profile_t g_image_profile;         // 最近一帧图像主链耗时
+extern int   Road_Half_Wide[IMG_H];             // 自适应半赛宽表(像素)，全工程唯一赛宽来源
+extern int   g_err_front_row;                   // 前瞻行，拟合线在这一行求值
+extern float g_mid_error;                       // 前瞻行像素偏差，正=赛道位于车体左侧
+extern float g_track_lateral;                   // 归一化横向偏差，正=赛道位于车体左侧
+extern float g_track_heading;                   // 航向偏差(°)，正=赛道朝向车体左侧
+extern float g_track_curvature;                 // 归一化曲率，正=左弯
+extern float g_track_quality;                   // 循迹质量，0~1
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     初始化图像数据与标准赛宽表
@@ -67,14 +71,6 @@ extern image_profile_t g_image_profile;         // 最近一帧图像主链耗�
 void image_init(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     按近端和远端赛宽重建标准赛宽表，行 0 是远端，行 IMG_H-1 是近端，中间线性插值
-// 参数说明     near_wide/far_wide 近端与远端标准赛道宽度(像素)，内部钳到 [4, IMG_W-4]
-// 返回参数     void
-// 使用示例     image_set_road_wide(133, 30);
-//-------------------------------------------------------------------------------------------------------------------
-void image_set_road_wide(int near_wide, int far_wide);
-
-//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     复制摄像头新帧到图像处理缓冲区
 // 参数说明     void
 // 返回参数     uint8            1=获取成功 0=无新帧
@@ -83,15 +79,31 @@ void image_set_road_wide(int near_wide, int far_wide);
 uint8 image_grab(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     完成大津二值化、八邻域提边与中线构建
-// 参数说明     void
+// 函数简介     完成大津二值化、逐行提边与中线构建
+// 参数说明     allow_width_learning  1=允许更新赛宽表 0=冻结赛宽表
 // 返回参数     void
-// 使用示例     image_process();
+// 使用示例     image_process(1);
 //-------------------------------------------------------------------------------------------------------------------
-void image_process(void);
+void image_process(uint8 allow_width_learning);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     复制当前 180x80 灰度算法帧
+// 函数简介     完成大津二值化与逐行提边
+// 参数说明     allow_width_learning  1=允许更新赛宽表 0=冻结赛宽表
+// 返回参数     void
+// 使用示例     image_process_edges(1);
+//-------------------------------------------------------------------------------------------------------------------
+void image_process_edges(uint8 allow_width_learning);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     根据当前边线构建中线并更新转向几何量
+// 参数说明     void
+// 返回参数     void
+// 使用示例     image_process_finish();
+//-------------------------------------------------------------------------------------------------------------------
+void image_process_finish(void);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     复制当前整帧灰度图
 // 参数说明     destination     目标缓冲区，至少 IMG_W*IMG_H 字节
 // 返回参数     void
 // 使用示例     image_copy_gray(display_pixels);
@@ -99,7 +111,17 @@ void image_process(void);
 void image_copy_gray(uint8 *destination);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     根据左右边线与标准赛宽构建中线
+// 函数简介     从当前帧算出逆透视标定要的四个角点
+// 参数说明     pts              输出，[0..3] = 近左/近右/远左/远右 的列坐标
+// 参数说明     rn/rf            输出，近端行与远端行行号
+// 返回参数     ipm_pick_t       IPM_PICK_OK 或具体的失败原因
+// 参数说明     len_ratio        输出，两个采样行之间的地面距离 / 赛道宽度
+// 使用示例     if (image_ipm_pick_points(pts, &rn, &rf, &ratio) == IPM_PICK_OK) { ... }
+//-------------------------------------------------------------------------------------------------------------------
+ipm_pick_t image_ipm_pick_points(float pts[4], int *rn, int *rf, float *len_ratio);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     根据左右边线与自适应半宽表构建中线
 // 参数说明     void
 // 返回参数     void
 // 使用示例     Image_Build_Mid_Line();
@@ -107,35 +129,69 @@ void image_copy_gray(uint8 *destination);
 void Image_Build_Mid_Line(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     计算指定行区间的平均中线偏差
-// 参数说明     start_point/end_point  远端起始行/近端终止行
-// 返回参数     float            中线平均偏差
-// 使用示例     err = err_sum_average(ERR_FRONT_ROW, ERR_FRONT_ROW + ERR_AVG_ROWS);
+// 函数简介     自适应半宽表是否已经学熟。所有拿 Road_Half_Wide 当基准的"超宽"判据先问它
+// 参数说明     void
+// 返回参数     uint8            1=已学熟，0=还在从上电初值往实测值收敛
+// 使用示例     if (!image_road_wide_ready()) wide_rows = 0;
 //-------------------------------------------------------------------------------------------------------------------
-float err_sum_average(int start_point, int end_point);
+uint8 image_road_wide_ready(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     按局部斜率延长左边线
-// 参数说明     start/end        延长起始行/终止行
-// 返回参数     void
-// 使用示例     Lengthen_Left_Boundry(start, end);
+// 函数简介     读取指定行可供元素判断使用的道路包络
+// 参数说明     row/left/right   图像行、左边界输出、右边界输出
+// 返回参数     uint8            1=包络可信 0=本行没有可信包络
+// 使用示例     if (image_get_track_envelope(row, &left, &right)) { ... }
 //-------------------------------------------------------------------------------------------------------------------
-void Lengthen_Left_Boundry(int start, int end);
+uint8 image_get_track_envelope(int row, int *left, int *right);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     按局部斜率延长右边线
-// 参数说明     start/end        延长起始/终止行
-// 返回参数     void
-// 使用示例     Lengthen_Right_Boundry(start, end);
+// 函数简介     一条边线在前瞻区内直线拟合的平均绝对残差，判断这条边线直不直
+// 参数说明     line/lost       边线数组/丢线标志数组
+// 参数说明     row_bottom      这一侧真正量到边线的最下面一行
+// 返回参数     float           平均残差(像素)，有效行不够返回 -1
+// 使用示例     res = image_edge_residual(my_image.Right_Line, my_image.Right_Lost_Flag,
+//                                        my_image.Right_Row_Bottom);
 //-------------------------------------------------------------------------------------------------------------------
-void Lengthen_Right_Boundry(int start, int end);
+float image_edge_residual(const int *line, const int *lost, int row_bottom);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     搜索左右边线的上角点
-// 参数说明     start/end        近端起始行/远端终止行
+// 函数简介     一次求出左右边线的上下四个角点
+// 参数说明     corner          输出，顺序 [左下, 左上, 右下, 右上]，找不到的置 0
 // 返回参数     void
-// 使用示例     Find_Up_Point(IMG_H-1, 0);
+// 使用示例     Image_Find_Corners(corner);
 //-------------------------------------------------------------------------------------------------------------------
-void Find_Up_Point(int start, int end);
+void Image_Find_Corners(int corner[4]);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     用上下两个角点直线补左边线
+// 参数说明     up_row/down_row  上角点行/下角点行
+// 返回参数     void
+// 使用示例     Image_Fill_Left(l_up, l_down);
+//-------------------------------------------------------------------------------------------------------------------
+void Image_Fill_Left(int up_row, int down_row);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     用上下两个角点直线补右边线
+// 参数说明     up_row/down_row  上角点行/下角点行
+// 返回参数     void
+// 使用示例     Image_Fill_Right(r_up, r_down);
+//-------------------------------------------------------------------------------------------------------------------
+void Image_Fill_Right(int up_row, int down_row);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     拟合上角点以远的左边线，顺着方向补到近端
+// 参数说明     up_row           上角点行
+// 返回参数     uint8            1=补线成功
+// 使用示例     Image_Extend_Left(l_up);
+//-------------------------------------------------------------------------------------------------------------------
+uint8 Image_Extend_Left(int up_row);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     拟合上角点以远的右边线，顺着方向补到近端
+// 参数说明     up_row           上角点行
+// 返回参数     uint8            1=补线成功
+// 使用示例     Image_Extend_Right(r_up);
+//-------------------------------------------------------------------------------------------------------------------
+uint8 Image_Extend_Right(int up_row);
 
 #endif

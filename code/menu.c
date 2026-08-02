@@ -9,7 +9,6 @@
 #include "board_config.h"
 #include "control.h"
 #include "display.h"
-#include "element.h"
 #include "imu.h"
 #include "param.h"
 #include "vision_core.h"
@@ -26,6 +25,9 @@
 #define UI_GRAY        ((uint16)0x7BEFu)
 #define UI_CYAN        ((uint16)0x07FFu)
 
+#define UI_SCREEN_W            (240u)    // 竖屏宽度，与 ips200_set_dir() 的方向一致
+#define UI_CHAR_W              (8u)      // IPS200_8X16_FONT 字宽
+#define UI_MAX_CHARS           (UI_SCREEN_W / UI_CHAR_W)     // 从 x=0 起一行最多的字符数
 #define UI_TITLE_X             (5u)
 #define UI_TITLE_Y             (2u)
 #define UI_LIST_Y              (21u)
@@ -40,8 +42,11 @@
 #define UI_IMAGE_PERIOD_MS     (100u)    // 横屏整帧刷新周期
 #define UI_IMAGE_STALL_MS      (500u)    // 停帧时的状态栏刷新周期，保证 FPS 能掉到 0
 #define UI_RESET_CONFIRM_MS    (3000u)   // Reset 二次确认窗口
+#define UI_IPM_AUTO_MS         (2000u)   // 标定页 READY 连续保持这么久就自动标定
 #define UI_BALANCE_CONFIRM_MS  (3000u)   // Balance 二次确认窗口
-#define UI_MAX_GROUP_ITEMS     (16u)     // 单页参数行上限，子页 Save 组名字表用
+#define UI_MAIN_ITEM_COUNT     (4u)
+#define UI_RUN_TEST_ITEM_COUNT (3u)
+#define UI_MAX_GROUP_ITEMS     (20u)     // 单页参数行上限，子页 Save 组名字表用
 #define UI_CAM_FRAME_TIMEOUT_MS (100u)   // 超过该时间没有新帧视为摄像头帧失联
 
 typedef enum
@@ -51,6 +56,7 @@ typedef enum
     MENU_PAGE_ATTITUDE,
     MENU_PAGE_GROUP,
     MENU_PAGE_IMAGE,
+    MENU_PAGE_IPM,          // 逆透视标定页，看着屏幕摆车
     MENU_PAGE_RUN_TEST,
     MENU_PAGE_COUNT
 } menu_page_t;
@@ -59,12 +65,13 @@ typedef enum
 typedef enum
 {
     GROUP_KIND_AXIS = 0,    // 分环 Test，闭环驱动对应轴
-    GROUP_KIND_CAMERA,      // 循迹参数，实时显示阈值、丢线和帧率，无动作行
+    GROUP_KIND_CAMERA,      // 循迹参数、视觉状态与逆透视标定入口
     GROUP_KIND_MOTOR,       // 架空点动，验证转向与转速回读符号
     GROUP_KIND_ZERO,        // 在线抓当前姿态角当机械零点
     GROUP_KIND_ELEMENT,     // 元素使能与阈值，实时显示识别到的元素，无动作行
     GROUP_KIND_ODOMETRY,    // C 轮每米脉冲标定与 1m 验证
     GROUP_KIND_LEAN,        // 压弯动态零点，纯参数页，无动作行也无实时行
+    GROUP_KIND_RUN,         // 正式跑车速度规划与视觉转向参数
 } group_kind_t;
 
 // 一个可编辑参数行
@@ -87,11 +94,6 @@ typedef struct
     group_kind_t             kind;          // 动作行语义
 } menu_group_t;
 
-// PID 三页的步长按各环的实际落点定，规则是"步长 ≈ 落点下限的 1/10"：
-// 从 0 按十下就到起手值，调到落点上限一百下以内，停在最终值附近时一下改动 1~5%。
-// 落点区间见 控制调试指南.md 第 5 节。步长比落点还大或者小两个数量级都没法用键调，
-// 前者一按就冲过头，后者要按几百下。
-// 恒为 0 的 ki/kd 行跟同一个环的 kp 取同一尺度，免得一页之内量级看着是乱的。
 static const menu_param_item_t s_roll_items[] =
 {
     { "Rate Kp",  "r_rate_kp",  1.0f,   2 },    // 落点 10~80
@@ -100,9 +102,6 @@ static const menu_param_item_t s_roll_items[] =
     { "Angle Kp", "r_angle_kp", 0.2f,   2 },    // 落点 2~20
     { "Angle Ki", "r_angle_ki", 0.01f,  3 },
     { "Angle Kd", "r_angle_kd", 0.2f,   2 },    // 位置式内环之后这一路可用
-    // 回收环 kp。实测落点在 0.002 附近，比原先估的 0.003~0.03 小一个量级，
-    // 所以步长不按"落点下限的 1/10"给：0.001 一按就改 50%，停不到 0.0021 这种值上。
-    // 0.0001 是一按约 5%，显示同步到 4 位小数才看得见改动
     { "Speed Kp", "r_rcy_kp",   0.0001f, 4 },   // 飞轮转速差(RPM)换倾角(°)，符号为正
     { "Speed Ki", "r_rcy_ki",   0.0001f, 4 },  // 与同环 kp 同尺度，见本表头的约定
     { "Speed Kd", "r_rcy_kd",   0.0001f, 4 }   // 同上
@@ -131,48 +130,55 @@ static const menu_param_item_t s_yaw_items[] =
     { "Angle Kd", "y_angle_kd", 0.1f,   2 }
 };
 
-// 压弯动态零点。稳态倾角在模式 1 下等于 K2×v×ω，所以 K2 是唯一的物理增益
-// （理论值 0.102，推导见 board_config.h），K1 只决定多快趋近，不决定倾多少。
-// Mode 步长给 2 保证一次按键就在 0/1 之间翻。
-static const menu_param_item_t s_lean_items[] =
+// Lean 页按模式只显示当前有效的限幅参数。
+static const menu_param_item_t s_lean_mode0_items[] =
 {
-    { "K1 Rate",  "lean_k1",         0.0002f, 4 },   // 趋近速率，落点 0.002 附近
-    { "K2 v*w",   "lean_k2",         0.005f,  3 },   // 物理增益，理论 0.102，实车 0.05~0.2
-    { "Limit",    "lean_limit",      0.5f,    1 },   // 模式 0 的固定限幅，模式 1 的兜底(°)
-    { "Mode 0/1", "lean_limit_mode", 2.0f,    0 },   // 0=固定限幅 1=动态限幅
-    { "Slew",     "lean_slew",       0.01f,   2 }    // 零点变化速率(°/5ms 拍)
+    { "K1",       "lean_turn_k1",     0.0001f, 4 },
+    { "Mode 0/1", "lean_mode",        2.0f,    0 },
+    { "Limit",    "lean_fixed_limit", 0.5f,    1 }
+};
+
+static const menu_param_item_t s_lean_mode1_items[] =
+{
+    { "K1",       "lean_turn_k1",      0.0001f, 4 },
+    { "Mode 0/1", "lean_mode",         2.0f,    0 },
+    { "K2 Speed", "lean_speed_cap_k",  0.1f,    1 }
 };
 
 static const menu_param_item_t s_camera_items[] =
 {
-    { "Exposure",   "cam_exposure",      2.0f, 0 },
-    { "Road Near",  "road_wide_near",    1.0f,  0 },
-    { "Road Far",   "road_wide_far",     1.0f,  0 },
-    { "Error Zero", "err_offset",        0.5f,  1 },
-    { "Track Gain", "track_err_gain",    0.05f, 2 },
-    { "Base Speed", "track_base_speed",  1.0f,  0 },
-    { "Spd Up",     "speed_up_rate",     0.1f,  2 },
-    { "Spd Down",   "speed_down_rate",   0.1f,  2 }
+    { "Exposure",  "cam_exposure",  2.0f, 0 },
+    { "Front Row", "err_front_row", 1.0f, 0 }
 };
 
-// 元素页。前四行是使能，步长 2 大于取值范围，所以上键一定开、下键一定关。
-// 默认全 0，普通循迹跑稳后一次只开一个。
+// 正式 Run 页面只显示现场需要反复调整的参数，其余保护与识别阈值为编译期常量。
+static const menu_param_item_t s_run_items[] =
+{
+    { "Straight", "run_speed_straight", 0.01f, 2 },
+    { "Curve",    "run_speed_curve",    0.01f, 2 },
+    { "Cross",    "run_speed_cross",    0.01f, 2 },
+    { "Ring",     "run_speed_ring",     0.01f, 2 },
+    { "Ramp",     "run_speed_ramp",     0.01f, 2 },
+    { "Lost",     "run_speed_lost",     0.01f, 2 },
+    { "Accel",    "run_accel_mps2",     0.05f, 2 },
+    { "Decel",    "run_decel_mps2",     0.05f, 2 },
+    { "Lat Gain", "track_lat_gain",     0.5f,  1 },
+    { "Head Gain","track_head_gain",    0.05f, 2 },
+    { "Curve K",  "track_curve_gain",   0.5f,  1 }
+};
+
+// 元素页只保留现场需要调整的使能、停车距离和环岛路径参数。
 static const menu_param_item_t s_element_items[] =
 {
     { "En Zebra",   "elem_en_zebra",    2.0f, 0 },
     { "En Cross",   "elem_en_cross",    2.0f, 0 },
     { "En Ring",    "elem_en_ring",     2.0f, 0 },
     { "En Ramp",    "elem_en_ramp",     2.0f, 0 },
-    { "Zebra Jump", "zebra_jump_cnt",   1.0f, 0 },
-    { "Cross Lost", "cross_lost_cnt",   1.0f, 0 },
+    { "Zebra Stop", "zebra_stop_offset_m", 0.01f, 2 },
     { "Ring Angle", "ring_angle",       5.0f, 0 },
     { "Ring CntL",  "ring_s2_cnt_l",   10.0f, 0 },
     { "Ring CntR",  "ring_s2_cnt_r",   10.0f, 0 },
-    { "Ring Ofs",   "ring_side_offset", 1.0f, 0 },
-    { "Ring TmO",   "ring_timeout_cnt",10.0f, 0 },
-    { "Guard Cnt",  "elem_guard_cnt",   5.0f, 0 },
-    { "Ramp Gain",  "speed_ramp_gain",  0.05f, 2 },
-    { "Ring Gain",  "speed_ring_gain",  0.05f, 2 }
+    { "Ring Ofs",   "ring_side_offset", 1.0f, 0 }
 };
 
 // 极性取值只有 ±1，步长给 2 保证一次按键就翻符号。
@@ -184,7 +190,7 @@ static const menu_param_item_t s_motor_items[] =
     { "Enc C",    "enc_dir_c",      2.0f,   0 },
     { "Duty Fly", "jog_duty_fly",   100.0f, 0 },
     { "Duty Drv", "jog_duty_drive", 100.0f, 0 },
-    { "Fly RpmMx","fly_speed_limit",100.0f, 0 },
+    { "Fly Max",  "fly_speed_limit",100.0f, 0 },
     { "Fly Slew", "fly_slew",       100.0f, 0 }
 };
 
@@ -198,8 +204,8 @@ static const menu_param_item_t s_zero_items[] =
 
 static const menu_param_item_t s_odometry_items[] =
 {
-    { "Counts / m", "odom_counts_per_m", 10.0f, 0 },
-    { "Test Speed", "odom_test_speed",     0.01f, 2 }
+    { "Counts", "odom_counts_per_m", 10.0f, 0 },
+    { "Test",   "odom_test_speed",    0.01f, 2 }
 };
 
 // 点动动作行的顺序与 motor_jog_action() 的解码一一对应，改一处必须改另一处。
@@ -217,21 +223,48 @@ static const menu_group_t s_groups[] =
     { "Roll",   s_roll_items,   MENU_ITEMS_OF(s_roll_items),   TUNE_AXIS_ROLL,  3, GROUP_KIND_AXIS   },
     { "Pitch",  s_pitch_items,  MENU_ITEMS_OF(s_pitch_items),  TUNE_AXIS_PITCH, 3, GROUP_KIND_AXIS   },
     { "Yaw",    s_yaw_items,    MENU_ITEMS_OF(s_yaw_items),    TUNE_AXIS_YAW,   2, GROUP_KIND_AXIS   },
-    // 下面六页不走 control_test_start()，axis 填什么都不会被读到
-    { "Lean",    s_lean_items,    MENU_ITEMS_OF(s_lean_items),    TUNE_AXIS_ROLL, 0, GROUP_KIND_LEAN    },
-    { "Camera",  s_camera_items,  MENU_ITEMS_OF(s_camera_items),  TUNE_AXIS_YAW,  0, GROUP_KIND_CAMERA  },
+    { "Lean",    s_lean_mode0_items, MENU_ITEMS_OF(s_lean_mode0_items), TUNE_AXIS_ROLL, 0, GROUP_KIND_LEAN },
+    { "Run",     s_run_items,     MENU_ITEMS_OF(s_run_items),     TUNE_AXIS_YAW,  0, GROUP_KIND_RUN     },
+    { "Camera",  s_camera_items,  MENU_ITEMS_OF(s_camera_items),  TUNE_AXIS_YAW,  1, GROUP_KIND_CAMERA  },
     { "Element", s_element_items, MENU_ITEMS_OF(s_element_items), TUNE_AXIS_YAW,  0, GROUP_KIND_ELEMENT },
     { "Motor",   s_motor_items,   MENU_ITEMS_OF(s_motor_items),   TUNE_AXIS_ROLL, 6, GROUP_KIND_MOTOR   },
     { "Zero",    s_zero_items,    MENU_ITEMS_OF(s_zero_items),    TUNE_AXIS_ROLL, 1, GROUP_KIND_ZERO    },
     { "Odometry",s_odometry_items,MENU_ITEMS_OF(s_odometry_items),TUNE_AXIS_PITCH,2, GROUP_KIND_ODOMETRY}
 };
 
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     返回参数组当前实际显示的参数数组
+// 参数说明     group           参数组
+// 返回参数     const menu_param_item_t* 参数数组
+// 使用示例     items = group_items(group);
+//-------------------------------------------------------------------------------------------------------------------
+static const menu_param_item_t *group_items(const menu_group_t *group)
+{
+    if (group->kind != GROUP_KIND_LEAN) return group->items;
+    return (LEAN_MODE == 0) ? s_lean_mode0_items : s_lean_mode1_items;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     返回参数组当前实际显示的参数数量
+// 参数说明     group           参数组
+// 返回参数     uint8           参数数量
+// 使用示例     count = group_item_count(group);
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 group_item_count(const menu_group_t *group)
+{
+    if (group->kind != GROUP_KIND_LEAN) return group->item_count;
+    return (LEAN_MODE == 0) ? MENU_ITEMS_OF(s_lean_mode0_items)
+                            : MENU_ITEMS_OF(s_lean_mode1_items);
+}
+
 // save_group_action() 在栈上开 UI_MAX_GROUP_ITEMS 个名字指针，任何一页的行数超了都会越界写
 typedef char menu_group_items_fit[
     (MENU_ITEMS_OF(s_roll_items)    <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_pitch_items)   <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_yaw_items)     <= UI_MAX_GROUP_ITEMS &&
-     MENU_ITEMS_OF(s_lean_items)    <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_lean_mode0_items) <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_lean_mode1_items) <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_run_items)     <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_camera_items)  <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_element_items) <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_motor_items)   <= UI_MAX_GROUP_ITEMS &&
@@ -245,6 +278,7 @@ static const char * const s_param_page_names[] =
     "Pitch",
     "Yaw",
     "Lean",
+    "Run",
     "Camera",
     "Element",
     "Motor",
@@ -269,6 +303,10 @@ static uint8       s_dirty;                         // 1=重绘本页 2=先整�
 static uint8       s_image_ok;                      // 图像页看到的摄像头就绪状态
 static uint32      s_reset_armed_until_ms;          // Reset 二次确认截止时刻，0=未进入确认态
 static uint32      s_balance_armed_until_ms;        // Balance 二次确认截止时刻，0=未进入确认态
+static uint32      s_remote_armed_until_ms;         // Remote 二次确认截止时刻，0=未进入确认态
+static uint32      s_run_armed_until_ms;            // Run 二次确认截止时刻，0=未进入确认态
+static uint8       s_run_on;                        // 菜单侧记录的跑车运行标志
+static uint8       s_ipm_pick;                      // 标定页：上一帧取角点的结果，ipm_pick_t
 static uint8       s_balance_on;                    // 上次看到的三轴平衡运行状态，用来发现安全闸自动停机
 static uint8       s_page_cursor[MENU_PAGE_COUNT];  // 各页面记住的光标位置
 static uint8       s_page_top[MENU_PAGE_COUNT];     // 各页面记住的滚动位置
@@ -283,6 +321,11 @@ static uint32      s_last_param_revision;           // 上次看到的参数修�
 static uint32      s_status_until_ms;               // 状态行到期时刻
 static uint8       s_image_redraw_pending;          // 图像页有新内容待刷
 static uint8       s_last_image_state;              // 上次显示的 CPU1 摄像头状态
+static uint32      s_ipm_ready_since;               // 标定页上 READY 连续保持的起始时刻
+static uint8       s_ipm_wait_save;                 // 已标定完，正在等 Flash 落盘
+static uint32      s_ipm_req_revision;              // 发标定请求时的参数修订号
+static uint8       s_ipm_counting;                  // 1=正在给自动标定倒计时
+static uint8       s_ipm_tried;                     // 1=已经发过标定请求但还没成功
 static char        s_status[30];                    // 限时状态行文本
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -291,10 +334,25 @@ static char        s_status[30];                    // 限时状态行文本
 // 返回参数     void
 // 使用示例     ui_text(0, 0, "MENU", UI_WHITE);
 //-------------------------------------------------------------------------------------------------------------------
+// IPS200 字符接口不负责越界截断，本函数按剩余列数限制文本长度。
 static void ui_text(uint16 x, uint16 y, const char *text, uint16 color)
 {
+    char  cut[UI_MAX_CHARS + 1];
+    uint16 room;
+
+    if (x >= UI_SCREEN_W) return;
+    room = (uint16)((UI_SCREEN_W - x) / UI_CHAR_W);
+    if (room > UI_MAX_CHARS) room = UI_MAX_CHARS;
+
     ips200_set_color(color, UI_BLACK);
-    ips200_show_string(x, y, text);
+    if (strlen(text) <= (size_t)room)
+    {
+        ips200_show_string(x, y, text);
+        return;
+    }
+    memcpy(cut, text, room);
+    cut[room] = '\0';
+    ips200_show_string(x, y, cut);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -445,12 +503,13 @@ static uint8 key_event(key_index_enum key, uint8 repeat)
 //-------------------------------------------------------------------------------------------------------------------
 static uint8 current_count(void)
 {
-    if (s_page == MENU_PAGE_MAIN)            return 4;
+    // 主菜单固定为 Params / Image / Run / Run Test。
+    if (s_page == MENU_PAGE_MAIN)            return UI_MAIN_ITEM_COUNT;
     if (s_page == MENU_PAGE_PARAMS)          return PARAM_PAGE_COUNT;
     if (s_page == MENU_PAGE_ATTITUDE)        return 2;
-    if (s_page == MENU_PAGE_RUN_TEST)        return 2;
+    if (s_page == MENU_PAGE_RUN_TEST)        return UI_RUN_TEST_ITEM_COUNT;
     if (s_page == MENU_PAGE_GROUP)
-        return (uint8)(s_groups[s_group_index].item_count +
+        return (uint8)(group_item_count(&s_groups[s_group_index]) +
                        s_groups[s_group_index].action_count + 2u);
     return 0;
 }
@@ -510,7 +569,7 @@ static void save_params_action(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     子页里的 Save：只把当前这一页的参数写进 Flash，别的页保持 Flash 里已有的值
+// 函数简介     子页 Save：只更新当前参数组，其余 Flash 参数保持不变
 // 参数说明     void
 // 返回参数     void
 // 使用示例     save_group_action();
@@ -518,15 +577,17 @@ static void save_params_action(void)
 static void save_group_action(void)
 {
     const menu_group_t *group = &s_groups[s_group_index];
+    const menu_param_item_t *items = group_items(group);
     const char *names[UI_MAX_GROUP_ITEMS];
     char text[sizeof(s_status)];
+    uint8 item_count = group_item_count(group);
     uint8 i;
 
     if (save_blocked()) return;
 
     // item_count 不会超过 UI_MAX_GROUP_ITEMS，文件末尾有编译期检查
-    for (i = 0; i < group->item_count; i++)
-        names[i] = group->items[i].name;
+    for (i = 0; i < item_count; i++)
+        names[i] = items[i].name;
 
     (void)snprintf(text, sizeof(text), "%s %s",
                    group->title,
@@ -737,10 +798,19 @@ static void render_main_live(void)
 //-------------------------------------------------------------------------------------------------------------------
 static void render_main(void)
 {
-    ui_header("MENU", s_cursor, 4);
+    const char *run_text;
+
+    if (control_run_running())
+        run_text = "Run: ON";
+    else if (start_flag == START_BALANCE)
+        run_text = "Run: HOLD";
+    else
+        run_text = "Run";
+
+    ui_header("MENU", s_cursor, UI_MAIN_ITEM_COUNT);
     draw_action_row(0, 0, "Params");
     draw_action_row(1, 1, "Image");
-    draw_action_row(2, 2, (start_flag == START_BALANCE) ? "Balance: ON" : "Balance: OFF");
+    draw_action_row(2, 2, run_text);
     draw_action_row(3, 3, control_remote_running() ? "Run Test: ON" : "Run Test");
     render_main_live();
     draw_status();
@@ -789,8 +859,6 @@ static void render_run_test_live(void)
     ui_line(96, line, UI_CYAN);
     (void)snprintf(line, sizeof(line), "C Fdb %8.2f m/s", (double)Y_Motor_GetSpeedMps());
     ui_line(120, line, UI_CYAN);
-    // RX 是收到的字节，LN 是断出的整行，OK 是真正写进控制目标的条数。
-    // 三个数分别对应链路、断行和接受三级，哪一级不涨就说明卡在那一级
     (void)snprintf(line, sizeof(line), "RX%6lu LN%5lu OK%5lu",
                    (unsigned long)g_vofa_rx_bytes,
                    (unsigned long)g_vofa_cmd_lines,
@@ -799,8 +867,7 @@ static void render_run_test_live(void)
     ui_line(184, cmd_result_text(result),
             (result == VOFA_CMD_APPLIED) ? UI_GREEN
                                          : ((result == VOFA_CMD_NONE) ? UI_GRAY : UI_YELLOW));
-    // 解析成功就回显，与是否被接受无关：停车状态下也能靠这一行确认链路和格式都对了
-    (void)snprintf(line, sizeof(line), "Parsed %+7.1f %+6.2f",
+    (void)snprintf(line, sizeof(line), "Raw    %+7.1f %+6.1f",
                    (double)g_vofa_cmd_turn, (double)g_vofa_cmd_speed);
     ui_line(232, line, UI_GRAY);
 
@@ -825,13 +892,14 @@ static void render_run_test_live(void)
 //-------------------------------------------------------------------------------------------------------------------
 static void render_run_test(void)
 {
-    ui_header("Run Test", s_cursor, 2);
-    draw_action_row(0, 0, control_remote_running() ? "Remote: ON" : "Remote: OFF");
-    draw_action_row(1, 1, "Back");
+    ui_header("Run Test", s_cursor, UI_RUN_TEST_ITEM_COUNT);
+    draw_action_row(0, 0, (start_flag == START_BALANCE) ? "Balance: ON" : "Balance: OFF");
+    draw_action_row(1, 1, control_remote_running() ? "Remote: ON" : "Remote: OFF");
+    draw_action_row(2, 2, "Back");
     render_run_test_live();
-    ui_line(208, "speed:turn,speed", UI_WHITE);
+    ui_line(208, "speed:deg,raw  raw/60=m/s", UI_WHITE);
     // 232 行由 render_run_test_live() 画最近一次解析到的数值
-    ui_line(256, "Send command at least 2 Hz", UI_GRAY);
+    ui_line(256, "CRLF each, send >=2 Hz", UI_GRAY);
     draw_status();
     ui_footer();
 }
@@ -867,7 +935,7 @@ static void render_attitude_live(void)
     ui_line(64, line, UI_CYAN);
     (void)snprintf(line, sizeof(line), "Pitch  %9.1f deg", (double)att.pitch);
     ui_line(88, line, UI_CYAN);
-    (void)snprintf(line, sizeof(line), "Yaw    %9.1f deg", (double)att.yaw);
+    (void)snprintf(line, sizeof(line), "Yaw    %9.1f deg", (double)att.yaw_wrapped);
     ui_line(112, line, UI_CYAN);
 
     if (!g_imu_ok)
@@ -881,7 +949,6 @@ static void render_attitude_live(void)
     else
         ui_line(152, "ATTITUDE CONVERGING", UI_YELLOW);
 
-    // 上电标定期间车动过，零偏不可信，必须断电静置重来
     if (imu_calib_state() == IMU_CALIB_MOVED)
         ui_line(176, "CALIB MOVED / REBOOT", UI_RED);
     else
@@ -915,8 +982,6 @@ static void render_group_live(void)
     const menu_group_t *group = &s_groups[s_group_index];
     char line[30];
 
-    // Motor 页一直显示转速用于对方向, Zero 页一直显示角度用于对零点, 与是否在跑测试无关。
-    // 两行都停在 261 以上, 把 UI_STATUS_Y 留给 draw_status()。
     if (group->kind == GROUP_KIND_MOTOR)
     {
         motor_jog_t jog = control_jog_running();
@@ -936,13 +1001,10 @@ static void render_group_live(void)
             ui_line(229, line, UI_YELLOW);
         }
 
-        // A/B 没有编码器，转子霍尔接在 CYT2BL3 上，主控只能拿到驱动每 10ms 回传的转速。
-        // 霍尔六步在低转速下回传是阶梯值，慢转时读数跳变属正常
         (void)snprintf(line, sizeof(line), "RPM  A%+6d B%+6d",
                        (int)W_Motor_GetSpeed1(), (int)W_Motor_GetSpeed2());
         ui_line(245, line, UI_CYAN);
 
-        // C 轮编码器 TIM2：20ms 增量和上电累计值，都已按 enc_dir_c 取过符号
         (void)snprintf(line, sizeof(line), "ENC  C%+5d TOT%+8ld",
                        (int)Y_Motor_GetSpeed20ms(),
                        (long)Y_Motor_GetTotalCount());
@@ -958,46 +1020,6 @@ static void render_group_live(void)
         ui_line(245, line, UI_CYAN);
         (void)snprintf(line, sizeof(line), "ZERO R%7.2f P%7.2f",
                        (double)g_roll_zero, (double)g_pitch_zero);
-        ui_line(261, line, UI_CYAN);
-        return;
-    }
-
-    // Camera 页显示采集、处理和忙丢帧频率，便于区分相机与算法瓶颈。
-    // Camera 页只有 8 个参数行，列表最多画到 y=165，下面四行都是空的
-    if (group->kind == GROUP_KIND_CAMERA)
-    {
-        // 分段耗时(us)：ROI 复制 / 大津二值化 / 八邻域提边 / 元素处理
-        (void)snprintf(line, sizeof(line), "G%4u B%4u E%5u M%4u",
-                       (unsigned)g_vision_grab_us, (unsigned)g_vision_binarize_us,
-                       (unsigned)g_vision_edge_us, (unsigned)g_vision_element_us);
-        ui_line(213, line, UI_GRAY);
-        // 总耗时与本次开机峰值。超过 16670us 就会被 VSYNC 隔帧丢弃，帧率对半掉
-        (void)snprintf(line, sizeof(line), "US%6u MAX%6u",
-                       (unsigned)g_vision_process_us, (unsigned)g_vision_process_max_us);
-        ui_line(229, line, UI_GRAY);
-
-        (void)snprintf(line, sizeof(line), "F%3d VS%3d DM%3d DP%3d",
-                       (int)(g_vision_fps + 0.5f),
-                       (int)(g_vision_vsync_fps + 0.5f),
-                       (int)(g_vision_dma_fps + 0.5f),
-                       (int)(g_vision_drop_fps + 0.5f));
-        ui_line(245, line, UI_CYAN);
-        (void)snprintf(line, sizeof(line), "V%d E%+7.1f L%2u R%2u",
-                       (int)g_track_valid, (double)g_dbg_error,
-                       (unsigned)g_vision_left_lost, (unsigned)g_vision_right_lost);
-        ui_line(261, line, UI_CYAN);
-        return;
-    }
-
-    // Element 页直接显示识别到的元素与环岛状态。
-    // 两行停在 261 以上，把 UI_STATUS_Y 留给 draw_status()
-    if (group->kind == GROUP_KIND_ELEMENT)
-    {
-        (void)snprintf(line, sizeof(line), "ELEM %s   RING %d",
-                       element_name(g_vision_active_elem), (int)g_vision_island_state);
-        ui_line(245, line, UI_CYAN);
-        (void)snprintf(line, sizeof(line), "SCALE%5.2f  STOP %d",
-                       (double)g_vision_speed_scale, (int)g_vision_stop_request);
         ui_line(261, line, UI_CYAN);
         return;
     }
@@ -1082,6 +1104,8 @@ static const char *action_name(uint8 action_index)
 
     if (group->kind == GROUP_KIND_MOTOR) return s_motor_action_names[action_index];
     if (group->kind == GROUP_KIND_ZERO) return "Capture Zero";
+    if (group->kind == GROUP_KIND_CAMERA)
+        return g_vision_ipm_ok ? "Calib IPM: OK" : "Calib IPM";
     if (group->kind == GROUP_KIND_ODOMETRY)
     {
         if (action_index == 0u) return "Reset Counter";
@@ -1128,10 +1152,11 @@ static const char *test_status_text(control_test_status_t status)
 static void render_group(void)
 {
     const menu_group_t *group = &s_groups[s_group_index];
+    const menu_param_item_t *items = group_items(group);
     char label[28];
     uint8 row;
     uint8 index;
-    uint8 action_begin = group->item_count;
+    uint8 action_begin = group_item_count(group);
     uint8 save_index   = (uint8)(action_begin + group->action_count);
     uint8 total        = (uint8)(save_index + 2u);
 
@@ -1149,7 +1174,7 @@ static void render_group(void)
 
         if (index < action_begin)
         {
-            draw_param_row(row, index, &group->items[index]);
+            draw_param_row(row, index, &items[index]);
         }
         else if (index < save_index)
         {
@@ -1197,6 +1222,7 @@ static void render_page(void)
         case MENU_PAGE_ATTITUDE:        render_attitude(); break;
         case MENU_PAGE_GROUP:           render_group(); break;
         case MENU_PAGE_IMAGE:           break;
+        case MENU_PAGE_IPM:             break;
         case MENU_PAGE_RUN_TEST:        render_run_test(); break;
         default:                        break;
     }
@@ -1296,6 +1322,7 @@ static void toggle_group_action(uint8 action_index)
         return;
     }
 
+
     if (group->kind == GROUP_KIND_ODOMETRY)
     {
         if (action_index == 0u)
@@ -1343,7 +1370,6 @@ static void toggle_group_action(uint8 action_index)
         return;
     }
 
-    // g_tune_axis / g_tune_ring 由 control_test_start() 记录，供菜单标识当前测试范围。
     s_test_on = 1;
     s_active_test = action_index;
     menu_status("TEST ON");
@@ -1358,11 +1384,12 @@ static void toggle_group_action(uint8 action_index)
 static void edit_current_parameter(float direction)
 {
     const menu_group_t *group = &s_groups[s_group_index];
+    const menu_param_item_t *items = group_items(group);
     const menu_param_item_t *item;
     float value = 0.0f;
 
-    if (s_cursor >= group->item_count) return;
-    item = &group->items[s_cursor];
+    if (s_cursor >= group_item_count(group)) return;
+    item = &items[s_cursor];
     if (!param_get_by_name(item->name, &value)) return;
     (void)param_set_by_name(item->name, value + direction * item->step);
     if (strcmp(item->name, "cam_exposure") == 0)
@@ -1380,6 +1407,11 @@ static uint8 group_param_edit_allowed(const menu_group_t *group, uint8 item_inde
 {
     uint8 item_ring;
 
+    if (start_flag != START_STOP &&
+        (group->kind == GROUP_KIND_MOTOR ||
+         group->kind == GROUP_KIND_ZERO ||
+         group->kind == GROUP_KIND_ODOMETRY))
+        return 0;
     if (group->kind == GROUP_KIND_ODOMETRY &&
         control_odometry_test_state() != ODOM_TEST_IDLE)
         return 0;
@@ -1402,7 +1434,7 @@ static uint8 group_param_edit_allowed(const menu_group_t *group, uint8 item_inde
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     主菜单 Balance 行：连按两次启动三轴平衡，运行中再按一次停车
+// 函数简介     Run Test 页 Balance 行：连按两次启动三轴平衡，运行中再按一次停车
 // 参数说明     void
 // 返回参数     void
 // 使用示例     balance_action();
@@ -1411,7 +1443,7 @@ static void balance_action(void)
 {
     uint32 now = g_control_uptime_ms;
 
-    // 跑着的时候再按一次就是停，和三轴页的分环 Test、Motor 页的点动一个手感
+    // 平衡已经启动时再次确认即停车。
     if (start_flag == START_BALANCE)
     {
         s_balance_armed_until_ms = 0;
@@ -1428,7 +1460,7 @@ static void balance_action(void)
         return;
     }
 
-    // 按下去 A/B 就松刹车，车会自己立起来，所以要连按两次确认
+    // 启动会释放飞轮刹车，因此采用二次确认。
     if (s_balance_armed_until_ms == 0 || (int32)(now - s_balance_armed_until_ms) >= 0)
     {
         s_balance_armed_until_ms = now + UI_BALANCE_CONFIRM_MS;
@@ -1449,6 +1481,307 @@ static void balance_action(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     Run Test 页 Remote 行：二次确认后启动，运行中再按一次停车
+// 参数说明     void
+// 返回参数     void
+// 使用示例     remote_action();
+//-------------------------------------------------------------------------------------------------------------------
+static void remote_action(void)
+{
+    uint32 now = g_control_uptime_ms;
+
+    s_balance_armed_until_ms = 0;
+    if (control_remote_running())
+    {
+        s_remote_armed_until_ms = 0;
+        control_remote_stop();
+        s_balance_on = 0;
+        menu_status("REMOTE STOPPED");
+        return;
+    }
+
+    if (start_flag != START_STOP || control_test_running() ||
+        control_jog_running() != MOTOR_JOG_NONE)
+    {
+        s_remote_armed_until_ms = 0;
+        menu_status("REMOTE BLOCKED: RUNNING");
+        return;
+    }
+
+    // Remote 与 Balance 一样会释放飞轮刹车，必须采用相同的 3 秒二次确认。
+    if (s_remote_armed_until_ms == 0 || (int32)(now - s_remote_armed_until_ms) >= 0)
+    {
+        s_remote_armed_until_ms = now + UI_BALANCE_CONFIRM_MS;
+        menu_status("PRESS AGAIN TO START REMOTE");
+        return;
+    }
+
+    s_remote_armed_until_ms = 0;
+    if (control_remote_start())
+    {
+        s_balance_on = 1;
+        menu_status("REMOTE RUNNING");
+    }
+    else
+    {
+        menu_status(test_status_text(control_test_last_status()));
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     Camera 参数页 Calib IPM 行：用当前直道图像标定逆透视
+// 参数说明     void
+// 返回参数     void
+// 使用示例     ipm_calib_action();
+//-------------------------------------------------------------------------------------------------------------------
+// 车辆静止并位于直道中央时，CPU1 根据当前边线计算并回传矩阵。
+static void ipm_calib_action(void)
+{
+    if (start_flag != START_STOP)
+    {
+        menu_status("IPM: STOP FIRST");
+        return;
+    }
+    set_page(MENU_PAGE_IPM);
+    (void)control_camera_debug_start();
+    s_image_ok = (uint8)(vision_core_state() == VISION_CORE_READY);
+    display_init();
+    display_image_page_enter();
+    s_last_image_draw_ms = 0u;
+    s_last_image_frame_seq = 0u;
+    s_image_redraw_pending = 1u;
+    s_last_image_state = 0xFFu;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     把逆透视取角点的结果翻译成屏幕提示
+// 参数说明     why             ipm_pick_t
+// 返回参数     const char*     一行提示，直接告诉人该怎么摆车
+// 使用示例     ui_line(176, ipm_pick_text(s_ipm_pick), UI_RED);
+//-------------------------------------------------------------------------------------------------------------------
+static const char *ipm_pick_text(uint8 why)
+{
+    switch ((ipm_pick_t)why)
+    {
+        case IPM_PICK_OK:           return "READY - press ENTER";
+        case IPM_PICK_NO_TRACK:     return "NO TRACK - check exposure";
+        case IPM_PICK_FEW_ROWS:     return "TOO FEW BOTH-EDGE ROWS";
+        case IPM_PICK_SHORT_SPAN:   return "SPAN TOO SHORT - back off";
+        case IPM_PICK_NOT_STRAIGHT: return "NOT STRAIGHT - align car";
+        case IPM_PICK_NARROW:       return "TRACK TOO NARROW/CLOSE";
+        default:                    return "?";
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     逆透视标定页：显示图像 + 标定梯形 + 四个角点，确认键现场标定
+// 参数说明     up/down/enter/back  按键事件
+// 返回参数     void
+// 使用示例     handle_ipm(up, down, enter, back);
+//-------------------------------------------------------------------------------------------------------------------
+static void handle_ipm(uint8 up, uint8 down, uint8 enter, uint8 back)
+{
+    uint32 now = g_control_uptime_ms;
+    char   line[30];
+
+    if (back)
+    {
+        s_image_redraw_pending = 0u;
+        s_ipm_counting = 0u;
+        s_ipm_tried = 0u;
+        s_ipm_wait_save = 0u;
+        display_image_page_exit();
+        set_page(MENU_PAGE_GROUP);
+        return;
+    }
+    if (up)   display_exposure_step(CAM_EXP_STEP);
+    if (down) display_exposure_step(-CAM_EXP_STEP);
+
+    s_image_ok = (uint8)(vision_core_state() == VISION_CORE_READY);
+    if (!s_image_ok)
+    {
+        ips200_full(UI_BLACK);
+        ui_line(48, "CAMERA NOT READY", UI_RED);
+        ui_line(216, "BACK Return", UI_GRAY);
+        return;
+    }
+
+    if (enter)
+    {
+        if (s_ipm_pick != (uint8)IPM_PICK_OK)
+        {
+            menu_status(ipm_pick_text(s_ipm_pick));
+        }
+        else
+        {
+            s_ipm_tried = 1u;
+            s_ipm_req_revision = g_param_revision;
+            menu_status(control_ipm_calib_request() ? "CALIBRATING..." : "CAMERA NOT READY");
+        }
+    }
+
+    if (s_ipm_pick == (uint8)IPM_PICK_OK && !g_vision_ipm_ok)
+    {
+        if (!s_ipm_counting)
+        {
+            s_ipm_counting = 1u;
+            s_ipm_ready_since = now;
+        }
+        else if ((uint32)(now - s_ipm_ready_since) >= UI_IPM_AUTO_MS)
+        {
+            s_ipm_counting = 0u;
+            s_ipm_tried = 1u;
+            s_ipm_req_revision = g_param_revision;
+            if (control_ipm_calib_request()) menu_status("AUTO CALIBRATING...");
+        }
+    }
+    else
+    {
+        s_ipm_counting = 0u;
+    }
+
+    if (s_ipm_tried && g_vision_ipm_ok && g_param_revision != s_ipm_req_revision)
+    {
+        s_ipm_tried = 0u;
+        s_ipm_wait_save = 1u;
+        menu_status("IPM CALIBRATED");
+    }
+    if (s_ipm_wait_save && !control_ipm_pending())
+    {
+        s_ipm_wait_save = 0u;
+        menu_status("IPM SAVED TO FLASH");
+    }
+
+    if (g_vision_frame_seq != 0u && g_vision_frame_seq != s_last_image_frame_seq)
+    {
+        s_last_image_frame_seq = g_vision_frame_seq;
+        s_image_redraw_pending = 1u;
+    }
+    if ((uint32)(now - s_last_image_draw_ms) >= UI_IMAGE_STALL_MS)
+        s_image_redraw_pending = 1u;
+
+    if (s_image_redraw_pending &&
+        (s_last_image_draw_ms == 0u ||
+         (uint32)(now - s_last_image_draw_ms) >= UI_IMAGE_PERIOD_MS))
+    {
+        s_last_image_draw_ms = now;
+        s_image_redraw_pending = 0u;
+        display_track_view();
+        s_ipm_pick = display_ipm_overlay();
+
+        ips200_set_color(UI_WHITE, UI_BLACK);
+        if (s_ipm_tried && !g_vision_ipm_ok && s_ipm_pick == (uint8)IPM_PICK_OK)
+            ui_line(176, "CALIB FAILED - move car", UI_RED);
+        else
+            ui_line(176, ipm_pick_text(s_ipm_pick),
+                    (s_ipm_pick == (uint8)IPM_PICK_OK) ? UI_GREEN : UI_RED);
+
+        (void)snprintf(line, sizeof(line), "IPM %s R%d-%d W%d/%d",
+                       g_vision_ipm_ok ? (control_ipm_pending() ? "WR" : "OK") : "--",
+                       (int)display_ipm_row_far(), (int)display_ipm_row_near(),
+                       display_ipm_width(0u), display_ipm_width(1u));
+        ui_line(192, line, g_vision_ipm_ok ? UI_GREEN : UI_WHITE);
+
+        if (s_ipm_counting)
+        {
+            uint32 gone = (uint32)(now - s_ipm_ready_since);
+            uint32 left = (gone < UI_IPM_AUTO_MS) ? (UI_IPM_AUTO_MS - gone) : 0u;
+            (void)snprintf(line, sizeof(line), "HOLD STILL  %u.%us",
+                           (unsigned)(left / 1000u), (unsigned)((left % 1000u) / 100u));
+            ui_line(216, line, UI_YELLOW);
+        }
+        else
+        {
+            ui_line(216, "Put car on STRAIGHT, centered", UI_GRAY);
+        }
+        ui_line(240, "ENTER Calib  UP/DN Exposure", UI_GRAY);
+        ui_line(256, "BACK Return", UI_GRAY);
+        if (s_status[0] != '\0') draw_status();
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     把跑车停车原因翻译成屏幕文本
+// 参数说明     reason          停车原因
+// 返回参数     const char*     原因说明
+// 使用示例     menu_status(run_stop_text(control_run_stop_reason()));
+//-------------------------------------------------------------------------------------------------------------------
+static const char *run_stop_text(run_stop_t reason)
+{
+    switch (reason)
+    {
+        case RUN_STOP_ZEBRA:  return "RUN DONE: ZEBRA";
+        case RUN_STOP_LOST:   return "RUN STOP: TRACK LOST";
+        case RUN_STOP_VISION: return "RUN STOP: NO FRAME";
+        case RUN_STOP_MANUAL: return "RUN STOPPED";
+        case RUN_STOP_SAFETY: return "RUN STOP: SAFETY";
+        default:              return "RUN STOPPED";
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     主菜单 Run 行：连按两次启动正式跑车，运行中再按一次停车
+// 参数说明     void
+// 返回参数     void
+// 使用示例     run_action();
+//-------------------------------------------------------------------------------------------------------------------
+static void run_action(void)
+{
+    uint32 now = g_control_uptime_ms;
+
+    if (control_run_running())
+    {
+        s_run_armed_until_ms = 0;
+        s_run_on = 0;
+        control_run_stop();
+        menu_status("RUN STOPPED");
+        return;
+    }
+
+    // 正式 Run 结束后仍在原地平衡，再次确认 Run 即锁停电机。
+    if (start_flag == START_BALANCE)
+    {
+        s_run_armed_until_ms = 0;
+        s_run_on = 0;
+        s_balance_on = 0;
+        control_stop();
+        menu_status("RUN HOLD STOPPED");
+        return;
+    }
+
+    if (control_test_running() || control_jog_running() != MOTOR_JOG_NONE ||
+        start_flag != START_STOP)
+    {
+        s_run_armed_until_ms = 0;
+        menu_status("RUN BLOCKED: RUNNING");
+        return;
+    }
+
+    // 正式发车会释放飞轮刹车并驱动车辆，因此采用二次确认。
+    if (s_run_armed_until_ms == 0 || (int32)(now - s_run_armed_until_ms) >= 0)
+    {
+        s_run_armed_until_ms = now + UI_BALANCE_CONFIRM_MS;
+        menu_status("PRESS AGAIN TO RUN");
+        return;
+    }
+
+    s_run_armed_until_ms = 0;
+    if (control_run_start())
+    {
+        s_run_on = 1;
+        menu_status("RUNNING");
+    }
+    else
+    {
+        // 区分视觉条件与通用控制安全条件。
+        if (!g_track_valid || vision_core_state() != VISION_CORE_READY)
+            menu_status("RUN BLOCKED: NO TRACK");
+        else
+            menu_status(test_status_text(control_test_last_status()));
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     处理主菜单按键
 // 参数说明     up/down/enter   上移/下移/确认事件
 // 返回参数     void
@@ -1458,8 +1791,7 @@ static void handle_main(uint8 up, uint8 down, uint8 enter)
 {
     if (up) move_cursor(-1);
     if (down) move_cursor(1);
-    // 光标一离开 Balance 行就撤销确认态，避免停在别处按确认时误发车
-    if (up || down) s_balance_armed_until_ms = 0;
+    if (up || down) s_run_armed_until_ms = 0;
     if (!enter) return;
 
     if (s_cursor == 0)
@@ -1481,7 +1813,7 @@ static void handle_main(uint8 up, uint8 down, uint8 enter)
     }
     else if (s_cursor == 2u)
     {
-        balance_action();
+        run_action();
     }
     else
     {
@@ -1499,6 +1831,8 @@ static void handle_run_test(uint8 up, uint8 down, uint8 enter, uint8 back)
 {
     if (back)
     {
+        s_balance_armed_until_ms = 0;
+        s_remote_armed_until_ms = 0;
         if (control_remote_running()) control_remote_stop();
         s_balance_on = 0;
         set_page(MENU_PAGE_MAIN);
@@ -1507,30 +1841,30 @@ static void handle_run_test(uint8 up, uint8 down, uint8 enter, uint8 back)
 
     if (up) move_cursor(-1);
     if (down) move_cursor(1);
+    if (up || down)
+    {
+        s_balance_armed_until_ms = 0;
+        s_remote_armed_until_ms = 0;
+    }
     if (!enter) return;
 
     if (s_cursor == 0u)
     {
-        if (control_remote_running())
-        {
-            control_remote_stop();
-            s_balance_on = 0;
-            menu_status("REMOTE STOPPED");
-        }
-        else if (control_remote_start())
-        {
-            s_balance_on = 1;
-            menu_status("REMOTE RUNNING");
-        }
-        else
-        {
-            menu_status(test_status_text(control_test_last_status()));
-        }
+        s_remote_armed_until_ms = 0;
+        balance_action();
+        s_dirty = 1;
+    }
+    else if (s_cursor == 1u)
+    {
+        remote_action();
         s_dirty = 1;
     }
     else
     {
-        if (control_remote_running()) control_remote_stop();
+        if (start_flag != START_STOP)
+            control_stop();
+        else if (control_remote_running())
+            control_remote_stop();
         s_balance_on = 0;
         set_page(MENU_PAGE_MAIN);
     }
@@ -1563,7 +1897,7 @@ static void handle_params(uint8 up, uint8 down, uint8 enter, uint8 back)
     {
         s_group_index = (uint8)(s_cursor - 1u);
         set_page(MENU_PAGE_GROUP);
-        // 这两页靠视觉实时数据，进来就把摄像头拉起来，不用再按一次动作行
+        // Camera 与 Element 页进入时请求摄像头就绪。
         if (s_groups[s_group_index].kind == GROUP_KIND_CAMERA ||
             s_groups[s_group_index].kind == GROUP_KIND_ELEMENT)
         {
@@ -1629,7 +1963,7 @@ static void handle_attitude(uint8 up, uint8 down, uint8 enter, uint8 back)
 static void handle_group(uint8 up, uint8 down, uint8 enter, uint8 back)
 {
     const menu_group_t *group = &s_groups[s_group_index];
-    uint8 action_begin = group->item_count;
+    uint8 action_begin = group_item_count(group);
     uint8 save_index = (uint8)(action_begin + group->action_count);
 
     if (s_editing)
@@ -1664,11 +1998,13 @@ static void handle_group(uint8 up, uint8 down, uint8 enter, uint8 back)
     if (down) move_cursor(1);
     if (!enter) return;
 
-    if (s_cursor < group->item_count)
+    if (s_cursor < group_item_count(group))
     {
         if (!group_param_edit_allowed(group, s_cursor))
         {
-            if (group->kind == GROUP_KIND_ODOMETRY)
+            if (start_flag != START_STOP)
+                menu_status("STOP CONTROL FIRST");
+            else if (group->kind == GROUP_KIND_ODOMETRY)
                 menu_status("STOP 1M TEST FIRST");
             else
                 menu_status("PARAM NOT IN TEST");
@@ -1679,7 +2015,10 @@ static void handle_group(uint8 up, uint8 down, uint8 enter, uint8 back)
     }
     else if (s_cursor >= action_begin && s_cursor < save_index)
     {
-        toggle_group_action((uint8)(s_cursor - action_begin));
+        if (group->kind == GROUP_KIND_CAMERA)
+            ipm_calib_action();
+        else
+            toggle_group_action((uint8)(s_cursor - action_begin));
     }
     else if (s_cursor == save_index)
     {
@@ -1751,8 +2090,7 @@ static void handle_image(uint8 up, uint8 down, uint8 enter, uint8 back)
         s_image_redraw_pending = 1u;
     }
 
-    // 停帧时上面那个条件不再成立，页面会一直停在最后一帧，FPS 也跟着冻住。
-    // 这里定期补一次重画请求；此时快照不会 ready，display_track_view() 只刷状态栏。
+    // 停帧时周期刷新状态栏，使 FPS 与失联状态继续更新。
     if ((uint32)(now - s_last_image_draw_ms) >= UI_IMAGE_STALL_MS)
         s_image_redraw_pending = 1u;
 
@@ -1793,6 +2131,7 @@ void menu_init(void)
     s_active_test = 0xFFu;
     s_balance_on = 0;
     s_balance_armed_until_ms = 0;
+    s_remote_armed_until_ms = 0;
     s_image_ok = 0;
     s_dirty = 2;
     s_last_live_ms = 0;
@@ -1825,8 +2164,7 @@ void menu_run(void)
     uint32 now = g_control_uptime_ms;
 
     enter = key_event(MENU_KEY_ENTER, 0);
-    // 返回键在任何页面都是急停。先清 s_balance_on，否则下面那段自动停机检测会把
-    // 上一次的停机原因当成本次的原因显示出来
+
     if (back && start_flag != START_STOP)
     {
         s_balance_on = 0;
@@ -1858,8 +2196,17 @@ void menu_run(void)
         menu_status(test_status_text(control_test_last_status()));
     }
 
-    // 三轴平衡可能被 1ms 中断里的安全闸直接打回 START_STOP，这里发现并显示原因。
-    // 不限页面：平衡是唯一跨页面存活的运行状态
+    if (s_run_on && !control_run_running())
+    {
+        run_stop_t reason = control_run_stop_reason();
+
+        s_run_on = 0;
+        menu_status(run_stop_text(reason));
+        // 斑马线终点只结束行驶，车辆继续原地平衡；其余停车原因会锁停电机。
+        s_balance_on = (uint8)(reason == RUN_STOP_ZEBRA && start_flag == START_BALANCE);
+        s_dirty = 1;
+    }
+
     if (s_balance_on && start_flag != START_BALANCE)
     {
         s_balance_on = 0;
@@ -1883,6 +2230,9 @@ void menu_run(void)
             break;
         case MENU_PAGE_IMAGE:
             handle_image(up, down, enter, back);
+            return;
+        case MENU_PAGE_IPM:
+            handle_ipm(up, down, enter, back);
             return;
         case MENU_PAGE_RUN_TEST:
             handle_run_test(up, down, enter, back);

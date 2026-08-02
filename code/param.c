@@ -5,16 +5,31 @@
 // 参数描述表
 const param_desc_t g_param_table[] =
 {
-    // 速度与循迹
-    { "track_base_speed", &g_param.track_base_speed, 0, 0.0f,    200.0f  },
-    { "speed_up_rate",    &g_param.speed_up_rate,    1, 0.0f,    100.0f  },
-    { "speed_down_rate",  &g_param.speed_down_rate,  1, 0.0f,    100.0f  },
-    { "track_err_gain",   &g_param.track_err_gain,   1, -20.0f,  20.0f   },
-    { "speed_ramp_gain",  &g_param.speed_ramp_gain,  1, 0.0f,    1.5f    },
-    { "speed_ring_gain",  &g_param.speed_ring_gain,  1, 0.0f,    1.5f    },
+    // 正式跑车与循迹
+    { "run_speed_straight",     &g_param.run_speed_straight,     1, 0.0f,    RUN_SPEED_MAX_MPS },
+    { "run_speed_curve",        &g_param.run_speed_curve,        1, 0.0f,    RUN_SPEED_MAX_MPS },
+    { "run_speed_cross",        &g_param.run_speed_cross,        1, 0.0f,    RUN_SPEED_MAX_MPS },
+    { "run_speed_ring",         &g_param.run_speed_ring,         1, 0.0f,    RUN_SPEED_MAX_MPS },
+    { "run_speed_ramp",         &g_param.run_speed_ramp,         1, 0.0f,    RUN_SPEED_MAX_MPS },
+    { "run_speed_lost",         &g_param.run_speed_lost,         1, 0.0f,    RUN_SPEED_MAX_MPS },
+    { "run_accel_mps2",         &g_param.run_accel_mps2,         1, 0.05f,   10.0f   },
+    { "run_decel_mps2",         &g_param.run_decel_mps2,         1, 0.05f,   10.0f   },
+    { "track_lat_gain",         &g_param.track_lat_gain,         1, -500.0f, 500.0f  },
+    { "track_head_gain",        &g_param.track_head_gain,        1, -20.0f,  20.0f   },
+    { "track_curve_gain",       &g_param.track_curve_gain,       1, -500.0f, 500.0f  },
+    { "zebra_stop_offset_m",    &g_param.zebra_stop_offset_m,    1, 0.0f,    2.0f    },
+    { "err_front_row",    &g_param.err_front_row,    0, 10.0f,   115.0f  },
+    // 逆透视矩阵九个系数。不在任何菜单页里，由 Calib IPM 动作行写入并存 Flash
+    { "ipm_h0",           &g_param.ipm_h[0],         1, -1e8f,   1e8f    },
+    { "ipm_h1",           &g_param.ipm_h[1],         1, -1e8f,   1e8f    },
+    { "ipm_h2",           &g_param.ipm_h[2],         1, -1e8f,   1e8f    },
+    { "ipm_h3",           &g_param.ipm_h[3],         1, -1e8f,   1e8f    },
+    { "ipm_h4",           &g_param.ipm_h[4],         1, -1e8f,   1e8f    },
+    { "ipm_h5",           &g_param.ipm_h[5],         1, -1e8f,   1e8f    },
+    { "ipm_h6",           &g_param.ipm_h[6],         1, -1e8f,   1e8f    },
+    { "ipm_h7",           &g_param.ipm_h[7],         1, -1e8f,   1e8f    },
+    { "ipm_h8",           &g_param.ipm_h[8],         1, -1e8f,   1e8f    },
     { "cam_exposure",     &g_param.cam_exposure,     0,  4.0f,   1600.0f },
-    { "road_wide_near",   &g_param.road_wide_near,   0,  8.0f,   176.0f  },
-    { "road_wide_far",    &g_param.road_wide_far,    0,  8.0f,   176.0f  },
     { "odom_counts_per_m",&g_param.odom_counts_per_m,1, 100.0f,  50000.0f },
     { "odom_test_speed",  &g_param.odom_test_speed,  1, 0.05f,   0.50f    },
     // Roll 串级
@@ -45,31 +60,24 @@ const param_desc_t g_param_table[] =
     { "y_rate_ki",        &g_param.y_rate_ki,        1, -50.0f,   50.0f  },
     { "y_rate_kd",        &g_param.y_rate_kd,        1, -200.0f,  200.0f },
     // 压弯
-    { "lean_k1",          &g_param.lean_k1,          1, -1.0f,    1.0f   },
-    // 上限必须大于理论值 0.102，原来的 0.1 会把默认值钳掉
-    { "lean_k2",          &g_param.lean_k2,          1, -1.0f,    1.0f   },
-    { "lean_limit",       &g_param.lean_limit,       1, 0.0f,     15.0f  },
-    { "lean_limit_mode",  &g_param.lean_limit_mode,  0, 0.0f,     1.0f   },
-    { "lean_slew",        &g_param.lean_slew,        1, 0.0f,     5.0f   },
-    // 元素阈值
+    { "lean_turn_k1",       &g_param.lean_turn_k1,       1, 0.0f,  0.01f          },
+    { "lean_mode",          &g_param.lean_mode,          0, 0.0f,  1.0f           },
+    { "lean_fixed_limit",   &g_param.lean_fixed_limit,   1, 0.0f,  LEAN_LIMIT_MAX },
+    { "lean_speed_cap_k",   &g_param.lean_speed_cap_k,   1, 0.0f,  10.0f          },
+    // 元素现场参数
     { "elem_en_zebra",    &g_param.elem_en_zebra,    0, 0.0f,     1.0f   },
     { "elem_en_cross",    &g_param.elem_en_cross,    0, 0.0f,     1.0f   },
     { "elem_en_ring",     &g_param.elem_en_ring,     0, 0.0f,     1.0f   },
     { "elem_en_ramp",     &g_param.elem_en_ramp,     0, 0.0f,     1.0f   },
-    { "zebra_jump_cnt",   &g_param.zebra_jump_cnt,   0, 0.0f,     60.0f  },
-    { "cross_lost_cnt",   &g_param.cross_lost_cnt,   0, 0.0f,     80.0f  },
     { "ring_angle",       &g_param.ring_angle,       0, 0.0f,     720.0f },
     { "ring_s2_cnt_l",    &g_param.ring_s2_cnt_l,    0, 0.0f,     5000.0f},
     { "ring_s2_cnt_r",    &g_param.ring_s2_cnt_r,    0, 0.0f,     5000.0f},
     { "ring_side_offset", &g_param.ring_side_offset, 0, 0.0f,     80.0f  },
-    { "ring_timeout_cnt", &g_param.ring_timeout_cnt, 0, 0.0f,     5000.0f},
-    { "elem_guard_cnt",   &g_param.elem_guard_cnt,   0, 0.0f,     1000.0f},
     // 零点、标定与保护
     { "roll_zero_init",   &g_param.roll_zero_init,   1, -45.0f,   45.0f  },
     { "pitch_zero_init",  &g_param.pitch_zero_init,  1, -45.0f,   45.0f  },
     { "roll_protect",     &g_param.roll_protect_angle, 1, 1.0f,   90.0f  },
     { "pitch_protect",    &g_param.pitch_protect_angle,1, 1.0f,   90.0f  },
-    { "err_offset",       &g_param.err_offset,       1, -90.0f,   90.0f  },
     // 电机与编码器极性
     { "motor_dir_a",      &g_param.motor_dir_a,      0, -1.0f,    1.0f   },
     { "motor_dir_b",      &g_param.motor_dir_b,      0, -1.0f,    1.0f   },
@@ -179,16 +187,11 @@ uint8 param_get_by_name(const char *name, float *value)
     return 1;
 }
 
-// Flash 数据区。
-// 记录布局：magic + 条数 N + N 组(键, 值) + 末尾一个 CRC32 字。
-// 键由参数名和类型哈希得到，与表内顺序无关。加参数、删参数、调整顺序都不会
-// 动到其他参数已经存下来的值，所以不需要版本号，也不会因为改表把标定清掉。
 #define PARAM_FLASH_SECTOR       (0u)           // DFlash 扇区
 #define PARAM_FLASH_PAGE         (11u)          // DFlash 页
 #define PARAM_MAGIC_INDEX        (0u)           // 魔数所在字
 #define PARAM_COUNT_INDEX        (1u)           // 条数所在字
 #define PARAM_FIRST_RECORD_INDEX (2u)           // 第一组键值对所在字
-// 一页最多放得下多少组键值对，扣掉 magic、条数和 CRC 三个字
 #define PARAM_MAX_RECORDS        ((uint32)((EEPROM_PAGE_LENGTH - 3u) / 2u))
 #define PARAM_RECORD_WORDS       ((uint32)(3u + (uint32)PARAM_TABLE_NUM * 2u))  // 整条记录字数
 
@@ -360,15 +363,21 @@ static void param_normalize_dirs(void)
 //-------------------------------------------------------------------------------------------------------------------
 void param_load_defaults(void)
 {
-    g_param.track_base_speed = TRACK_BASE_SPEED_DEFAULT;
-    g_param.speed_up_rate    = SPEED_UP_RATE_DEFAULT;
-    g_param.speed_down_rate  = SPEED_DOWN_RATE_DEFAULT;
-    g_param.track_err_gain   = TRACK_ERR_GAIN_DEFAULT;
-    g_param.speed_ramp_gain  = SPEED_RAMP_GAIN_DEFAULT;
-    g_param.speed_ring_gain  = SPEED_RING_GAIN_DEFAULT;
+    g_param.run_speed_straight     = RUN_SPEED_STRAIGHT_DEFAULT;
+    g_param.run_speed_curve        = RUN_SPEED_CURVE_DEFAULT;
+    g_param.run_speed_cross        = RUN_SPEED_CROSS_DEFAULT;
+    g_param.run_speed_ring         = RUN_SPEED_RING_DEFAULT;
+    g_param.run_speed_ramp         = RUN_SPEED_RAMP_DEFAULT;
+    g_param.run_speed_lost         = RUN_SPEED_LOST_DEFAULT;
+    g_param.run_accel_mps2         = RUN_ACCEL_MPS2_DEFAULT;
+    g_param.run_decel_mps2         = RUN_DECEL_MPS2_DEFAULT;
+    g_param.track_lat_gain         = TRACK_LAT_GAIN_DEFAULT;
+    g_param.track_head_gain        = TRACK_HEAD_GAIN_DEFAULT;
+    g_param.track_curve_gain       = TRACK_CURVE_GAIN_DEFAULT;
+    g_param.zebra_stop_offset_m    = ZEBRA_STOP_OFFSET_M_DEFAULT;
+    g_param.err_front_row    = ERR_FRONT_ROW_DEFAULT;
+    for (int ipm_i = 0; ipm_i < 9; ipm_i++) g_param.ipm_h[ipm_i] = 0.0f;
     g_param.cam_exposure     = CAM_EXPOSURE_DEFAULT;
-    g_param.road_wide_near   = ROAD_WIDE_NEAR_DEFAULT;
-    g_param.road_wide_far    = ROAD_WIDE_FAR_DEFAULT;
     g_param.odom_counts_per_m = ODOM_COUNTS_PER_M_DEFAULT;
     g_param.odom_test_speed   = ODOM_TEST_SPEED_DEFAULT;
 
@@ -399,30 +408,23 @@ void param_load_defaults(void)
     g_param.y_rate_ki  = Y_RATE_KI_DEFAULT;
     g_param.y_rate_kd  = Y_RATE_KD_DEFAULT;
 
-    g_param.lean_k1         = LEAN_K1_DEFAULT;
-    g_param.lean_k2         = LEAN_K2_DEFAULT;
-    g_param.lean_limit      = LEAN_LIMIT_DEFAULT;
-    g_param.lean_limit_mode = LEAN_LIMIT_MODE_DEFAULT;
-    g_param.lean_slew       = LEAN_SLEW_DEFAULT;
+    g_param.lean_turn_k1       = LEAN_TURN_K1_DEFAULT;
+    g_param.lean_mode          = LEAN_MODE_DEFAULT;
+    g_param.lean_fixed_limit   = LEAN_FIXED_LIMIT_DEFAULT;
+    g_param.lean_speed_cap_k   = LEAN_SPEED_CAP_K_DEFAULT;
     g_param.elem_en_zebra    = ELEM_EN_ZEBRA_DEFAULT;
     g_param.elem_en_cross    = ELEM_EN_CROSS_DEFAULT;
     g_param.elem_en_ring     = ELEM_EN_RING_DEFAULT;
     g_param.elem_en_ramp     = ELEM_EN_RAMP_DEFAULT;
-
-    g_param.zebra_jump_cnt   = ZEBRA_JUMP_CNT_DEFAULT;
-    g_param.cross_lost_cnt   = CROSS_LOST_CNT_DEFAULT;
     g_param.ring_angle       = RING_ANGLE_DEFAULT;
     g_param.ring_s2_cnt_l    = RING_S2_CNT_L_DEFAULT;
     g_param.ring_s2_cnt_r    = RING_S2_CNT_R_DEFAULT;
     g_param.ring_side_offset = RING_SIDE_OFFSET_DEFAULT;
-    g_param.ring_timeout_cnt = RING_TIMEOUT_CNT_DEFAULT;
-    g_param.elem_guard_cnt   = ELEM_GUARD_CNT_DEFAULT;
 
     g_param.roll_zero_init      = ROLL_ZERO_INIT_DEFAULT;
     g_param.pitch_zero_init     = PITCH_ZERO_INIT_DEFAULT;
     g_param.roll_protect_angle  = ROLL_PROTECT_ANGLE_DEFAULT;
     g_param.pitch_protect_angle = PITCH_PROTECT_ANGLE_DEFAULT;
-    g_param.err_offset          = 0.0f;            // 中线偏差零点
 
 
     g_param.motor_dir_a = MOTOR_DIR_A_DEFAULT;
@@ -501,10 +503,6 @@ void param_init(void)
     g_param_revision++;
 }
 
-// 整页 Flash 一次只能整体擦写，所以"只存这一页的参数"实际做法是：
-// 先把 Flash 里现有的记录读出来铺到 s_stored[]，写的时候本页参数取内存里的当前值，
-// 其余参数原样搬旧值回去。旧记录里没有的参数就整条不写，保持"从没存过"这个状态，
-// 下次上电它照样回默认值。记录条数是变长的，param_init() 只遍历 count 条。
 static flash_data_union s_stored[PARAM_TABLE_NUM];  // Flash 里现存的值，按参数表下标铺开
 static uint8            s_stored_ok[PARAM_TABLE_NUM];   // 该参数在 Flash 里有记录
 

@@ -5,10 +5,6 @@
 #include "pid.h"
 #include "vofa.h"
 
-// Roll  车体左右倾：飞轮回收环(20ms) -> 角度环(5ms) -> 角速度环(1ms)，A/B 动量轮差动
-// Pitch 车体前后倾：速度环(20ms)     -> 角度环(5ms) -> 角速度环(1ms)，C 行进轮
-// Yaw   车体航向  ：转向外环(5ms)                   -> 角速度内环(1ms)，A/B 动量轮同向
-
 // 发车状态，上电默认 START_STOP
 typedef enum {
     START_STOP = 0,     // 三电机零输出，A/B 刹车锁死
@@ -28,6 +24,7 @@ extern float g_yaw_target;                           // 转向外环目标航向
 extern float  g_dbg_error;                  // 中线偏差，右偏为正
 extern uint8  g_imu_ok;                     // IMU660RB 初始化结果
 extern uint8  g_cam_ok;                     // CPU1 摄像头就绪标志
+extern uint8  g_vision_ipm_ok;               // CPU1 侧逆透视是否可用
 extern uint8  g_track_valid;                // 最新一帧循迹是否有效
 extern uint16 g_track_lost_frames;          // 连续无效帧计数
 extern volatile uint16 g_vision_age_ms;     // 距上一帧视觉结果的时间(ms)
@@ -41,20 +38,26 @@ extern uint16 g_vision_right_lost;          // 最新右边线丢线行数
 extern uint16 g_vision_both_lost;           // 最新双边丢线行数
 extern uint8  g_vision_active_elem;          // 最新元素编号
 extern uint8  g_vision_island_state;         // 最新环岛状态号，0=空闲
-extern float  g_vision_speed_scale;          // 元素建议速度倍率，Run 尚未使用
-extern uint8  g_vision_stop_request;         // 元素停车请求，Run 尚未使用
+extern float  g_vision_lateral_error;        // 车道半宽归一化横向误差
+extern float  g_vision_heading_error;        // 赛道航向误差(°)
+extern float  g_vision_curvature;            // 有符号归一化曲率
+extern float  g_vision_quality;              // 循迹质量(0..1)
+extern float  g_vision_speed_limit_mps;      // 视觉/元素绝对限速(m/s)
+extern uint8  g_vision_stop_request;         // 斑马线终点请求
+extern float  g_run_speed_target_mps;        // 正式 Run 当前规划速度(m/s)
+extern float  g_run_yaw_rate_cmd;            // 正式 Run 斜率限制后的目标横摆角速度(°/s)
 extern float  g_vision_fps;                  // CPU1 出帧率(帧/s)，1ms 中断写，菜单与图像页读
-extern float  g_vision_vsync_fps;            // 摄像头 VSYNC 频率(帧/s)
-extern float  g_vision_dma_fps;              // DMA 完整帧频率(帧/s)
-extern float  g_vision_drop_fps;             // CPU1 忙导致的丢帧频率(帧/s)
-extern uint32 g_vision_grab_us;              // 最近一帧 ROI 复制耗时
-extern uint32 g_vision_binarize_us;          // 最近一帧大津与二值化耗时
-extern uint32 g_vision_edge_us;              // 最近一帧八邻域提边耗时
-extern uint32 g_vision_element_us;           // 最近一帧元素处理耗时
-extern uint32 g_vision_process_us;           // 最近一帧 CPU1 总处理耗时
-extern uint32 g_vision_process_max_us;       // 本次摄像头启动后的最大处理耗时
 
-// Test 启动结果，菜单据此显示可操作的提示
+typedef enum
+{
+    RUN_STOP_NONE = 0,          // 还没停过
+    RUN_STOP_ZEBRA,             // 过斑马线正常终点停车
+    RUN_STOP_LOST,              // 连续丢线超时
+    RUN_STOP_VISION,            // CPU1 停帧
+    RUN_STOP_MANUAL,            // 人为停车
+    RUN_STOP_SAFETY,            // 姿态、IMU、驱动或超速保护
+} run_stop_t;
+
 typedef enum
 {
     CTRL_TEST_STATUS_OK = 0,        // 已启动
@@ -123,6 +126,62 @@ void control_stop(void);
 uint8 control_balance_start(void);
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     请求 CPU1 用当前这一帧直道图标定逆透视
+// 参数说明     void
+// 返回参数     uint8           1=命令已发出
+// 使用示例     control_ipm_calib_request();
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_ipm_calib_request(void);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     主循环里把新标定出的逆透视矩阵写进 Flash
+// 参数说明     void
+// 返回参数     uint8           1=有待存矩阵且 Flash 写入成功，0=无待存矩阵或保存失败
+// 使用示例     if (control_ipm_flush()) menu_status("IPM SAVED");
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_ipm_flush(void);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     查询是否还有标定好的逆透视矩阵在等着写 Flash
+// 参数说明     void
+// 返回参数     uint8           1=还没写进 Flash 0=已经落盘或本来就没有新矩阵
+// 使用示例     if (!control_ipm_pending()) menu_status("IPM SAVED");
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_ipm_pending(void);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     启动正式跑车，先按三轴平衡的全部安全条件完成发车
+// 参数说明     void
+// 返回参数     uint8           1=已启动 0=被安全条件阻止
+// 使用示例     if (!control_run_start()) menu_status("RUN BLOCKED");
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_run_start(void);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     停止正式跑车并锁停全部电机
+// 参数说明     void
+// 返回参数     void
+// 使用示例     control_run_stop();
+//-------------------------------------------------------------------------------------------------------------------
+void control_run_stop(void);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     查询正式跑车是否在跑
+// 参数说明     void
+// 返回参数     uint8           1=跑车中
+// 使用示例     if (control_run_running()) { ... }
+//-------------------------------------------------------------------------------------------------------------------
+uint8 control_run_running(void);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读取最近一次跑车的停车原因
+// 参数说明     void
+// 返回参数     run_stop_t      停车原因
+// 使用示例     menu_status(run_stop_text(control_run_stop_reason()));
+//-------------------------------------------------------------------------------------------------------------------
+run_stop_t control_run_stop_reason(void);
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     启动无线 Run Test，进入三轴平衡并等待 speed:turn,speed 命令
 // 参数说明     void
 // 返回参数     uint8           1=已启动 0=被安全条件阻止
@@ -140,7 +199,7 @@ void control_remote_stop(void);
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     写入无线遥控的相对航向角与行进速度目标
-// 参数说明     steer_angle/speed_mps 相对发车航向角度(°)与速度(m/s)
+// 参数说明     steer_angle/speed_mps 相对接收时航向角度(°)与速度(m/s)
 // 返回参数     uint8           1=已接受 0=未运行或命令越界
 // 使用示例     control_remote_command(30.0f, 0.20f);
 //-------------------------------------------------------------------------------------------------------------------

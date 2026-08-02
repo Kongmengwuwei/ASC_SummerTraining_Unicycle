@@ -16,8 +16,8 @@ typedef enum {
 typedef struct {
     volatile int cross;         // 十字处理中
     volatile int island;        // 环岛处理中
-    volatile int ramp;          // 坡道处理中
     volatile int zebra;         // 斑马线确认状态
+    volatile int ramp;          // 坡道处理中
 } order_t;
 
 typedef struct {
@@ -28,13 +28,13 @@ typedef struct {
     volatile int state4_count;  // 状态4总里程基准
     volatile int state5_count;  // 状态5总里程基准
     float        state3_angle;  // 状态3元素角基准
-    int          state_frames;  // 当前状态已停留帧数，超时用
+    uint32       state_since_ms;// 当前状态进入时间(ms)
 } island_t;
 
 typedef struct {
-    float       speed_scale;    // 元素速度倍率
-    elem_type_t active_elem;    // 当前元素
-    uint8       stop_request;   // 停车请求
+    float       speed_limit_mps;  // 当前元素绝对限速(m/s)
+    elem_type_t active_elem;      // 当前元素
+    uint8       stop_request;     // 终点停车请求
     int         ring_side_offset; // 环岛单边循迹补偿
 } elem_action_t;
 
@@ -44,22 +44,23 @@ typedef struct
     float  element_yaw;
     float  pitch;
     float  pitch_rate;
+    float  drive_speed_mps;
+    float  drive_output;
     float  track_error;
-    float  speed_ramp_gain;
-    float  speed_ring_gain;
+    uint8  track_valid;          // 上一帧循迹结果有效
+    float  speed_cross_mps;
+    float  speed_ring_mps;
+    float  speed_ramp_mps;
     uint32 uptime_ms;
-    int    zebra_jump_cnt;
-    int    cross_lost_cnt;
     int    ring_angle;
     int    ring_s2_cnt_l;
     int    ring_s2_cnt_r;
     int    ring_side_offset;
-    int    ring_timeout_cnt;    // 环岛单状态最长停留帧数，超了强制回空闲
-    int    elem_guard_cnt;      // 元素退出后的屏蔽帧数
     uint8  en_zebra;            // 各元素使能，0=本帧不检测并清自己的旗标
     uint8  en_cross;
     uint8  en_ring;
     uint8  en_ramp;
+    uint8  run_active;           // 正式 Run 状态，上升沿清理旧元素
 } element_motion_t;
 
 extern order_t       g_order;
@@ -67,9 +68,9 @@ extern island_t      g_island;
 extern elem_action_t g_elem_action;
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     把元素编号翻译成定长 5 字符的显示名字，供 CPU0 的图像页与菜单用
-// 参数说明     elem            elem_type_t 取值
-// 返回参数     const char*     定长 5 字符名字，越界返回 "NONE "
+// 函数简介     把元素编号转换为屏幕显示名称
+// 参数说明     elem            元素编号，类型为 uint8
+// 返回参数     const char*     定长 5 字符名称，未知编号返回 "NONE "
 // 使用示例     ips200_show_string(160, 0, element_name(frame->active_elem));
 //-------------------------------------------------------------------------------------------------------------------
 const char *element_name(uint8 elem);

@@ -6,10 +6,10 @@
 #include "vision_core.h"
 #include "zf_device_ips200.h"
 
-#define IMAGE_PAGE_X       (40)         // 图像区在 320 像素宽屏幕内水平居中
+#define IMAGE_PAGE_X       (40)         // 图像区在横屏 320 像素宽屏幕内水平居中
 #define IMAGE_PAGE_Y       (74)         // 图像区在状态栏下方垂直居中
-#define IMAGE_PAGE_W       (240)        // 缩短单次 SPI 整图传输时间，减轻扫描撕裂
-#define IMAGE_PAGE_H       (107)        // 接近 180:80 原始宽高比
+#define IMAGE_PAGE_W       (240)        // 横屏显示区
+#define IMAGE_PAGE_H       (107)        // 保持原有图像页布局
 
 static disp_mode_t s_mode = DISP_MODE_BIN_LINE;         // 当前显示模式
 static uint8       s_last_mode = 0xFF;                  // 上次已绘制的模式，变了要整屏清一次
@@ -18,10 +18,15 @@ static uint16      s_exposure = CAM_EXPOSURE_DEFAULT;   // 当前曝光时间
 static uint8       s_image_page_active = 0;             // IPS200 处于横屏图像页
 static const vision_display_frame_t *s_frame;           // 本次绘制期间锁定的 CPU1 快照
 
+static uint8       s_ipm_pick = IPM_PICK_NO_TRACK;      // 上一帧取角点的结果，ipm_pick_t
+static uint8       s_ipm_row_near;                      // 上一帧选中的近端行
+static uint8       s_ipm_row_far;                       // 上一帧选中的远端行
+static uint8       s_ipm_col[4];                        // 四个角点列：近左/近右/远左/远右
+
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     把算法图像列坐标映射到横屏图像区
 // 参数说明     col             算法图像列坐标
-// 返回参数     uint16          横屏横坐标
+// 返回参数     uint16          屏幕横坐标
 // 使用示例     x = image_page_map_x(s_frame->mid_line[row]);
 //-------------------------------------------------------------------------------------------------------------------
 static uint16 image_page_map_x(int col)
@@ -37,7 +42,7 @@ static uint16 image_page_map_x(int col)
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     把算法图像行坐标映射到横屏图像区
 // 参数说明     row             算法图像行坐标
-// 返回参数     uint16          横屏纵坐标
+// 返回参数     uint16          屏幕纵坐标
 // 使用示例     y = image_page_map_y(row);
 //-------------------------------------------------------------------------------------------------------------------
 static uint16 image_page_map_y(int row)
@@ -74,7 +79,7 @@ static void image_page_draw_segment(int col0, int row0, int col1, int row1, uint
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     把 180x80 算法帧等比例放大到居中图像区
+// 函数简介     把 180x80 算法帧等比例放大到图像区
 // 参数说明     void
 // 返回参数     void
 // 使用示例     image_page_blit();
@@ -141,15 +146,20 @@ static void image_page_overlay_lines(void)
             last_right_row = -2;
         }
 
-        if (last_mid_row == row + 1)
-            image_page_draw_segment(last_mid_col, last_mid_row,
-                                    s_frame->mid_line[row], row,
-                                    s_frame->mid_valid[row] ? RGB565_RED : RGB565_YELLOW);
+        if (s_frame->mid_valid[row])
+        {
+            if (last_mid_row == row + 1)
+                image_page_draw_segment(last_mid_col, last_mid_row,
+                                        s_frame->mid_line[row], row, RGB565_RED);
+            else
+                image_page_draw_point(s_frame->mid_line[row], row, RGB565_RED);
+            last_mid_col = s_frame->mid_line[row];
+            last_mid_row = row;
+        }
         else
-            image_page_draw_point(s_frame->mid_line[row], row,
-                                  s_frame->mid_valid[row] ? RGB565_RED : RGB565_YELLOW);
-        last_mid_col = s_frame->mid_line[row];
-        last_mid_row = row;
+        {
+            last_mid_row = -2;
+        }
     }
 }
 
@@ -177,12 +187,91 @@ static void image_page_draw_header(void)
     ips200_show_int(104, 0, (int32)((s_frame != 0) ? s_frame->threshold : 0), 3);
     ips200_show_string(136, 0, "V");
     ips200_show_int(144, 0, (int32)((s_frame != 0) ? s_frame->track_valid : 0), 1);
-    // 元素显示名字而不是编号，跑车时一眼就能看出识别成了什么
-    ips200_show_string(160, 0,
+
+    ips200_show_string(0, 16,
         element_name((s_frame != 0) ? s_frame->active_elem : (uint8)ELEM_NONE));
-    // 帧率取整显示。它统计的是 CPU1 出帧速度，与本页刷屏速度无关
-    ips200_show_string(216, 0, "F");
-    ips200_show_int(224, 0, (int32)(g_vision_fps + 0.5f), 3);
+
+    ips200_show_string(48, 16, "F");
+    ips200_show_int(56, 16, (int32)(g_vision_fps + 0.5f), 3);
+
+    ips200_show_string(96, 16, "L");
+    ips200_show_int(104, 16, (int32)((s_frame != 0) ? s_frame->search_stop_line : 0), 3);
+
+    ips200_set_color(g_vision_ipm_ok ? RGB565_GREEN : RGB565_RED, RGB565_BLACK);
+    ips200_show_string(136, 16, "P");
+    ips200_show_int(144, 16, (int32)g_vision_ipm_ok, 1);
+    ips200_set_color(RGB565_WHITE, RGB565_BLACK);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     在图像上画出逆透视标定的两条采样行与四个采样点
+// 参数说明     void
+// 返回参数     uint8            1=两行都有完整的左右边线，可以标定
+// 使用示例     if (display_ipm_overlay()) menu_status("READY");
+//-------------------------------------------------------------------------------------------------------------------
+uint8 display_ipm_overlay(void)
+{
+    int rows[2], k;
+
+    if (!s_image_page_active) return (uint8)IPM_PICK_NO_TRACK;
+    if (s_ipm_pick != (uint8)IPM_PICK_OK) return s_ipm_pick;
+
+    rows[0] = s_ipm_row_near;
+    rows[1] = s_ipm_row_far;
+
+    for (k = 0; k < 2; k++)
+    {
+        int r = rows[k];
+        int cl = s_ipm_col[2 * k];
+        int cr = s_ipm_col[2 * k + 1];
+
+        if (r <= 0 || r >= IMG_H) return (uint8)IPM_PICK_NO_TRACK;
+
+        // 只画两个角点之间那一段，横线的两端就是梯形的边
+        image_page_draw_segment(cl, r, cr, r, RGB565_GREEN);
+        image_page_draw_segment(cl - 3, r, cl + 3, r, RGB565_YELLOW);
+        image_page_draw_segment(cl, r - 3, cl, r + 3, RGB565_YELLOW);
+        image_page_draw_segment(cr - 3, r, cr + 3, r, RGB565_YELLOW);
+        image_page_draw_segment(cr, r - 3, cr, r + 3, RGB565_YELLOW);
+    }
+    // 梯形的两条斜边，摆正了它应该左右对称
+    image_page_draw_segment(s_ipm_col[0], rows[0], s_ipm_col[2], rows[1], RGB565_GREEN);
+    image_page_draw_segment(s_ipm_col[1], rows[0], s_ipm_col[3], rows[1], RGB565_GREEN);
+    return (uint8)IPM_PICK_OK;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读上一帧逆透视标定选中的近端行号
+// 参数说明     void
+// 返回参数     uint8            行号，0=没选到
+// 使用示例     row = display_ipm_row_near();
+//-------------------------------------------------------------------------------------------------------------------
+uint8 display_ipm_row_near(void)
+{
+    return s_ipm_row_near;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读上一帧逆透视标定选中的远端行号
+// 参数说明     void
+// 返回参数     uint8            行号，0=没选到
+// 使用示例     row = display_ipm_row_far();
+//-------------------------------------------------------------------------------------------------------------------
+uint8 display_ipm_row_far(void)
+{
+    return s_ipm_row_far;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     读上一帧逆透视标定两个采样行上的赛道像素宽度
+// 参数说明     near             1=近端行，0=远端行
+// 返回参数     int              宽度(像素)，没选到时是 0
+// 使用示例     w = display_ipm_width(0);
+//-------------------------------------------------------------------------------------------------------------------
+int display_ipm_width(uint8 near)
+{
+    return near ? ((int)s_ipm_col[1] - (int)s_ipm_col[0])
+                : ((int)s_ipm_col[3] - (int)s_ipm_col[2]);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -226,7 +315,6 @@ void display_image_page_enter(void)
 {
     if (s_image_page_active) return;
 
-    // 横屏两个方向差 180°，这里选的是站在车尾侧看的方向
     ips200_set_dir(IPS200_CROSSWISE_180);
     ips200_init(IPS200_TYPE_SPI);
     ips200_set_font(IPS200_8X16_FONT);
@@ -323,7 +411,6 @@ void display_track_view(void)
 
     if (!s_image_page_active) return;
 
-    // 快照还没准备好，或者是上一个模式生成的，先重新请求，本次只刷状态栏
     if (!vision_display_read(&frame))
     {
         vision_display_request((vision_display_mode_t)s_mode);
@@ -349,6 +436,11 @@ void display_track_view(void)
     if (s_mode == DISP_MODE_BIN_LINE)
         image_page_overlay_lines();
     image_page_draw_header();
+
+    s_ipm_pick = s_frame->ipm_pick;
+    s_ipm_row_near = s_frame->ipm_row_near;
+    s_ipm_row_far = s_frame->ipm_row_far;
+    memcpy(s_ipm_col, s_frame->ipm_col, sizeof(s_ipm_col));
 
     vision_display_release();
     s_frame = 0;

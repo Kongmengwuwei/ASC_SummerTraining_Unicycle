@@ -66,10 +66,8 @@ IFX_INTERRUPT(uart2_rx_isr, 0, UART2_RX_INT_PRIO)
 {
     interrupt_global_enable(0);
 
-    // 这里不能先调 IfxAsclin_Asc_isrReceive()：它会把硬件 FIFO 搬进 iLLD 的软件环，
-    // 而 wireless_uart_callback() 走的是 uart_query_byte()，读的是硬件 FIFO，会读空。
-    // 接收 FIFO 中断门限是 1 字节，一个字节一次中断，回调每次读一个正好对上。
-    // 与 UART3 的 W_Motor_RxHandler() 同一套写法。
+    // 这里不能先调 IfxAsclin_Asc_isrReceive()：设备回调直接读取硬件 FIFO。
+    // 回调一次排空当前 FIFO，避免连续字节到达时只取走首字节。
     wireless_module_uart_handler();
 }
 

@@ -8,16 +8,22 @@
 // 参数结构
 typedef struct
 {
-    // 速度与循迹
-    int   track_base_speed;             // 基准速度
-    float speed_up_rate;                // 速度目标加速斜坡(counts/20ms 每 20ms 拍)
-    float speed_down_rate;              // 速度目标减速斜坡(counts/20ms 每 20ms 拍)
-    float track_err_gain;               // 循迹误差增益
-    float speed_ramp_gain;              // 坡道降速倍率
-    float speed_ring_gain;              // 环岛降速倍率
+    // 正式跑车与循迹
+    float run_speed_straight;           // 直道速度(m/s)
+    float run_speed_curve;              // 弯道最低速度(m/s)
+    float run_speed_cross;              // 十字速度(m/s)
+    float run_speed_ring;               // 环岛速度(m/s)
+    float run_speed_ramp;               // 坡道速度(m/s)
+    float run_speed_lost;               // 低质量或短时丢线速度(m/s)
+    float run_accel_mps2;               // 正式跑车加速度上限(m/s^2)
+    float run_decel_mps2;               // 正式跑车减速度上限(m/s^2)
+    float track_lat_gain;               // 横向误差到目标角速度增益
+    float track_head_gain;              // 航向误差到目标角速度增益
+    float track_curve_gain;             // 曲率前馈增益
+    float zebra_stop_offset_m;          // 识别斑马线后的前行距离(m)
+    int   err_front_row;                // 前瞻行，拟合线在这一行求值
+    float ipm_h[9];                     // 逆透视矩阵，行优先。不进菜单，由 Calib IPM 写
     int   cam_exposure;                 // 摄像头曝光时间
-    int   road_wide_near;               // 近端标准赛道宽度(像素)，算法行 IMG_H-1
-    int   road_wide_far;                // 远端标准赛道宽度(像素)，算法行 0
     float odom_counts_per_m;            // C 轮每行进 1m 的编码器脉冲数
     float odom_test_speed;              // 1m 里程验证速度(m/s)
 
@@ -52,34 +58,27 @@ typedef struct
     float y_rate_kd;                    // 航向角速度内环 D
 
     // 压弯
-    float lean_k1;                      // 压弯系数 K1
-    float lean_k2;                      // 压弯系数 K2
-    float lean_limit;                   // 压弯角限幅
-    int   lean_limit_mode;              // 压弯限幅模式
-    float lean_slew;                    // 压弯零点变化速率(°/5ms 拍)
+    float lean_turn_k1;                 // 目标横摆角速度累加系数
+    int   lean_mode;                    // 0=固定限幅 1=速度相关限幅
+    float lean_fixed_limit;             // 模式 0 固定压弯上限(°)
+    float lean_speed_cap_k;             // 模式 1 速度限幅系数(°/(m/s))
 
     // 元素使能，0=关 1=开。默认全关，普通循迹跑稳后一次只开一个
     int   elem_en_zebra;                // 斑马线
     int   elem_en_cross;                // 十字
     int   elem_en_ring;                 // 环岛
     int   elem_en_ramp;                 // 坡道
-
-    // 元素阈值
-    int   zebra_jump_cnt;               // 斑马线横向跳变阈值
-    int   cross_lost_cnt;               // 十字丢线行数阈值
+    // 现场需要调整的元素路径参数
     int   ring_angle;                   // 环岛转角阈值
     int   ring_s2_cnt_l;                // 左环编码器阈值
     int   ring_s2_cnt_r;                // 右环编码器阈值
     int   ring_side_offset;             // 环岛单边巡线横向补偿
-    int   ring_timeout_cnt;             // 环岛单状态超时帧数，超时强制回空闲
-    int   elem_guard_cnt;               // 元素退出后的屏蔽帧数
 
     // 零点、标定与保护
     float roll_zero_init;               // 横滚机械零点初值
     float pitch_zero_init;              // 俯仰机械零点初值
     float roll_protect_angle;           // 横滚保护角度
     float pitch_protect_angle;          // 俯仰保护角度
-    float err_offset;                   // 中线偏差零点
 
     // 电机与编码器极性
     int   motor_dir_a;                  // 动量轮A占空比与转速回读极性
@@ -96,16 +95,21 @@ extern param_t g_param;                 // 运行参数
 extern volatile uint32 g_param_revision;// 参数修订号
 
 // 运行参数映射
-// 速度与循迹
-#define TRACK_BASE_SPEED        (g_param.track_base_speed)
-#define SPEED_UP_RATE           (g_param.speed_up_rate)
-#define SPEED_DOWN_RATE         (g_param.speed_down_rate)
-#define TRACK_ERR_GAIN          (g_param.track_err_gain)
-#define SPEED_RAMP_GAIN         (g_param.speed_ramp_gain)
-#define SPEED_RING_GAIN         (g_param.speed_ring_gain)
+// 正式跑车与循迹
+#define RUN_SPEED_STRAIGHT      (g_param.run_speed_straight)
+#define RUN_SPEED_CURVE         (g_param.run_speed_curve)
+#define RUN_SPEED_CROSS         (g_param.run_speed_cross)
+#define RUN_SPEED_RING          (g_param.run_speed_ring)
+#define RUN_SPEED_RAMP          (g_param.run_speed_ramp)
+#define RUN_SPEED_LOST          (g_param.run_speed_lost)
+#define RUN_ACCEL_MPS2          (g_param.run_accel_mps2)
+#define RUN_DECEL_MPS2          (g_param.run_decel_mps2)
+#define TRACK_LAT_GAIN          (g_param.track_lat_gain)
+#define TRACK_HEAD_GAIN         (g_param.track_head_gain)
+#define TRACK_CURVE_GAIN        (g_param.track_curve_gain)
+#define ZEBRA_STOP_OFFSET_M     (g_param.zebra_stop_offset_m)
+#define ERR_FRONT_ROW           (g_param.err_front_row)
 #define CAM_EXPOSURE            (g_param.cam_exposure)
-#define ROAD_WIDE_NEAR          (g_param.road_wide_near)
-#define ROAD_WIDE_FAR           (g_param.road_wide_far)
 #define ODOM_COUNTS_PER_M       (g_param.odom_counts_per_m)
 #define ODOM_TEST_SPEED         (g_param.odom_test_speed)
 
@@ -140,25 +144,10 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define Y_RATE_KD               (g_param.y_rate_kd)
 
 // 压弯
-#define LEAN_K1                 (g_param.lean_k1)
-#define LEAN_K2                 (g_param.lean_k2)
-#define LEAN_LIMIT              (g_param.lean_limit)
-#define LEAN_LIMIT_MODE         (g_param.lean_limit_mode)
-#define LEAN_SLEW               (g_param.lean_slew)
-
-// 元素阈值
-#define ELEM_EN_ZEBRA           (g_param.elem_en_zebra)
-#define ELEM_EN_CROSS           (g_param.elem_en_cross)
-#define ELEM_EN_RING            (g_param.elem_en_ring)
-#define ELEM_EN_RAMP            (g_param.elem_en_ramp)
-#define ZEBRA_JUMP_CNT          (g_param.zebra_jump_cnt)
-#define CROSS_LOST_CNT          (g_param.cross_lost_cnt)
-#define RING_ANGLE              (g_param.ring_angle)
-#define RING_S2_CNT_L           (g_param.ring_s2_cnt_l)
-#define RING_S2_CNT_R           (g_param.ring_s2_cnt_r)
-#define RING_SIDE_OFFSET        (g_param.ring_side_offset)
-#define RING_TIMEOUT_CNT        (g_param.ring_timeout_cnt)
-#define ELEM_GUARD_CNT          (g_param.elem_guard_cnt)
+#define LEAN_TURN_K1            (g_param.lean_turn_k1)
+#define LEAN_MODE               (g_param.lean_mode)
+#define LEAN_FIXED_LIMIT        (g_param.lean_fixed_limit)
+#define LEAN_SPEED_CAP_K        (g_param.lean_speed_cap_k)
 
 // 零点、标定与保护
 #define ROLL_ZERO_INIT          (g_param.roll_zero_init)

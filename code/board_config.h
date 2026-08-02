@@ -3,20 +3,7 @@
 
 #include "zf_common_headfile.h"
 
-// 硬件常量与各模块的默认值。
-// 本文件里的量是编译期常量；能在线整定的量在 param.h 里有对应的运行参数，
-// 菜单和无线串口改的是运行参数，本文件的 *_DEFAULT 只是上电初值。
-//
-// MCU  TC264D          IMU IMU660RB(LSM6DSR, SPI0)   Camera MT9V03X   Display IPS200(SPI)
-// A/B  动量轮          CYT2BL3 双路无刷驱动，霍尔六步换相，UART3 @460800
-// C    行进轮          DRV8701E 通道 1，DIR=P21_4 PWM=P21_5，编码器 TIM2(P33_7 脉冲 / P33_6 方向)
-// Roll 车体 X 左右倾   A/B 动量轮差动
-// Pitch 车体 Y 前后倾  C 行进轮
-// Yaw  车体 Z 航向     A/B 动量轮同向
-
-// 控制调度：1ms 角速度环，5ms 姿态与角度环、编码器，10ms 按键，20ms 速度环。
 #define CTRL_PERIOD_MS          (1)            // 控制中断周期(ms)
-#define CTRL_DT                 (0.001f)       // 陀螺仪积分步长(s)
 #define CTRL_PIT_CH             (CCU60_CH0)    // 控制定时器通道
 
 #define CTRL_DIV_ATT            (5)            // 姿态与角度环分频
@@ -44,7 +31,7 @@
 #define Y_MOTOR_ENCODER_B_PIN           (TIM2_ENCODER_CH2_P33_6)
 #define Y_MOTOR_ENCODER_PERIOD_MS       (5)
 
-// 电机与编码器极性，取值为 ±1。
+
 // A/B 的极性同时作用于占空比下发和转速回读，两者必须同源，否则回收环变正反馈。
 #define MOTOR_DIR_A_DEFAULT     (1)             // A轮输出与转速极性
 #define MOTOR_DIR_B_DEFAULT     (1)             // B轮输出与转速极性
@@ -70,13 +57,8 @@
 #define R_ANGLE_KP_DEFAULT      (0.0f)         // 横滚角度环 P
 #define R_ANGLE_KI_DEFAULT      (0.0f)         // 横滚角度环 I
 #define R_ANGLE_KD_DEFAULT      (0.0f)         // 横滚角度环 D
-// 横滚角度环积分限幅。这一路是整条 Roll 链里唯一的回正来源，必须留够量程。
-// 反作用轮力矩 = -J·dω/dt，占空比≈飞轮转速，所以：
-//   占空比 ∝ 角度   -> 力矩 ∝ 角速度 = 阻尼，回正为 0
-//   占空比 ∝ ∫角度  -> 力矩 ∝ 角度   = 回正      <- 只有积分项给得出
-// 角度环 5ms 一拍，imax=50 时 5° 倾角十拍就顶满，I 项退化成常数偏置等于没有。
-// 2000 允许 1° 持续 10 秒或 5° 持续 2 秒。这一环的输出不再单独限幅，
-// 由内环 pid_loc_calc_limited(±FLYWHEEL_OUT_LIMIT) 兜底，两个参考工程也是只限积分
+
+// 角度环输出由角速度环统一限幅，积分只限制累计状态。
 #define R_ANGLE_IMAX            (2000.0f)      // 横滚角度环积分限幅
 #define R_RATE_KP_DEFAULT       (0.0f)         // 横滚角速度环 P
 #define R_RATE_KI_DEFAULT       (0.0f)         // 横滚角速度环 I
@@ -107,30 +89,21 @@
 #define Y_RATE_KD_DEFAULT       (0.0f)         // 航向角速度内环 D
 #define Y_RATE_IMAX             (100.0f)       // 航向角速度内环积分限幅
 
-// 压弯动态零点。转弯时主动把车体往弯道内侧歪，让重力分量提供向心力，
-// 从而减少对动量轮差速的需求 —— 目的不是转得更快，是省下动量预算。
-//
-// 物理关系是标准的协调转弯：tan φ = v·ω / g，小角度下
-//     φ(°) = 57.3 × v(m/s) × ω(rad/s) / 9.81 = 0.102 × v(m/s) × ω(°/s)
-// 所以动态限幅取 LEAN_K2 × v × ω，K2 的理论值就是 0.102。
-// v 用 Y_Motor_GetSpeedMps() 而不是 counts/20ms：K2 才能是与里程标定无关的物理量，
-// 否则 odom_counts_per_m 一改 K2 就得重标。
-// 验算：v=0.5 m/s、ω=30°/s → 0.102×0.5×30 = 1.53°，与 v·ω/g = 0.262/9.81 一致。
-//
-// 累加式 (raw += ω×K1) 只是趋近手段，稳态值等于限幅本身，所以：
-//     模式 1：稳态 = K2×v×ω，K2 是物理增益，K1 只决定多快趋近  ← 默认走这条
-//     模式 0：稳态 = LEAN_LIMIT 固定值，与速度转角都无关，只作为 K2 未标定前的安全兜底
-// 模式 0 的限幅必须给小（2~3°）。曾经默认是 10°，配上只加不减的累加器，
-// 结果是任何持续转弯都恒定歪 10°，实车直接倒。
-#define LEAN_K1_DEFAULT         (0.002f)       // 趋近速率系数(°/(°/s)/拍)，不决定稳态倾角
-#define LEAN_K2_DEFAULT         (0.102f)       // 动态限幅系数，= tan φ ≈ v·ω/g 的理论值
-#define LEAN_LIMIT_DEFAULT      (3.0f)         // 模式 0 的固定限幅，也是模式 1 的兜底(°)
-#define LEAN_LIMIT_MODE_DEFAULT (1)            // 0=固定限幅，1=动态限幅 K2×v×ω
-#define LEAN_SLEW_DEFAULT       (0.08f)        // 零点变化速率(°/5ms 拍)，0=不限速率
-// 死区作用在实测横摆角速度上，挡住陀螺噪声，不再是"航向误差死区"
-#define LEAN_TURN_DEAD          (1.0f)         // 横摆角速度死区(°/s)
-#define LEAN_DECAY              (0.98f)        // 回零衰减系数(每 5ms 拍)，时间常数约 250ms
-#define LEAN_LIMIT_MAX          (15.0f)        // 压弯角硬上限(°)
+// 压弯由正式 Run 的目标横摆角速度累加动态零点，Yaw 串级仍是主转向控制。
+#define LEAN_TURN_K1_DEFAULT       (0.0005f)   // 每 5ms 按目标横摆角速度累加
+#define LEAN_MODE_DEFAULT          (0)         // 0=固定角度上限，1=速度相关上限
+#define LEAN_FIXED_LIMIT_DEFAULT   (1.0f)      // 模式 0 固定上限(°)
+#define LEAN_SPEED_CAP_K_DEFAULT   (3.0f)      // 模式 1 上限系数(°/(m/s))
+
+#define LEAN_TURN_DEAD          (1.0f)         // 目标横摆角速度死区(°/s)
+#define LEAN_DECAY              (0.98f)        // 直行或停车时的回零衰减(每 5ms)
+#define LEAN_SLEW               (0.08f)        // 压弯零点最大变化量(°/5ms)
+#define LEAN_LIMIT_MAX          (8.0f)         // 压弯角硬上限(°)
+#define LEAN_DIR                (1)            // 压弯方向，实车只允许固定为 +1 或 -1
+
+#if (LEAN_DIR != 1) && (LEAN_DIR != -1)
+#error "LEAN_DIR must be +1 or -1"
+#endif
 
 // 电机输出限幅与死区
 // A/B 的起转死区由驱动内部处理，主控不做死区补偿。
@@ -138,44 +111,29 @@
 #define DRIVE_OUT_LIMIT         (8000)         // C轮输出限幅
 #define DRIVE_DEAD_ZONE         (120)          // C轮死区补偿
 
-// Test 专用限幅，与实跑限幅一致，台架整定完的值落地后饱和点不变。
-// 两轴都不要再压低：反作用轮的极速正比于占空比上限，压低限幅等于直接砍掉动量预算。
-// 实测 8000 占空比下飞轮极速约 4335 RPM，到极速 dω/dt=0 就完全没有力矩，车必倒；
-// 放到 10000 极速约 5400 RPM，动量和峰值力矩各多约 25%
+// Test 与实跑采用相同输出限幅。
 #define BAL_TEST_FLY_LIMIT      (10000)         // 飞轮测试输出限幅，与 FLYWHEEL_OUT_LIMIT 一致
 #define BAL_TEST_DRIVE_LIMIT    (8000)          // 行进轮测试输出限幅，与 DRIVE_OUT_LIMIT 一致
 
-// Motor 页架空点动测试。占空比满量程 10000，运行参数，Params -> Motor 可调。
-// 点动没有时限，按同一行或返回键停；MCU 跑飞时 A/B 靠驱动固件的失控保护兜底
+// Motor 页架空点动测试参数。
 #define JOG_DUTY_FLY_DEFAULT    (2500)          // A/B 点动占空比
 #define JOG_DUTY_DRIVE_DEFAULT  (800)           // C 点动占空比，架空空载，验方向不需要转快
 
-// 飞轮超速保护。Rate/Angle 测试时回收环被旁路，增量式输出停在非零值上飞轮就会一路加速，
-// 到极速会触发驱动的堵转保护而且不报原因。这里先一步停测试并在菜单上说明。0 = 关闭
+// 飞轮超速保护，0 表示关闭。
 #define FLY_SPEED_LIMIT_DEFAULT (7000)         // A/B 转速上限(RPM)
 
-// 这里曾经有过一个反电动势前馈 FLY_BEMF_K：下发 = PID输出 + k × 转速(RPM)。
-// 已删除，不要再加回来。稳态拟合 占空比 = 1.85 × 转速 (R²=1.00) 本身没错，
-// 但反电动势不是干扰项，它是飞轮唯一的被动转速阻尼 —— 转得越快、同样占空比下电流越小。
-// 把它前馈掉等于拆掉限制飞轮转速的物理机制：k=1.6 时电气阻尼只剩 13%，
-// 自然衰减时间常数从 0.1s 变成 0.77s，PID 输出为 0、飞轮 4000RPM 时下发占空比是 6400，
-// 在**主动维持**转速。症状正好是"平衡点附近飞轮转得飞快、容易饱和"。
-// 十几份完赛的独轮技术报告和两个参考工程都没有这一项。要管飞轮转速就靠回收环。
-
-// A/B 占空比变化率上限(每 1ms)。动量轮从 0 转速被一脚踩到满占空比时的电流波形
-// 和真堵转几乎一样，会误触发 CYT2BL3 的堵转保护。0 = 关闭斜坡
+// A/B 占空比每 1ms 的最大变化量，0 表示关闭斜坡。
 #define FLY_SLEW_DEFAULT        (800)          // 0 到 8000 约 10ms
 
 // 姿态保护阈值
 #define ROLL_PROTECT_ANGLE_DEFAULT  (50.0f)    // 横滚误差阈值(°)，台架整定值
 #define PITCH_PROTECT_ANGLE_DEFAULT (50.0f)    // 俯仰误差阈值(°)，台架整定值
 
-// 摄像头循迹与赛道元素
-// 裁剪后第 0 行为远端，第 IMG_H-1 行为近端。
-#define IMG_W                   180            // 算法图像宽度
-#define IMG_H                   80             // 算法图像高度
-#define IMG_COL_OFFSET          ((MT9V03X_W - IMG_W) / 2)   // 居中裁剪列偏移
-#define IMG_ROW_OFFSET          (MT9V03X_H - IMG_H)         // 底部裁剪行偏移
+// 摄像头循迹使用整帧：第 0 行为远端，第 IMG_H-1 行为近端。
+#define IMG_W                   MT9V03X_W      // 算法图像宽度(列)，188
+#define IMG_H                   MT9V03X_H      // 算法图像高度(行)，120
+#define IMG_COL_OFFSET          ((MT9V03X_W - IMG_W) / 2)   // 居中裁剪列偏移，整帧时为 0
+#define IMG_ROW_OFFSET          (MT9V03X_H - IMG_H)         // 底部裁剪行偏移，整帧时为 0
 #define IMG_MID_COL             (IMG_W / 2)    // 图像中心列
 #if (IMG_W > MT9V03X_W) || (IMG_H > MT9V03X_H)
     #error "IMG_W/IMG_H 不能超过采图缓冲 MT9V03X_W/MT9V03X_H"
@@ -186,25 +144,80 @@
 #define OTSU_TH_MAX             220            // 阈值上限
 #define OTSU_CONTRAST_MIN       25             // 最小灰度跨度
 
-// 八邻域提边参数
-#define EN_START_ROW_BOTTOM     (IMG_H - 3)    // 起点搜索下界
-#define EN_START_ROW_TOP        (IMG_H - 20)   // 起点搜索上界
-#define EN_MIN_ROAD_WIDE        25             // 起点最小赛道宽度
+// 逐行提边使用赛道内部种子和上一行边线约束搜索窗口。
+#define EN_START_ROW_BOTTOM     (IMG_H - 3)    // 近端种子搜索下界
+#define EN_START_ROW_TOP        (IMG_H - 20)   // 近端种子搜索上界
+#define EN_MIN_ROAD_WIDE        25             // 种子行最小白区宽度(像素)
 #define EN_ROW_TOP_LIMIT        2              // 提边终止行
-#define EN_COL_MIN_LIMIT        2              // 爬线最左列
-#define EN_COL_MAX_LIMIT        (IMG_W - 3)    // 爬线最右列
-#define EN_MAX_PTS              (IMG_H * 4)    // 单侧边线点上限
+#define EN_COL_MIN_LIMIT        2              // 扫描最左列，与 image_binarize() 涂黑的边框对齐
+#define EN_COL_MAX_LIMIT        (IMG_W - 3)    // 扫描最右列
+#define EN_SEED_RECOVER         4              // 种子落在黑区时允许左右拉回的最大列数
+#define EN_SEED_STEP_MAX        8              // 种子一行最多跟随移动的列数
+#define EN_MIN_RUN              6              // 白区窄于这个值就判前瞻到头
+#define EN_EDGE_TRACK           12             // 边线搜索窗口，只在上一行边线 ± 这么多列内找
+#define EN_BOTH_LOST_MAX        18             // 连续两侧都找不到可信边线的最大行数
+#define EN_SLOPE_SPAN           3              // 算赛道斜率的中心差分半跨度(行)
 
-// 中线与有效性
-#define ROAD_WIDE_NEAR_DEFAULT  133            // 近端标准赛道宽度，运行参数，Params -> Camera 可调
-#define ROAD_WIDE_FAR_DEFAULT   30             // 远端标准赛道宽度，运行参数，Params -> Camera 可调
-#define ROAD_WIDE_MIN_RATIO     (0.45f)        // 最小有效宽度比例
-#define ROAD_WIDE_MAX_RATIO     (1.90f)        // 最大有效宽度比例
+#define ROAD_WIDE_NEAR_INIT     300            // 近端赛宽初值(像素)，算法行 IMG_H-1
+#define ROAD_WIDE_HORIZON_ROW   (-16)          // 赛宽外推到 0 的那一行，可以是负数
+#define ROAD_WIDE_MIN_RATIO     (0.60f)        // 半宽学习的可信下界
+#define ROAD_WIDE_MAX_RATIO     (1.60f)        // 半宽学习的可信上界
+#define ROAD_HALF_MIN           3              // 半宽下限(像素)，远端消隐处的兜底
 #define TRACK_MIN_VALID_ROWS    12             // 最少有效中线行数
 
-// 中线偏差取样
-#define ERR_FRONT_ROW           27             // 起始行
-#define ERR_AVG_ROWS            7              // 平均行数
+// 中线偏差由拟合曲线在可调前瞻行求值。
+#define ERR_FRONT_ROW_DEFAULT   67             // 前瞻行(拟合线求值行)，从顶部起算的绝对行号
+#define ERR_FIT_ROW_TOP         30             // 拟合区最远行号，再远的行畸变大不参与拟合
+
+// 正式跑车(Run)
+#define VISION_LINK_TIMEOUT_MS  100            // 视觉结果超时，停止前进但继续保持平衡
+#define RUN_LOST_STOP_MS        600            // 连续丢线超过这么久就停车
+#define RUN_STOP_SPEED_CNT      3              // 判"车已停住"的 20ms 编码器增量阈值
+#define RUN_SPEED_MAX_MPS       (1.50f)         // 正式跑车绝对速度上限(m/s)
+
+#define RUN_SPEED_STRAIGHT_DEFAULT     (0.30f)
+#define RUN_SPEED_CURVE_DEFAULT        (0.20f)
+#define RUN_SPEED_CROSS_DEFAULT        (0.18f)
+#define RUN_SPEED_RING_DEFAULT         (0.15f)
+#define RUN_SPEED_RAMP_DEFAULT         (0.12f)
+#define RUN_SPEED_LOST_DEFAULT         (0.08f)
+#define RUN_ACCEL_MPS2_DEFAULT         (0.50f)
+#define RUN_DECEL_MPS2_DEFAULT         (1.00f)
+#define TRACK_LAT_GAIN_DEFAULT         (35.0f)
+#define TRACK_HEAD_GAIN_DEFAULT        (0.80f)
+#define TRACK_CURVE_GAIN_DEFAULT       (15.0f)
+#define TRACK_CURVE_FULL_SCALE         (0.60f)
+#define TRACK_YAW_RATE_MAX             (120.0f)
+#define TRACK_YAW_SLEW                 (600.0f)
+#define TRACK_YAW_LEAD_MAX             (35.0f)
+#define TRACK_QUALITY_MIN              (0.30f)
+#define ZEBRA_STOP_OFFSET_M_DEFAULT    (0.15f)
+
+// IPM 只变换边线点集，俯视坐标以赛道半宽为尺度。
+typedef enum
+{
+    IPM_PICK_OK = 0,            // 四个角点都有，可以标定
+    IPM_PICK_NO_TRACK,          // 这一帧循迹本身就无效
+    IPM_PICK_FEW_ROWS,          // 双边都在的行数不够 IPM_FIT_MIN_ROWS
+    IPM_PICK_SHORT_SPAN,        // 双边区行距不够 IPM_MIN_ROW_GAP
+    IPM_PICK_NOT_STRAIGHT,      // 边线拟合残差超 IPM_FIT_TOL，弯道或车没摆正
+    IPM_PICK_NARROW,            // 赛道太窄或远端不够远
+} ipm_pick_t;
+
+#define IPM_HALF_WIDTH          50             // 俯视平面里的赛道半宽，尺度基准
+// 标定由整段双边直线拟合生成四个角点，并排除补线点。
+#define IPM_MIN_WIDTH           40             // 近端赛道最小像素宽度，比这窄说明没对准
+#define IPM_FAR_MIN_WIDTH       18             // 远端采样行的最小像素宽度
+#define IPM_FIT_MIN_ROWS        20             // 参与拟合的双边有效行数下限
+#define IPM_FIT_TOL             (2.5f)         // 边线拟合平均残差上限(像素)，超了就不是直道
+#define IPM_MIN_ROW_GAP         30             // 两个采样行的最小行距
+#define IPM_CALIB_FRAMES        24             // 有效直道帧累计数量，坏帧跳过不清空累计
+
+#define IPM_LEN_RATIO           (2.5f)
+#define IPM_LEN_RATIO_MIN       (0.5f)         // 解出来超出这个范围就用兜底值
+#define IPM_LEN_RATIO_MAX       (12.0f)
+
+#define IPM_FOCAL_PIX           (130.0f)
 
 // 元素使能默认值。全关，普通循迹跑稳后在 Params -> Element 页一次只开一个
 #define ELEM_EN_ZEBRA_DEFAULT    0
@@ -212,38 +225,68 @@
 #define ELEM_EN_RING_DEFAULT     0
 #define ELEM_EN_RAMP_DEFAULT     0
 
-// 元素通用保护。摄像头约 50 帧/秒，帧数换算成时间除以 50
-#define RING_TIMEOUT_CNT_DEFAULT 250           // 环岛单个状态最长停留帧数，约 5 秒
-#define ELEM_GUARD_CNT_DEFAULT   40            // 元素退出后的屏蔽帧数，约 0.8 秒
+// 元素超时参数采用 10ms 计数，与图像帧率无关。
+#define RING_TIMEOUT_CNT        500            // 环岛单状态超时，5 秒
+#define ELEM_GUARD_CNT          80             // 元素退出屏蔽，0.8 秒
 
-// 斑马线
-#define ZEBRA_JUMP_CNT_DEFAULT  8              // 黑白跳变阈值
-#define ZEBRA_CONFIRM_FRAMES    2              // 连续确认帧数
+// 斑马线仅统计双边有效行内的黑白条纹。
+#define ZEBRA_JUMP_CNT          8              // 单行黑白跳变阈值
+#define ZEBRA_EDGE_MARGIN       6              // 左右各让开这么多列，避开边线本身那一次跳变
+#define ZEBRA_MIN_SPAN          40             // 赛道内部窄于这么多列就不数
+#define ZEBRA_SCAN_ROWS         70             // 双边实测区里最多扫这么多行
+#define ZEBRA_HIT_ROWS          3              // 扫描带里至少这么多行命中
+#define ZEBRA_CONFIRM_FRAMES    3              // 连续确认帧数
+#define ZEBRA_RELEASE_FRAMES    5              // 离开斑马线后的释放确认帧数
+#define ZEBRA_RUN_MIN           2              // 有效黑条最小宽度(像素)
+#define ZEBRA_RUN_MAX           12             // 有效黑条最大宽度(像素)
+#define ZEBRA_BLACK_RUNS        4              // 单行至少包含的有效黑条数
+#define ZEBRA_COVER_PERCENT     40             // 条纹横向覆盖赛道比例下限(%)
 
-// 十字
-#define CROSS_LOST_CNT_DEFAULT  15             // 丢线行数阈值
-#define CORNER_JUMP             8              // 拐点跳变阈值
-#define CROSS_CONFIRM_FRAMES    2              // 连续确认帧数
-#define CROSS_RELEASE_FRAMES    3              // 双边恢复退出帧数
+// 十字和环岛共用的边线角点参数。
+#define CORNER_FLAT             5              // 平坦侧允许的逐行变化上限(列)
+#define CORNER_JUMP             8              // 张开侧 2 行的最小跳变(列)
+#define CORNER_JUMP2            15             // 张开侧 3、4 行的最小跳变(列)
+
+// 十字补线优先连接上下角点，缺失下角点时延伸远端边线。
+#define CROSS_LOST_CNT          15             // 丢线行数阈值
+#define CROSS_CONFIRM_FRAMES    3              // 连续确认帧数
+#define CROSS_RELEASE_FRAMES    5              // 双边恢复退出帧数
+#define CROSS_TIMEOUT_10MS      150            // 十字超时，1.5 秒
 #define CROSS_WIDE_OVER         18             // 中段赛宽余量
 #define CROSS_WIDE_ROWS         4              // 中段超宽行数
+#define CROSS_CORNER_GAP        12             // 上下角点最小行距，太近说明是噪点不是路口
+#define CROSS_FIT_ROWS          15             // 单角点补线时参与拟合的行数(上角点往远端数)
+#define CROSS_FIT_SKIP          5              // 紧挨上角点的这几行已经在拐，不进拟合
+#define CROSS_EVIDENCE_ROWS     18             // 角点远侧检查外扩、丢线及远线的行数
+#define CROSS_OUTWARD_MIN       10             // 角点远侧相对近侧向外扩张的最小列数
+#define CROSS_FAR_LOST_ROWS     5              // 角点后迅速出画面所需的连续丢线行数
+#define CROSS_FAR_LINE_ROWS     3              // 丢线后重新找到远线所需的连续实测行数
 
-// 坡道
-#define RAMP_SEARCH_LINE        75             // 有效搜索行阈值
-#define RAMP_WIDE_OVER          10             // 路宽余量
-#define RAMP_WIDE_ROWS          20             // 路宽累计行数
-#define RAMP_ERR_LIMIT          5              // 偏差阈值
-#define RAMP_PITCH_MIN          (3.0f)          // 坡道最小俯仰角
-#define RAMP_RATE_MIN           (8.0f)          // 坡道最小俯仰角速度
-#define RAMP_CONFIRM_FRAMES     2              // 连续确认帧数
-
+// 坡道由赛宽、前瞻和运动信息联合确认，按编码器里程退出。
+#define RAMP_ROW_BOTTOM         70             // 没有实测双边区时的检测带近端行
+#define RAMP_BAND_ROWS          35             // 检测带从双边实测区近端往远端数这么多行
+#define RAMP_WIDE_OVER          14             // 超宽阈值(像素)
+#define RAMP_WIDE_ROWS          8              // 带内需要超宽的行数
+#define RAMP_STOP_ROW_MAX       95             // 120 行图像仍能看满远端时不判坡道
+#define RAMP_CONFIRM_FRAMES     4              // 连续确认帧数
+#define RAMP_SPEED_MIN_MPS      (0.03f)        // 低于该速度不进入坡道状态
+#define RAMP_PITCH_MIN          (2.5f)         // 俯仰偏差佐证(°)
+#define RAMP_PITCH_RATE_MIN     (8.0f)         // 坡脚处俯仰角速度佐证(°/s)
+#define RAMP_DRIVE_OUT_MIN      (1200.0f)      // 行进轮控制输出佐证
+#define RAMP_ENTRY_CNT_MIN      20             // 连续候选期间至少前进的编码器 counts
+#define RAMP_DRIVE_FRAMES       2              // 连续候选期间大驱动输出的最少帧数
+#define RAMP_EXIT_CNT           4000           // 进坡后按里程保持多少 counts 才退出
+#define RAMP_TIMEOUT_10MS       500            // 坡道超时，5 秒
 // 环岛状态机
-#define RING_CONTINUITY         7              // 连续性判据阈值
 #define RING_LOST_MIN           12             // 丢线计数下界
 #define RING_LOST_MAX           50             // 丢线计数上界
 #define RING_OPP_LOST           5              // 对侧丢线阈值
 #define RING_VIEW               60             // 环岛最小有效前瞻行数
-#define RING_CONFIRM_FRAMES     2              // 连续确认帧数
+#define RING_CONFIRM_FRAMES     5              // 连续确认帧数
+#define RING_ENTRY_NEAR_ROW     (IMG_H - 20)   // 候选时左右近端边线都必须可见
+#define RING_ENTRY_FAR_ROW      (IMG_H / 4)    // 目标侧近端消失后只在远端重新可见
+#define RING_STRAIGHT_RES       (3.0f)         // 对侧边线直线拟合平均残差上限(像素)
+#define EDGE_RES_MIN_ROWS       25             // 算边线残差至少要这么多有效行
 #define RING_S2_CNT_R_DEFAULT   400            // 状态2 右环编码器累计阈值
 #define RING_S2_CNT_L_DEFAULT   300            // 状态2 左环编码器累计阈值
 #define RING_ANGLE_DEFAULT      340            // 元素积分角阈值(°)
@@ -251,14 +294,9 @@
 #define RING_S5_CNT             1000           // 状态5 计数阈值
 #define RING_SIDE_OFFSET_DEFAULT 20            // 单边巡线横向补偿偏移
 
-// 循迹速度与转向
-#define TRACK_BASE_SPEED_DEFAULT 0            // 基准速度目标
-
-#define SPEED_UP_RATE_DEFAULT   (1.2f)         // 加速速率
-#define SPEED_DOWN_RATE_DEFAULT (1.9f)         // 减速速率
-#define SPEED_RAMP_GAIN_DEFAULT (0.8f)         // 坡道速度倍率
-#define SPEED_RING_GAIN_DEFAULT (0.8f)         // 环岛降速倍率
-#define TRACK_ERR_GAIN_DEFAULT  (1.0f)         // 中线偏差转向增益
+// 非正式 Run 的遥控与里程测试沿用原 counts/20ms 斜坡，不受 Run 参数影响。
+#define MOTION_SPEED_UP_STEP_COUNT   (1.2f)
+#define MOTION_SPEED_DOWN_STEP_COUNT (1.9f)
 #define CAM_EXPOSURE_DEFAULT    (48)           // 摄像头曝光时间，实车可用值在 48 附近
 #define VISION_FPS_WIN_MS       (500u)         // 帧率统计窗口(ms)，窗口越长读数越稳、跟随越慢
 
@@ -269,15 +307,13 @@
 #define ODOM_TEST_SLOW_DISTANCE_M   (0.20f)
 #define ODOM_TEST_MIN_SPEED_MPS     (0.05f)
 
-// 无线 Run Test。speed:<turn>,<speed> 中 turn 是相对发车航向的目标角度(°)，
-// speed 是车速(m/s)。命令超时只停止移动，三轴平衡继续运行。
-#define REMOTE_STEER_ANGLE_LIMIT    (180.0f)
-#define REMOTE_SPEED_LIMIT_MPS      (1.0f)
-#define REMOTE_SPEED_COUNT_LIMIT    (200.0f)
+// 无线 Run Test：speed:<相对航向角输入>,<速度输入>，两个输入范围均为 -90~90。
+#define REMOTE_STEER_INPUT_LIMIT    (90.0f)
+#define REMOTE_SPEED_INPUT_LIMIT    (90.0f)
+#define REMOTE_SPEED_INPUT_DIVISOR  (60.0f)     // 速度输入除以 60 得到 m/s
+#define REMOTE_SPEED_LIMIT_MPS      RUN_SPEED_MAX_MPS
 #define REMOTE_CMD_TIMEOUT_MS       (1000u)
 
-// 斑马线、十字、环岛和坡道均在 CPU1 每个有效图像帧中执行。
-// Run Test 只接受无线遥控目标，正式视觉 Run 后续再接元素结果。
 
 #include "param.h"
 
