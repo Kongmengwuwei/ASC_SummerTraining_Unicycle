@@ -14,9 +14,8 @@ const param_desc_t g_param_table[] =
     { "run_speed_lost",         &g_param.run_speed_lost,         1, 0.0f,    RUN_SPEED_MAX_MPS },
     { "run_accel_mps2",         &g_param.run_accel_mps2,         1, 0.05f,   10.0f   },
     { "run_decel_mps2",         &g_param.run_decel_mps2,         1, 0.05f,   10.0f   },
-    { "track_lat_gain",         &g_param.track_lat_gain,         1, -500.0f, 500.0f  },
-    { "track_head_gain",        &g_param.track_head_gain,        1, -20.0f,  20.0f   },
-    { "track_curve_gain",       &g_param.track_curve_gain,       1, -500.0f, 500.0f  },
+    { "direction_rate_kp",      &g_param.direction_balance_kp,   1, 0.0f,    1.0f    },
+    { "direction_rate_kd",      &g_param.direction_balance_kd,   1, 0.0f,    1.0f    },
     { "zebra_stop_offset_m",    &g_param.zebra_stop_offset_m,    1, 0.0f,    2.0f    },
     { "err_front_row",    &g_param.err_front_row,    0, 10.0f,   115.0f  },
     // 逆透视矩阵九个系数。不在任何菜单页里，由 Calib IPM 动作行写入并存 Flash
@@ -60,10 +59,8 @@ const param_desc_t g_param_table[] =
     { "y_rate_ki",        &g_param.y_rate_ki,        1, -50.0f,   50.0f  },
     { "y_rate_kd",        &g_param.y_rate_kd,        1, -200.0f,  200.0f },
     // 压弯
-    { "lean_turn_k1",       &g_param.lean_turn_k1,       1, 0.0f,  0.01f          },
-    { "lean_mode",          &g_param.lean_mode,          0, 0.0f,  1.0f           },
-    { "lean_fixed_limit",   &g_param.lean_fixed_limit,   1, 0.0f,  LEAN_LIMIT_MAX },
-    { "lean_speed_cap_k",   &g_param.lean_speed_cap_k,   1, 0.0f,  10.0f          },
+    { "lean_roll_kp",      &g_param.direction_roll_kp, 1, 0.0f, 20.0f },
+    { "lean_max_angle",    &g_param.lean_max_angle,    1, 0.0f, 8.0f  },
     // 元素现场参数
     { "elem_en_zebra",    &g_param.elem_en_zebra,    0, 0.0f,     1.0f   },
     { "elem_en_cross",    &g_param.elem_en_cross,    0, 0.0f,     1.0f   },
@@ -72,7 +69,6 @@ const param_desc_t g_param_table[] =
     { "ring_angle",       &g_param.ring_angle,       0, 0.0f,     720.0f },
     { "ring_s2_cnt_l",    &g_param.ring_s2_cnt_l,    0, 0.0f,     5000.0f},
     { "ring_s2_cnt_r",    &g_param.ring_s2_cnt_r,    0, 0.0f,     5000.0f},
-    { "ring_side_offset", &g_param.ring_side_offset, 0, 0.0f,     80.0f  },
     // 零点、标定与保护
     { "roll_zero_init",   &g_param.roll_zero_init,   1, -45.0f,   45.0f  },
     { "pitch_zero_init",  &g_param.pitch_zero_init,  1, -45.0f,   45.0f  },
@@ -83,6 +79,7 @@ const param_desc_t g_param_table[] =
     { "motor_dir_b",      &g_param.motor_dir_b,      0, -1.0f,    1.0f   },
     { "motor_dir_c",      &g_param.motor_dir_c,      0, -1.0f,    1.0f   },
     { "enc_dir_c",        &g_param.enc_dir_c,        0, -1.0f,    1.0f   },
+    { "steer_dir",        &g_param.steer_dir,        0, -1.0f,    1.0f   },
     { "jog_duty_fly",     &g_param.jog_duty_fly,     0,  0.0f,    10000.0f },
     // 点动只用来验方向，架空空载 3500 已经转得很快了，所以卡在 DRIVE_OUT_LIMIT(8000) 之下
     { "jog_duty_drive",   &g_param.jog_duty_drive,   0,  0.0f,    3500.0f  },
@@ -162,7 +159,8 @@ uint8 param_set_by_name(const char *name, float value)
 
     // 极性字段归一化
     if (d->ptr == &g_param.motor_dir_a || d->ptr == &g_param.motor_dir_b ||
-        d->ptr == &g_param.motor_dir_c || d->ptr == &g_param.enc_dir_c)
+        d->ptr == &g_param.motor_dir_c || d->ptr == &g_param.enc_dir_c ||
+        d->ptr == &g_param.steer_dir)
         *(int *)d->ptr = (*(int *)d->ptr >= 0) ? 1 : -1;
 
     // 同步机械零点
@@ -259,7 +257,8 @@ static uint8 param_validate_current(void)
     if ((g_param.motor_dir_a != 1 && g_param.motor_dir_a != -1) ||
         (g_param.motor_dir_b != 1 && g_param.motor_dir_b != -1) ||
         (g_param.motor_dir_c != 1 && g_param.motor_dir_c != -1) ||
-        (g_param.enc_dir_c   != 1 && g_param.enc_dir_c   != -1))
+        (g_param.enc_dir_c   != 1 && g_param.enc_dir_c   != -1) ||
+        (g_param.steer_dir   != 1 && g_param.steer_dir   != -1))
         return 0;
     return 1;
 }
@@ -352,6 +351,7 @@ static void param_normalize_dirs(void)
     g_param.motor_dir_b = (g_param.motor_dir_b >= 0) ? 1 : -1;
     g_param.motor_dir_c = (g_param.motor_dir_c >= 0) ? 1 : -1;
     g_param.enc_dir_c   = (g_param.enc_dir_c   >= 0) ? 1 : -1;
+    g_param.steer_dir   = (g_param.steer_dir   >= 0) ? 1 : -1;
 }
 
 
@@ -371,9 +371,8 @@ void param_load_defaults(void)
     g_param.run_speed_lost         = RUN_SPEED_LOST_DEFAULT;
     g_param.run_accel_mps2         = RUN_ACCEL_MPS2_DEFAULT;
     g_param.run_decel_mps2         = RUN_DECEL_MPS2_DEFAULT;
-    g_param.track_lat_gain         = TRACK_LAT_GAIN_DEFAULT;
-    g_param.track_head_gain        = TRACK_HEAD_GAIN_DEFAULT;
-    g_param.track_curve_gain       = TRACK_CURVE_GAIN_DEFAULT;
+    g_param.direction_balance_kp   = DIRECTION_BALANCE_KP_DEFAULT;
+    g_param.direction_balance_kd   = DIRECTION_BALANCE_KD_DEFAULT;
     g_param.zebra_stop_offset_m    = ZEBRA_STOP_OFFSET_M_DEFAULT;
     g_param.err_front_row    = ERR_FRONT_ROW_DEFAULT;
     for (int ipm_i = 0; ipm_i < 9; ipm_i++) g_param.ipm_h[ipm_i] = 0.0f;
@@ -408,10 +407,8 @@ void param_load_defaults(void)
     g_param.y_rate_ki  = Y_RATE_KI_DEFAULT;
     g_param.y_rate_kd  = Y_RATE_KD_DEFAULT;
 
-    g_param.lean_turn_k1       = LEAN_TURN_K1_DEFAULT;
-    g_param.lean_mode          = LEAN_MODE_DEFAULT;
-    g_param.lean_fixed_limit   = LEAN_FIXED_LIMIT_DEFAULT;
-    g_param.lean_speed_cap_k   = LEAN_SPEED_CAP_K_DEFAULT;
+    g_param.direction_roll_kp = DIRECTION_ROLL_KP_DEFAULT;
+    g_param.lean_max_angle    = LEAN_MAX_ANGLE_DEFAULT;
     g_param.elem_en_zebra    = ELEM_EN_ZEBRA_DEFAULT;
     g_param.elem_en_cross    = ELEM_EN_CROSS_DEFAULT;
     g_param.elem_en_ring     = ELEM_EN_RING_DEFAULT;
@@ -419,7 +416,6 @@ void param_load_defaults(void)
     g_param.ring_angle       = RING_ANGLE_DEFAULT;
     g_param.ring_s2_cnt_l    = RING_S2_CNT_L_DEFAULT;
     g_param.ring_s2_cnt_r    = RING_S2_CNT_R_DEFAULT;
-    g_param.ring_side_offset = RING_SIDE_OFFSET_DEFAULT;
 
     g_param.roll_zero_init      = ROLL_ZERO_INIT_DEFAULT;
     g_param.pitch_zero_init     = PITCH_ZERO_INIT_DEFAULT;
@@ -431,6 +427,7 @@ void param_load_defaults(void)
     g_param.motor_dir_b = MOTOR_DIR_B_DEFAULT;
     g_param.motor_dir_c = MOTOR_DIR_C_DEFAULT;
     g_param.enc_dir_c   = ENC_DIR_C_DEFAULT;
+    g_param.steer_dir   = STEER_DIR_DEFAULT;
     g_param.jog_duty_fly   = JOG_DUTY_FLY_DEFAULT;
     g_param.jog_duty_drive = JOG_DUTY_DRIVE_DEFAULT;
     g_param.fly_speed_limit = FLY_SPEED_LIMIT_DEFAULT;

@@ -37,6 +37,7 @@
 #define MOTOR_DIR_B_DEFAULT     (1)             // B轮输出与转速极性
 #define MOTOR_DIR_C_DEFAULT     (1)             // C轮输出极性
 #define ENC_DIR_C_DEFAULT       (-1)            // C轮脉冲/方向编码器计数极性
+#define STEER_DIR_DEFAULT       (1)             // 转向极性，只允许 +1 或 -1
 
 // 菜单按键
 #define MENU_KEY_UP             (KEY_1)        // P20_6，上
@@ -69,7 +70,9 @@
 #define P_VEL_KP_DEFAULT        (0.0f)         // 俯仰速度环 P
 #define P_VEL_KI_DEFAULT        (0.0f)         // 俯仰速度环 I
 #define P_VEL_KD_DEFAULT        (0.0f)         // 俯仰速度环 D
-#define P_VEL_IMAX              (50.0f)        // 俯仰速度环积分限幅
+
+#define P_VEL_LIMIT             (8.0f)         // 速度环输出的俯仰角目标限幅(°)
+#define P_VEL_IMAX              (200.0f)       // 俯仰速度环累计误差限幅；Ki=-0.01 时积分输出最大约 2°
 #define P_ANGLE_KP_DEFAULT      (0.0f)         // 俯仰角度环 P
 #define P_ANGLE_KI_DEFAULT      (0.0f)         // 俯仰角度环 I
 #define P_ANGLE_KD_DEFAULT      (0.0f)         // 俯仰角度环 D
@@ -89,17 +92,29 @@
 #define Y_RATE_KD_DEFAULT       (0.0f)         // 航向角速度内环 D
 #define Y_RATE_IMAX             (100.0f)       // 航向角速度内环积分限幅
 
-// 压弯由正式 Run 的目标横摆角速度累加动态零点，Yaw 串级仍是主转向控制。
-#define LEAN_TURN_K1_DEFAULT       (0.0005f)   // 每 5ms 按目标横摆角速度累加
-#define LEAN_MODE_DEFAULT          (0)         // 0=固定角度上限，1=速度相关上限
-#define LEAN_FIXED_LIMIT_DEFAULT   (1.0f)      // 模式 0 固定上限(°)
-#define LEAN_SPEED_CAP_K_DEFAULT   (3.0f)      // 模式 1 上限系数(°/(m/s))
 
-#define LEAN_TURN_DEAD          (1.0f)         // 目标横摆角速度死区(°/s)
-#define LEAN_DECAY              (0.98f)        // 直行或停车时的回零衰减(每 5ms)
-#define LEAN_SLEW               (0.08f)        // 压弯零点最大变化量(°/5ms)
-#define LEAN_LIMIT_MAX          (8.0f)         // 压弯角硬上限(°)
-#define LEAN_DIR                (1)            // 压弯方向，实车只允许固定为 +1 或 -1
+#define DIRECTION_BALANCE_KP_DEFAULT (0.02f)    // 方向偏差 P，基础转向增益对应值
+#define DIRECTION_BALANCE_KD_DEFAULT (0.0f)     // 方向偏差 D，报告初值为 0
+#define DIRECTION_ROLL_KP_DEFAULT    (1.3f)     // 山大压弯公式方向倾角 Kp
+#define LEAN_MAX_ANGLE_DEFAULT       (3.0f)     // 压弯动态零点最大值(°)
+#define DIRECTION_CAMERA_LIMIT       (5000.0f)  // direction_camera 加权和限幅
+#define DIRECTION_CAMERA_WEIGHT_SUM  (345.0f)   // 60行方向权重总和，用于还原平均像素偏差
+#define DIRECTION_KP_NOMINAL         (0.02f)    // Dir Kp 等于该值时使用基础转向增益
+#define DIRECTION_PIXEL_RATE_GAIN    (0.70f)    // 平均像素偏差到横摆角速度的基础增益
+#define DIRECTION_HEADING_RATE_GAIN  (0.80f)    // 赛道航向误差到横摆角速度的基础增益
+#define DIRECTION_CURVE_RATE_GAIN    (15.0f)    // 速度与曲率前馈增益
+#define DIRECTION_ERROR_ALPHA        (0.25f)    // 方向误差低通的新值权重
+#define DIRECTION_D_RATE_LIMIT       (200.0f)   // 滤波后误差变化率限幅(pixel/s)
+#define DIRECTION_YAW_RATE_LIMIT     (120.0f)   // 正式循迹目标横摆角速度限幅(°/s)
+#define DIRECTION_YAW_SLEW           (600.0f)   // 目标横摆角速度变化率(°/s^2)
+#define DIRECTION_YAW_LEAD_LIMIT     (35.0f)    // 目标航向相对当前航向最大超前角(°)
+#define DIRECTION_LEAN_OUTPUT_SCALE  (200.0f)   // 山大 Yaw_Zero=yaw+direction_output*200
+#define DIRECTION_LEAN_ERROR_DEAD    (1000.0f)  // 山大原始加权方向偏差死区
+#define DIRECTION_LEAN_FORMULA_DIV   (100.0f)   // 山大压弯公式固定除数
+#define DIRECTION_LEAN_SLEW          (0.08f)    // 压弯角每5ms最大变化量(°)
+#define DIRECTION_LEAN_LIMIT         (8.0f)     // 压弯角软件硬限幅(°)
+#define ROLL_TARGET_LIMIT            (10.0f)    // 回收与压弯合成后的 Roll 目标限幅(°)
+#define LEAN_DIR                     (1)        // +1=沿用实跑版本的压弯方向，-1=反向
 
 #if (LEAN_DIR != 1) && (LEAN_DIR != -1)
 #error "LEAN_DIR must be +1 or -1"
@@ -112,8 +127,8 @@
 #define DRIVE_DEAD_ZONE         (120)          // C轮死区补偿
 
 // Test 与实跑采用相同输出限幅。
-#define BAL_TEST_FLY_LIMIT      (10000)         // 飞轮测试输出限幅，与 FLYWHEEL_OUT_LIMIT 一致
-#define BAL_TEST_DRIVE_LIMIT    (8000)          // 行进轮测试输出限幅，与 DRIVE_OUT_LIMIT 一致
+#define BAL_TEST_FLY_LIMIT      (10000)         // 飞轮测试输出限幅
+#define BAL_TEST_DRIVE_LIMIT    (8000)          // 行进轮测试输出限幅
 
 // Motor 页架空点动测试参数。
 #define JOG_DUTY_FLY_DEFAULT    (2500)          // A/B 点动占空比
@@ -183,13 +198,7 @@
 #define RUN_SPEED_LOST_DEFAULT         (0.08f)
 #define RUN_ACCEL_MPS2_DEFAULT         (0.50f)
 #define RUN_DECEL_MPS2_DEFAULT         (1.00f)
-#define TRACK_LAT_GAIN_DEFAULT         (35.0f)
-#define TRACK_HEAD_GAIN_DEFAULT        (0.80f)
-#define TRACK_CURVE_GAIN_DEFAULT       (15.0f)
 #define TRACK_CURVE_FULL_SCALE         (0.60f)
-#define TRACK_YAW_RATE_MAX             (120.0f)
-#define TRACK_YAW_SLEW                 (600.0f)
-#define TRACK_YAW_LEAD_MAX             (35.0f)
 #define TRACK_QUALITY_MIN              (0.30f)
 #define ZEBRA_STOP_OFFSET_M_DEFAULT    (0.15f)
 
@@ -219,7 +228,7 @@ typedef enum
 
 #define IPM_FOCAL_PIX           (130.0f)
 
-// 元素使能默认值。全关，普通循迹跑稳后在 Params -> Element 页一次只开一个
+// 元素使能默认值
 #define ELEM_EN_ZEBRA_DEFAULT    0
 #define ELEM_EN_CROSS_DEFAULT    0
 #define ELEM_EN_RING_DEFAULT     0
@@ -277,6 +286,7 @@ typedef enum
 #define RAMP_DRIVE_FRAMES       2              // 连续候选期间大驱动输出的最少帧数
 #define RAMP_EXIT_CNT           4000           // 进坡后按里程保持多少 counts 才退出
 #define RAMP_TIMEOUT_10MS       500            // 坡道超时，5 秒
+
 // 环岛状态机
 #define RING_LOST_MIN           12             // 丢线计数下界
 #define RING_LOST_MAX           50             // 丢线计数上界
@@ -292,7 +302,6 @@ typedef enum
 #define RING_ANGLE_DEFAULT      340            // 元素积分角阈值(°)
 #define RING_S4_CNT             2000           // 状态4 计数阈值
 #define RING_S5_CNT             1000           // 状态5 计数阈值
-#define RING_SIDE_OFFSET_DEFAULT 20            // 单边巡线横向补偿偏移
 
 // 非正式 Run 的遥控与里程测试沿用原 counts/20ms 斜坡，不受 Run 参数影响。
 #define MOTION_SPEED_UP_STEP_COUNT   (1.2f)
@@ -300,7 +309,7 @@ typedef enum
 #define CAM_EXPOSURE_DEFAULT    (48)           // 摄像头曝光时间，实车可用值在 48 附近
 #define VISION_FPS_WIN_MS       (500u)         // 帧率统计窗口(ms)，窗口越长读数越稳、跟随越慢
 
-// C 轮里程标定。初值只用于首次进入页面，必须用实车直行 1m 后按累计脉冲修正。
+// C 轮里程标定
 #define ODOM_COUNTS_PER_M_DEFAULT   (11695.0f)
 #define ODOM_TEST_SPEED_DEFAULT     (0.10f)
 #define ODOM_TEST_DISTANCE_M        (1.0f)
@@ -310,11 +319,11 @@ typedef enum
 // 无线 Run Test：speed:<相对航向角输入>,<速度输入>，两个输入范围均为 -90~90。
 #define REMOTE_STEER_INPUT_LIMIT    (90.0f)
 #define REMOTE_SPEED_INPUT_LIMIT    (90.0f)
-#define REMOTE_SPEED_INPUT_DIVISOR  (60.0f)     // 速度输入除以 60 得到 m/s
+#define REMOTE_SPEED_INPUT_DIVISOR  (40.0f)     // 速度输入除以 40 得到 m/s
 #define REMOTE_SPEED_LIMIT_MPS      RUN_SPEED_MAX_MPS
 #define REMOTE_CMD_TIMEOUT_MS       (1000u)
 
 
 #include "param.h"
 
-#endif 
+#endif

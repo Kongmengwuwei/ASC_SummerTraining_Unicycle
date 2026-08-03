@@ -767,8 +767,32 @@ static void element_state_reset(void)
     s_owner = ELEM_NONE;
     g_elem_action.speed_limit_mps = RUN_SPEED_MAX_MPS;
     g_elem_action.active_elem = ELEM_NONE;
+    g_elem_action.track_mode = TRACK_MODE_MIDDLE;
     g_elem_action.stop_request = 0;
-    g_elem_action.ring_side_offset = RING_SIDE_OFFSET_DEFAULT;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     按元素阶段选择中线、左边线、右边线或航向保持
+// 参数说明     void
+// 返回参数     track_mode_t     当前方向误差的跟踪对象
+// 使用示例     g_elem_action.track_mode = element_track_mode();
+//-------------------------------------------------------------------------------------------------------------------
+static track_mode_t element_track_mode(void)
+{
+    int state = g_island.island_state;
+
+    if (s_owner == ELEM_CROSS) return TRACK_MODE_HOLD;
+    if (s_owner == ELEM_RING_LEFT)
+    {
+        if (state == 3) return TRACK_MODE_LEFT;
+        if (state >= 1 && state <= 5) return TRACK_MODE_RIGHT;
+    }
+    if (s_owner == ELEM_RING_RIGHT)
+    {
+        if (state == 3) return TRACK_MODE_RIGHT;
+        if (state >= 1 && state <= 5) return TRACK_MODE_LEFT;
+    }
+    return TRACK_MODE_MIDDLE;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -810,8 +834,8 @@ void element_process(void)
 
     g_elem_action.speed_limit_mps = RUN_SPEED_MAX_MPS;
     g_elem_action.active_elem = s_owner;
+    g_elem_action.track_mode = TRACK_MODE_MIDDLE;
     g_elem_action.stop_request = 0;
-    g_elem_action.ring_side_offset = s_motion.ring_side_offset;
 
     if (s_owner == ELEM_CROSS && !s_motion.en_cross)
     {
@@ -929,6 +953,7 @@ void element_process(void)
 
     g_order.island = (g_island.island_state != 0) ? 1 : 0;
     g_elem_action.active_elem = s_owner;
+    g_elem_action.track_mode = element_track_mode();
     if (s_owner == ELEM_ZEBRA)
         g_elem_action.stop_request = 1;
     else if (s_owner == ELEM_CROSS)

@@ -61,6 +61,8 @@ extern float g_track_lateral;                   // 归一化横向偏差，正=�
 extern float g_track_heading;                   // 航向偏差(°)，正=赛道朝向车体左侧
 extern float g_track_curvature;                 // 归一化曲率，正=左弯
 extern float g_track_quality;                   // 循迹质量，0~1
+extern float g_direction_camera;                // 报告同款加权方向偏差，范围 -5000~5000
+extern uint8 g_direction_valid;                 // 当前跟踪对象的方向偏差是否可信
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     初始化图像数据与标准赛宽表

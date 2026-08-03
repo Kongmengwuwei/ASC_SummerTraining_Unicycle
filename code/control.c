@@ -41,11 +41,12 @@ uint8  g_vision_island_state = 0;               // 最新环岛状态号，0=空
 float  g_vision_lateral_error = 0.0f;           // 车道半宽归一化横向误差
 float  g_vision_heading_error = 0.0f;           // 赛道航向误差(°)
 float  g_vision_curvature = 0.0f;               // 有符号归一化曲率
+float  g_vision_direction_camera = 0.0f;        // 报告同款加权方向偏差
+uint8  g_vision_track_mode = TRACK_MODE_MIDDLE; // 当前元素选择的跟踪对象
 float  g_vision_quality = 0.0f;                 // 循迹质量(0..1)
 float  g_vision_speed_limit_mps = RUN_SPEED_MAX_MPS; // 视觉/元素绝对限速(m/s)
 uint8  g_vision_stop_request = 0;               // 斑马线终点请求
 float  g_run_speed_target_mps = 0.0f;           // 正式 Run 当前规划速度(m/s)
-float  g_run_yaw_rate_cmd = 0.0f;               // 斜率限制后的目标横摆角速度(°/s)
 float  g_vision_fps = 0.0f;                     // CPU1 出帧率(帧/s)，1ms 中断每 VISION_FPS_WIN_MS 结算一次
 
 // ====================== 内部状态 ======================
@@ -56,7 +57,6 @@ static pid_t y_angle_pid, y_rate_pid;               // Yaw  ：转向外环 / �
 
 static float s_speed_ramp;                      // 斜坡后的速度环实际目标(counts/20ms)
 static float s_rcy_fb;                          // 飞轮差速 A-B(RPM)，只在 20ms 拍更新
-static float s_lean_raw;                        // 压弯零点累加值，g_lean_offset 限速率跟随它
 
 // Test 状态，前台启停、1ms 中断读
 static volatile uint8 s_test_running;           // 单轴测试运行标志
@@ -84,7 +84,12 @@ static volatile float  s_remote_yaw_target;      // 当前绝对航向目标(°)
 static volatile uint8  s_run_active;             // 1=Run 已启动
 static volatile run_stop_t s_run_stop;           // 停车原因，菜单读走显示
 static volatile uint16 s_run_lost_ms;            // 连续丢线时间(ms)
-static float           s_run_yaw_rate_target;     // 最新视觉帧生成的目标横摆角速度(°/s)
+static float           s_direction_offset;       // 滤波后的平均像素偏差
+static float           s_direction_last_error;   // 方向PD上一拍滤波误差
+static float           s_direction_yaw_rate_target; // 视觉生成的目标横摆角速度
+static float           s_direction_yaw_rate_cmd; // 斜率限制后的目标横摆角速度
+static float           s_direction_hold_yaw;     // 十字或丢线进入时锁存的航向
+static uint8           s_direction_last_mode;    // 上一拍跟踪模式
 static uint8           s_zebra_stop_latched;      // 斑马线终点请求锁存
 static int32           s_zebra_stop_start_count;  // 锁存请求时的 C 轮累计里程
 static uint8           s_run_vision_armed;         // 已收到应用本次 Run 快照的视觉帧
@@ -203,9 +208,14 @@ static void cascade_reset(void)
     pid_reset(&p_vel_pid);   pid_reset(&p_angle_pid); pid_reset(&p_rate_pid);
     pid_reset(&y_angle_pid); pid_reset(&y_rate_pid);
     g_lean_offset = 0;
-    s_lean_raw = 0;
     s_speed_ramp = 0.0f;
     s_rcy_fb = 0.0f;                                 // 回收环反馈
+    s_direction_offset = 0.0f;
+    s_direction_last_error = 0.0f;
+    s_direction_yaw_rate_target = 0.0f;
+    s_direction_yaw_rate_cmd = 0.0f;
+    s_direction_hold_yaw = 0.0f;
+    s_direction_last_mode = TRACK_MODE_MIDDLE;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -229,8 +239,6 @@ static void remote_state_reset(void)
     s_run_active = 0;
     s_run_vision_armed = 0;
     s_run_lost_ms = 0;
-    s_run_yaw_rate_target = 0.0f;
-    g_run_yaw_rate_cmd = 0.0f;
     g_run_speed_target_mps = 0.0f;
     s_zebra_stop_latched = 0;
     s_zebra_stop_start_count = 0;
@@ -286,17 +294,21 @@ static void run_hold_balance(run_stop_t reason)
     s_run_active = 0;
     s_run_vision_armed = 0;
     s_run_lost_ms = 0;
-    s_run_yaw_rate_target = 0.0f;
-    g_run_yaw_rate_cmd = 0.0f;
     g_run_speed_target_mps = 0.0f;
     g_target_distance = 0;
     s_speed_ramp = 0.0f;
+    s_direction_yaw_rate_target = 0.0f;
+    s_direction_yaw_rate_cmd = 0.0f;
+    s_direction_offset = 0.0f;
+    s_direction_last_error = 0.0f;
+    s_direction_last_mode = TRACK_MODE_HOLD;
     pid_reset(&p_vel_pid);
+    g_lean_offset = 0.0f;
     g_yaw_target = imu_get_angle_yaw();
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     根据最新视觉结果生成正式 Run 的速度和横摆角速度目标
+// 函数简介     根据最新视觉结果生成正式 Run 的分段速度目标
 // 参数说明     void
 // 返回参数     void
 // 使用示例     run_vision_target_update();
@@ -308,13 +320,10 @@ static void run_vision_target_update(void)
     float quality_limit;
     float speed;
     float speed_limit;
-    float actual_speed;
-    float yaw_rate;
 
     if (!s_run_active || !s_run_vision_armed)
     {
         g_run_speed_target_mps = 0.0f;
-        s_run_yaw_rate_target = 0.0f;
         return;
     }
 
@@ -338,7 +347,7 @@ static void run_vision_target_update(void)
     {
         speed = run_speed_limit(RUN_SPEED_LOST);
     }
-    else
+    else if (g_vision_active_elem == (uint8)ELEM_NONE)
     {
         float quality_min = constrain_float(TRACK_QUALITY_MIN, 0.0f, 1.0f);
 
@@ -355,57 +364,6 @@ static void run_vision_target_update(void)
     speed_limit = run_speed_limit(g_vision_speed_limit_mps);
     if (speed > speed_limit) speed = speed_limit;
     g_run_speed_target_mps = run_speed_limit(speed);
-
-    if (!s_run_active || !g_track_valid)
-    {
-        s_run_yaw_rate_target = 0.0f;
-        return;
-    }
-
-    actual_speed = constrain_float(fabsf(Y_Motor_GetSpeedMps()), 0.0f, RUN_SPEED_MAX_MPS);
-    yaw_rate = TRACK_LAT_GAIN * g_vision_lateral_error +
-               TRACK_HEAD_GAIN * g_vision_heading_error +
-               TRACK_CURVE_GAIN * actual_speed * g_vision_curvature;
-    if (!ctrl_is_finite(yaw_rate)) yaw_rate = 0.0f;
-    s_run_yaw_rate_target = constrain_float(yaw_rate,
-                                            -TRACK_YAW_RATE_MAX,
-                                             TRACK_YAW_RATE_MAX);
-}
-
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     每 1ms 限制目标横摆角速度变化率并积分成连续航向目标
-// 参数说明     void
-// 返回参数     void
-// 使用示例     run_yaw_target_update();
-//-------------------------------------------------------------------------------------------------------------------
-static void run_yaw_target_update(void)
-{
-    float yaw_now = imu_get_angle_yaw();
-    float lead_limit = constrain_float(TRACK_YAW_LEAD_MAX, 1.0f, 180.0f);
-    float target = constrain_float(s_run_yaw_rate_target,
-                                   -TRACK_YAW_RATE_MAX,
-                                    TRACK_YAW_RATE_MAX);
-    float delta = target - g_run_yaw_rate_cmd;
-    float step = TRACK_YAW_SLEW * 0.001f;
-
-    if (step <= 0.0f)
-        g_run_yaw_rate_cmd = target;
-    else if (delta > step)
-        g_run_yaw_rate_cmd += step;
-    else if (delta < -step)
-        g_run_yaw_rate_cmd -= step;
-    else
-        g_run_yaw_rate_cmd = target;
-
-    g_yaw_target += g_run_yaw_rate_cmd * 0.001f;
-    g_yaw_target = yaw_now + constrain_float(g_yaw_target - yaw_now,
-                                             -lead_limit, lead_limit);
-    if (!ctrl_is_finite(g_yaw_target))
-    {
-        g_yaw_target = imu_get_angle_yaw();
-        g_run_yaw_rate_cmd = 0.0f;
-        s_run_yaw_rate_target = 0.0f;
-    }
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -442,13 +400,10 @@ static void run_target_update(void)
             if (g_run_speed_target_mps > 0.0f && g_run_speed_target_mps < speed_mps)
                 speed_mps = g_run_speed_target_mps;
             g_target_distance = speed_target_from_mps(speed_mps);
-            run_yaw_target_update();
             return;
         }
 
-        s_run_yaw_rate_target = 0.0f;
         g_target_distance = 0;
-        run_yaw_target_update();
         if (fabsf(s_speed_ramp) < 1.0f &&
             func_abs(Y_Motor_GetSpeed20ms()) <= RUN_STOP_SPEED_CNT)
         {
@@ -465,7 +420,6 @@ static void run_target_update(void)
             run_hold_balance(RUN_STOP_LOST);
             return;
         }
-        s_run_yaw_rate_target = 0.0f;
         speed_mps = run_speed_limit(RUN_SPEED_LOST);
     }
     else
@@ -474,7 +428,6 @@ static void run_target_update(void)
         speed_mps = g_run_speed_target_mps;
     }
 
-    run_yaw_target_update();
     g_target_distance = speed_target_from_mps(speed_mps);
 }
 
@@ -595,45 +548,151 @@ static void speed_ramp_update(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     根据正式 Run 的目标横摆角速度更新压弯动态零点
-// 参数说明     yaw_rate_cmd    限幅和斜率处理后的目标横摆角速度(°/s)
-// 返回参数     float           压弯零点目标值(°)，再经 lean_slew_update() 限速率后才生效
-// 使用示例     s_lean_raw = lean_offset_update(g_run_yaw_rate_cmd);
+// 函数简介     将滤波后的方向偏差、赛道航向和曲率合成为目标横摆角速度
+// 参数说明     direction_now   当前方向偏差
+// 参数说明     direction_zero  方向偏差目标
+// 返回参数     float           目标横摆角速度(°/s)
+// 使用示例     yaw_rate = direction_balance_Control(offset, 0.0f);
 //-------------------------------------------------------------------------------------------------------------------
-static float lean_offset_update(float yaw_rate_cmd)
+static float direction_balance_Control(float direction_now, float direction_zero)
 {
-    float offset = s_lean_raw;
-    float limit;
+    float error = direction_now - direction_zero;
+    float error_rate = (error - s_direction_last_error) / 0.020f;
+    float gain_scale = DIRECTION_BALANCE_KP / DIRECTION_KP_NOMINAL;
+    float heading = -(float)STEER_DIR * g_vision_heading_error;
+    float curvature = -(float)STEER_DIR * g_vision_curvature;
+    float yaw_rate;
 
-    if (s_speed_ramp != 0.0f && fabsf(yaw_rate_cmd) > LEAN_TURN_DEAD)
-        offset += yaw_rate_cmd * LEAN_TURN_K1;
-    else
-        offset *= LEAN_DECAY;
-
-    if (LEAN_MODE == 0)
-        limit = LEAN_FIXED_LIMIT;
-    else
-        limit = fabsf(Y_Motor_GetSpeedMps()) * LEAN_SPEED_CAP_K;
-
-    limit = constrain_float(limit, 0.0f, LEAN_LIMIT_MAX);
-    s_lean_raw = constrain_float(offset, -limit, limit);
-    return s_lean_raw;
+    error_rate = constrain_float(error_rate,
+                                 -DIRECTION_D_RATE_LIMIT,
+                                  DIRECTION_D_RATE_LIMIT);
+    s_direction_last_error = error;
+    yaw_rate = gain_scale * (DIRECTION_PIXEL_RATE_GAIN * error +
+                             DIRECTION_HEADING_RATE_GAIN * heading +
+                             DIRECTION_CURVE_RATE_GAIN * fabsf(Y_Motor_GetSpeedMps()) * curvature) +
+               DIRECTION_BALANCE_KD * error_rate;
+    if (!ctrl_is_finite(yaw_rate)) return 0.0f;
+    return constrain_float(yaw_rate,
+                           -DIRECTION_YAW_RATE_LIMIT,
+                            DIRECTION_YAW_RATE_LIMIT);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     把压弯零点按速率挪向目标值，避免零点阶跃直接变成横滚角度环的目标阶跃
-// 参数说明     target          压弯零点目标值(°)
-// 返回参数     float           本拍生效的压弯零点(°)
-// 使用示例     g_lean_offset = lean_slew_update(s_lean_raw);
+// 函数简介     按跟踪模式更新方向偏差、目标航向和压弯共用控制量
+// 参数说明     void
+// 返回参数     void
+// 使用示例     if (run20) direction_control_update();
 //-------------------------------------------------------------------------------------------------------------------
-static float lean_slew_update(float target)
+static void direction_control_update(void)
 {
-    float step  = LEAN_SLEW;
-    float delta = target - g_lean_offset;
+    float raw_offset;
+    uint8 mode;
 
-    if (step <= 0.0f) return target;        // 速率给 0 表示不限速率
-    if (delta > step)  return g_lean_offset + step;
-    if (delta < -step) return g_lean_offset - step;
+    if (!s_run_active)
+    {
+        s_direction_offset = 0.0f;
+        s_direction_last_error = 0.0f;
+        s_direction_yaw_rate_target = 0.0f;
+        s_direction_yaw_rate_cmd = 0.0f;
+        s_direction_last_mode = TRACK_MODE_MIDDLE;
+        return;
+    }
+
+    mode = g_vision_track_mode;
+    if (mode > TRACK_MODE_HOLD) mode = TRACK_MODE_MIDDLE;
+
+    if (mode == TRACK_MODE_HOLD || !g_track_valid)
+    {
+        if (s_direction_last_mode != TRACK_MODE_HOLD)
+            s_direction_hold_yaw = imu_get_angle_yaw();
+        s_direction_offset = 0.0f;
+        s_direction_last_error = 0.0f;
+        s_direction_yaw_rate_target = 0.0f;
+        g_yaw_target = s_direction_hold_yaw;
+        mode = TRACK_MODE_HOLD;
+    }
+    else
+    {
+        raw_offset = (float)STEER_DIR *
+                     constrain_float(g_vision_direction_camera,
+                                     -DIRECTION_CAMERA_LIMIT,
+                                      DIRECTION_CAMERA_LIMIT) /
+                     DIRECTION_CAMERA_WEIGHT_SUM;
+        if (mode != s_direction_last_mode)
+        {
+            s_direction_offset = raw_offset;
+            s_direction_last_error = raw_offset;
+        }
+        else
+        {
+            s_direction_offset += DIRECTION_ERROR_ALPHA *
+                                  (raw_offset - s_direction_offset);
+        }
+        s_direction_yaw_rate_target = direction_balance_Control(s_direction_offset, 0.0f);
+    }
+    s_direction_last_mode = mode;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     平滑目标横摆角速度并积分生成连续航向目标
+// 参数说明     void
+// 返回参数     void
+// 使用示例     direction_yaw_target_update();
+//-------------------------------------------------------------------------------------------------------------------
+static void direction_yaw_target_update(void)
+{
+    float yaw_now;
+    float delta;
+    float step;
+
+    if (!s_run_active) return;
+    if (s_direction_last_mode == TRACK_MODE_HOLD)
+    {
+        s_direction_yaw_rate_cmd = 0.0f;
+        g_yaw_target = s_direction_hold_yaw;
+        return;
+    }
+
+    delta = s_direction_yaw_rate_target - s_direction_yaw_rate_cmd;
+    step = DIRECTION_YAW_SLEW * 0.001f;
+    if (delta > step)       s_direction_yaw_rate_cmd += step;
+    else if (delta < -step) s_direction_yaw_rate_cmd -= step;
+    else                    s_direction_yaw_rate_cmd = s_direction_yaw_rate_target;
+
+    yaw_now = imu_get_angle_yaw();
+    g_yaw_target += s_direction_yaw_rate_cmd * 0.001f;
+    g_yaw_target = yaw_now + constrain_float(g_yaw_target - yaw_now,
+                                              -DIRECTION_YAW_LEAD_LIMIT,
+                                               DIRECTION_YAW_LEAD_LIMIT);
+    if (!ctrl_is_finite(g_yaw_target))
+    {
+        g_yaw_target = yaw_now;
+        s_direction_yaw_rate_target = 0.0f;
+        s_direction_yaw_rate_cmd = 0.0f;
+    }
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     按山大方向输出与 C 轮速度生成压弯角，并增加可调动态零点上限
+// 参数说明     direction_output 由航向目标差按山大 200 倍关系还原的方向输出
+// 返回参数     float           本拍生效的压弯角(°)
+// 使用示例     g_lean_offset = lean_offset_update((g_yaw_target - yaw) / 200.0f);
+//-------------------------------------------------------------------------------------------------------------------
+static float lean_offset_update(float direction_output)
+{
+    float limit = constrain_float(LEAN_MAX_ANGLE, 0.0f, DIRECTION_LEAN_LIMIT);
+    float target = 0.0f;
+    float delta;
+
+    if (s_run_active && fabsf(g_vision_direction_camera) > DIRECTION_LEAN_ERROR_DEAD)
+    {
+        target = direction_output * (float)Y_Motor_GetSpeed20ms() *
+                 DIRECTION_ROLL_KP / DIRECTION_LEAN_FORMULA_DIV;
+        target = constrain_float(target, -limit, limit);
+    }
+    delta = target - g_lean_offset;
+    if (delta > DIRECTION_LEAN_SLEW)       return g_lean_offset + DIRECTION_LEAN_SLEW;
+    if (delta < -DIRECTION_LEAN_SLEW)      return g_lean_offset - DIRECTION_LEAN_SLEW;
     return target;
 }
 
@@ -678,9 +737,14 @@ static float roll_rate_ctrl(float limit)
 static float roll_cascade_ctrl(float zero, uint8 run5, uint8 run20)
 {
     float rcy = roll_recovery_offset(run20);         // 回收环给出的零点偏移(°)
+    float angle_target = zero - rcy;
+
+    angle_target = g_roll_zero + constrain_float(angle_target - g_roll_zero,
+                                                  -ROLL_TARGET_LIMIT,
+                                                   ROLL_TARGET_LIMIT);
 
     if (run5)
-        pid_loc_calc(&r_angle_pid, rcy + att.roll - zero);   // 角度环，位置式，输出是角速度命令(°/s)
+        pid_loc_calc(&r_angle_pid, att.roll - angle_target); // 回收与压弯合成目标限制在 ±10°
     roll_rate_ctrl((float)FLYWHEEL_OUT_LIMIT);               // 角速度环，位置式
 
     // 角度环不重复限幅，最终输出由角速度环限制。
@@ -696,8 +760,9 @@ static float roll_cascade_ctrl(float zero, uint8 run5, uint8 run20)
 static float pitch_cascade_ctrl(float zero, uint8 run5, uint8 run20)
 {
     // 速度环输出的是倾角目标：想加速就往前倒一点，所以误差取 反馈 - 目标
-    // 速度环使用斜坡后的目标。
-    if (run20) pid_loc_calc(&p_vel_pid, (float)Y_Motor_GetSpeed20ms() - s_speed_ramp);
+    // 速度环使用斜坡后的目标。输出必须走 _limited：它是角度命令，不限幅会命令出几十度
+    if (run20) pid_loc_calc_limited(&p_vel_pid, (float)Y_Motor_GetSpeed20ms() - s_speed_ramp,
+                                    -P_VEL_LIMIT, P_VEL_LIMIT);
     if (run5)  pid_loc_calc(&p_angle_pid, p_vel_pid.out - att.pitch + zero);             // 角度环，位置式
     pid_inc_calc_limited(&p_rate_pid, -att.pitch_rate + p_angle_pid.out,
                          -DRIVE_OUT_LIMIT, DRIVE_OUT_LIMIT);                             // 角速度环，增量式
@@ -750,7 +815,7 @@ static void cascade_run(void)
 {
     static uint16 tick;                                  // 1ms 分频计数，20ms 一轮回绕
     uint8 run5, run20;
-    float roll_cmd, yaw_room, yaw_cmd;
+    float roll_cmd, yaw_cmd;
     float roll_err, pitch_err;
     int32 mix_a, mix_b, mix_c;
 
@@ -797,22 +862,27 @@ static void cascade_run(void)
         pid_reset(&r_rcy_pid); pid_reset(&r_angle_pid); pid_reset(&r_rate_pid);
         pid_reset(&y_angle_pid); pid_reset(&y_rate_pid);
         g_lean_offset = 0;
-        s_lean_raw    = 0;
         g_yaw_target  = imu_get_angle_yaw();
     }
 
-    g_pwm_yaw = yaw_cascade_ctrl(run5);
-    // 压弯只辅助 Roll 零点，Yaw 串级仍负责实际航向控制。
+    if (run20) direction_control_update();
+    direction_yaw_target_update();
     if (run5)
-        g_lean_offset = lean_slew_update(lean_offset_update(g_run_yaw_rate_cmd));
+    {
+        float direction_output = constrain_float(g_yaw_target - imu_get_angle_yaw(),
+                                                  -DIRECTION_YAW_LEAD_LIMIT,
+                                                   DIRECTION_YAW_LEAD_LIMIT) /
+                                 DIRECTION_LEAN_OUTPUT_SCALE;
+        g_lean_offset = lean_offset_update(direction_output);
+    }
+    g_pwm_yaw = yaw_cascade_ctrl(run5);
     if (run20) speed_ramp_update();                      // 速度目标斜坡与速度环同拍
     g_pwm_roll  = roll_cascade_ctrl(g_roll_zero + LEAN_DIR * g_lean_offset, run5, run20);
     g_pwm_pitch = pitch_cascade_ctrl(g_pitch_zero, run5, run20);
 
-    // 混控：平衡优先，Yaw 只能用 Roll 剩下的余量。不许改成先相加再统一钳幅
+    // Roll 与 Yaw 直接合成，再分别限制 A/B 输出；避免 Roll 输出较大时把 Yaw 完全压成 0。
     roll_cmd = constrain_float(g_pwm_roll, -(float)FLYWHEEL_OUT_LIMIT, (float)FLYWHEEL_OUT_LIMIT);
-    yaw_room = (float)FLYWHEEL_OUT_LIMIT - fabsf(roll_cmd);
-    yaw_cmd  = constrain_float(g_pwm_yaw, -yaw_room, yaw_room);
+    yaw_cmd  = constrain_float(g_pwm_yaw,  -(float)FLYWHEEL_OUT_LIMIT, (float)FLYWHEEL_OUT_LIMIT);
 
     mix_a = (int32)(-roll_cmd + yaw_cmd);                // A：横滚分量取负
     mix_b = (int32)(+roll_cmd + yaw_cmd);                // B：差动出平衡，同向出转向
@@ -945,7 +1015,8 @@ static float pitch_test_ctrl(uint8 run5, uint8 run20)
         {
             speed_ramp_update();
             s_test_speed_c = Y_Motor_GetSpeed20ms();
-            pid_loc_calc(&p_vel_pid, (float)s_test_speed_c - s_speed_ramp);
+            pid_loc_calc_limited(&p_vel_pid, (float)s_test_speed_c - s_speed_ramp,
+                                 -P_VEL_LIMIT, P_VEL_LIMIT);
         }
     }
     else
@@ -1199,11 +1270,12 @@ void control_init(void)
     g_vision_lateral_error = 0.0f;
     g_vision_heading_error = 0.0f;
     g_vision_curvature = 0.0f;
+    g_vision_direction_camera = 0.0f;
+    g_vision_track_mode = TRACK_MODE_MIDDLE;
     g_vision_quality = 0.0f;
     g_vision_speed_limit_mps = RUN_SPEED_MAX_MPS;
     g_vision_stop_request = 0;
     g_run_speed_target_mps = 0.0f;
-    g_run_yaw_rate_cmd = 0.0f;
     g_vision_fps = 0.0f;
     s_control_test_active = 0;
     s_test_status = CTRL_TEST_STATUS_OK;
@@ -1220,7 +1292,6 @@ void control_init(void)
     g_pitch_zero  = PITCH_ZERO_INIT;
     g_yaw_target  = 0;
     g_lean_offset = 0;
-    s_lean_raw    = 0;
     s_speed_ramp  = 0.0f;
     start_flag    = START_STOP;
 
@@ -1343,10 +1414,10 @@ uint8 control_ipm_calib_request(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     在主循环将新标定的逆透视矩阵写入 Flash
+// 函数简介     查询是否还有标定好的逆透视矩阵在等着写 Flash
 // 参数说明     void
-// 返回参数     uint8           1=有待存矩阵且 Flash 写入成功，0=无待存矩阵或保存失败
-// 使用示例     if (control_ipm_flush()) menu_status("IPM SAVED");
+// 返回参数     uint8           1=还没写进 Flash 0=已经落盘或本来就没有新矩阵
+// 使用示例     if (!control_ipm_pending()) menu_status("IPM SAVED");
 //-------------------------------------------------------------------------------------------------------------------
 uint8 control_ipm_pending(void)
 {
@@ -1401,9 +1472,13 @@ uint8 control_run_start(void)
     s_run_active = 1;
     s_run_stop = RUN_STOP_NONE;
     s_run_lost_ms = 0;
-    s_run_yaw_rate_target = 0.0f;
-    g_run_yaw_rate_cmd = 0.0f;
     g_run_speed_target_mps = 0.0f;
+    s_direction_offset = 0.0f;
+    s_direction_last_error = 0.0f;
+    s_direction_yaw_rate_target = 0.0f;
+    s_direction_yaw_rate_cmd = 0.0f;
+    s_direction_hold_yaw = imu_get_angle_yaw();
+    s_direction_last_mode = TRACK_MODE_MIDDLE;
     s_zebra_stop_latched = 0;
     s_zebra_stop_start_count = 0;
     s_run_vision_armed = 0;
@@ -1414,15 +1489,18 @@ uint8 control_run_start(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     停止正式跑车并锁停全部电机
+// 函数简介     停止正式跑车，目标速度归零并保持平衡制动
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_run_stop();
 //-------------------------------------------------------------------------------------------------------------------
 void control_run_stop(void)
 {
-    if (s_run_active && s_run_stop == RUN_STOP_NONE) s_run_stop = RUN_STOP_MANUAL;
-    s_run_active = 0;
+    if (s_run_active)
+    {
+        run_hold_balance(RUN_STOP_MANUAL);
+        return;
+    }
     control_stop();
 }
 
@@ -1518,7 +1596,8 @@ uint8 control_remote_command(float steer_angle, float speed_mps)
         return 0;
     }
     // 每条命令均以接收时航向为基准；航向和速度在下一次 1ms 控制拍同时生效。
-    s_remote_yaw_target = yaw_now + steer_angle;
+    // 转向意图是相对行进方向说的，车掉头之后要跟着翻，见 STEER_DIR
+    s_remote_yaw_target = yaw_now + (float)STEER_DIR * steer_angle;
     s_remote_steer_angle = steer_angle;
     s_remote_speed_mps = speed_mps;
     s_remote_cmd_age_ms = 0;
@@ -1861,7 +1940,6 @@ static void control_vision_exchange(uint8 publish_feedback)
         feedback.ring_angle = g_param.ring_angle;
         feedback.ring_s2_cnt_l = g_param.ring_s2_cnt_l;
         feedback.ring_s2_cnt_r = g_param.ring_s2_cnt_r;
-        feedback.ring_side_offset = g_param.ring_side_offset;
         feedback.cam_exposure = (uint16)g_param.cam_exposure;
         feedback.reserved = 0;
         vision_feedback_publish(&feedback);
@@ -1904,6 +1982,12 @@ static void control_vision_exchange(uint8 publish_feedback)
                                ? constrain_float(result.heading_error, -90.0f, 90.0f) : 0.0f;
         g_vision_curvature = ctrl_is_finite(result.curvature)
                            ? constrain_float(result.curvature, -1.0f, 1.0f) : 0.0f;
+        g_vision_direction_camera = ctrl_is_finite(result.direction_camera)
+                                  ? constrain_float(result.direction_camera,
+                                                    -DIRECTION_CAMERA_LIMIT,
+                                                     DIRECTION_CAMERA_LIMIT) : 0.0f;
+        g_vision_track_mode = (result.track_mode <= TRACK_MODE_HOLD)
+                            ? (uint8)result.track_mode : (uint8)TRACK_MODE_MIDDLE;
         g_vision_quality = ctrl_is_finite(result.quality)
                          ? constrain_float(result.quality, 0.0f, 1.0f) : 0.0f;
         g_vision_speed_limit_mps = ctrl_is_finite(result.speed_limit_mps)

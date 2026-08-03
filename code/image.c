@@ -13,6 +13,8 @@ float g_track_lateral = 0.0f;                   // 横向偏差，正=赛道位�
 float g_track_heading = 0.0f;                   // 航向偏差，正=赛道朝向车体左侧
 float g_track_curvature = 0.0f;                 // 曲率，正=左弯
 float g_track_quality = 0.0f;                   // 循迹质量
+float g_direction_camera = 0.0f;                // 60点整幅加权方向偏差
+uint8 g_direction_valid = 0;                    // 当前跟踪对象方向偏差有效标志
 
 static uint8 img_gray[IMG_H][IMG_W];            // 灰度帧缓冲区
 static int s_seed_col = IMG_MID_COL;             // 下一帧近端起点种子列
@@ -186,6 +188,8 @@ void image_init(void)
     g_track_heading           = 0.0f;
     g_track_curvature         = 0.0f;
     g_track_quality           = 0.0f;
+    g_direction_camera        = 0.0f;
+    g_direction_valid         = 0;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -1533,6 +1537,97 @@ static void image_update_road_width(void)
                                             ROAD_HALF_MIN, IMG_W);
     }
 }
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将报告的60行权重映射到整幅图像，计算中线、左边线或右边线方向偏差
+// 参数说明     void
+// 返回参数     void
+// 使用示例     image_update_direction_camera();
+//-------------------------------------------------------------------------------------------------------------------
+static void image_update_direction_camera(void)
+{
+    static const int16 weight_coefficient[60] =
+    {
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        1, 1, 3, 3, 5, 5, 10, 10, 10, 10,
+        10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+        10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+        10, 10, 10, 10, 10, 5, 5, 5, 5, 5,
+        3, 3, 3, 1, 1, 1, 0, 0, 0, 0
+    };
+    int32 direction = 0;
+    int32 valid_weight = 0;
+    int32 total_weight = 0;
+    int valid_rows = 0;
+    int i;
+
+    g_direction_camera = 0.0f;
+    g_direction_valid = 0;
+    if (g_elem_action.track_mode == TRACK_MODE_HOLD)
+    {
+        g_direction_valid = 1;
+        return;
+    }
+
+    for (i = 0; i < 60; i++)
+    {
+        int row = IMG_H - 1 - (i * (IMG_H - 1) + 29) / 59;
+        int weight = weight_coefficient[i];
+        int error = 0;
+        uint8 valid = 0;
+
+        total_weight += weight;
+        if (weight == 0) continue;
+
+        if (g_elem_action.track_mode == TRACK_MODE_LEFT)
+        {
+            if (!my_image.Left_Lost_Flag[row])
+            {
+                error = my_image.Left_Line[row] - (IMG_MID_COL - Road_Half_Wide[row]);
+                valid = 1;
+            }
+        }
+        else if (g_elem_action.track_mode == TRACK_MODE_RIGHT)
+        {
+            if (!my_image.Right_Lost_Flag[row])
+            {
+                error = my_image.Right_Line[row] - (IMG_MID_COL + Road_Half_Wide[row]);
+                valid = 1;
+            }
+        }
+        else if (!my_image.Mid_Lost_Flag[row])
+        {
+            error = my_image.Mid_Line[row] - IMG_MID_COL;
+            valid = 1;
+        }
+
+        if (valid)
+        {
+            direction += (int32)error * (int32)weight;
+            valid_weight += weight;
+            valid_rows++;
+        }
+    }
+
+    if (valid_rows < TRACK_MIN_VALID_ROWS || valid_weight <= 0)
+    {
+        if (g_elem_action.track_mode != TRACK_MODE_MIDDLE ||
+            !my_image.Track_Valid || total_weight <= 0)
+            return;
+
+        direction = (int32)(-g_mid_error * (float)total_weight);
+    }
+    else if (valid_weight != total_weight)
+    {
+        direction = (int32)((float)direction * (float)total_weight /
+                            (float)valid_weight);
+    }
+
+    g_direction_camera = image_fclip((float)direction,
+                                     -DIRECTION_CAMERA_LIMIT,
+                                      DIRECTION_CAMERA_LIMIT);
+    g_direction_valid = 1;
+}
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     汇总中线并生成转向几何量
 // 参数说明     coefficient/range 曲线系数与有效范围
@@ -1551,7 +1646,6 @@ static void image_update_track_output(const float coefficient[3],
     float derivative;
     float heading_scale;
     float curvature_den;
-    float ring_offset = 0.0f;
 
     my_image.Mid_Valid_Rows = 0;
     my_image.Valid_Row_Bottom = -1;
@@ -1614,17 +1708,6 @@ static void image_update_track_output(const float coefficient[3],
     curvature_den *= sqrtf(curvature_den);
     if (curvature_den < 1.0e-4f) curvature_den = 1.0e-4f;
     g_track_curvature = image_fclip(-2.0f * coefficient[2] / curvature_den, -1.0f, 1.0f);
-
-    if (g_island.detect != 0 && g_island.island_state == 3)
-    {
-        ring_offset = (g_island.detect == 1)
-                    ? (float)g_elem_action.ring_side_offset
-                    : -(float)g_elem_action.ring_side_offset;
-        g_mid_error -= ring_offset;
-        g_track_lateral = image_fclip(g_track_lateral -
-                                      ring_offset / (float)Road_Half_Wide[selected_row],
-                                      -2.0f, 2.0f);
-    }
 
     s_last_near_mid = my_image.Mid_Line[my_image.Valid_Row_Bottom];
     s_seed_col = iclip(s_last_near_mid, EN_COL_MIN_LIMIT + 1, EN_COL_MAX_LIMIT - 1);
@@ -1710,19 +1793,6 @@ static void image_update_track_output_local(void)
     else g_track_heading = 0.0f;
     g_track_curvature = 0.0f;
 
-    if (g_island.detect != 0 && g_island.island_state == 3)
-    {
-        float ring_offset = (g_island.detect == 1)
-                          ? (float)g_elem_action.ring_side_offset
-                          : -(float)g_elem_action.ring_side_offset;
-        g_mid_error -= ring_offset;
-        g_track_lateral = image_fclip(g_track_lateral -
-                                      ring_offset /
-                                      (float)(Road_Half_Wide[selected_row] > 0
-                                              ? Road_Half_Wide[selected_row] : 1),
-                                      -2.0f, 2.0f);
-    }
-
     s_last_near_mid = my_image.Mid_Line[my_image.Valid_Row_Bottom];
     s_seed_col = iclip(s_last_near_mid, EN_COL_MIN_LIMIT + 1, EN_COL_MAX_LIMIT - 1);
 }
@@ -1766,6 +1836,7 @@ void Image_Build_Mid_Line(void)
         g_track_heading = 0.0f;
         g_track_curvature = 0.0f;
         g_track_quality = 0.0f;
+        image_update_direction_camera();
         return;
     }
 
@@ -1782,6 +1853,8 @@ void Image_Build_Mid_Line(void)
     // 窗口点数不够就退回差分：位置照旧，航向由中线的局部斜率给，曲率给 0
     else
         image_update_track_output_local();
+
+    image_update_direction_camera();
 
     if (!ipm_ready() && s_allow_width_learning && previous_track_valid &&
         my_image.Track_Valid && measured_dual >= IMAGE_ROAD_LEARN_MIN_DUAL &&

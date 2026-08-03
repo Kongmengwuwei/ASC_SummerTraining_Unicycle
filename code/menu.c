@@ -67,7 +67,7 @@ typedef enum
     GROUP_KIND_AXIS = 0,    // 分环 Test，闭环驱动对应轴
     GROUP_KIND_CAMERA,      // 循迹参数、视觉状态与逆透视标定入口
     GROUP_KIND_MOTOR,       // 架空点动，验证转向与转速回读符号
-    GROUP_KIND_ZERO,        // 在线抓当前姿态角当机械零点
+    GROUP_KIND_ZERO,        // 手动调整机械零点与保护角参数
     GROUP_KIND_ELEMENT,     // 元素使能与阈值，实时显示识别到的元素，无动作行
     GROUP_KIND_ODOMETRY,    // C 轮每米脉冲标定与 1m 验证
     GROUP_KIND_LEAN,        // 压弯动态零点，纯参数页，无动作行也无实时行
@@ -130,19 +130,10 @@ static const menu_param_item_t s_yaw_items[] =
     { "Angle Kd", "y_angle_kd", 0.1f,   2 }
 };
 
-// Lean 页按模式只显示当前有效的限幅参数。
-static const menu_param_item_t s_lean_mode0_items[] =
+static const menu_param_item_t s_lean_items[] =
 {
-    { "K1",       "lean_turn_k1",     0.0001f, 4 },
-    { "Mode 0/1", "lean_mode",        2.0f,    0 },
-    { "Limit",    "lean_fixed_limit", 0.5f,    1 }
-};
-
-static const menu_param_item_t s_lean_mode1_items[] =
-{
-    { "K1",       "lean_turn_k1",      0.0001f, 4 },
-    { "Mode 0/1", "lean_mode",         2.0f,    0 },
-    { "K2 Speed", "lean_speed_cap_k",  0.1f,    1 }
+    { "Lean Kp",     "lean_roll_kp",   0.1f, 2 },
+    { "Lean Max",    "lean_max_angle", 0.1f, 2 }
 };
 
 static const menu_param_item_t s_camera_items[] =
@@ -160,11 +151,10 @@ static const menu_param_item_t s_run_items[] =
     { "Ring",     "run_speed_ring",     0.01f, 2 },
     { "Ramp",     "run_speed_ramp",     0.01f, 2 },
     { "Lost",     "run_speed_lost",     0.01f, 2 },
-    { "Accel",    "run_accel_mps2",     0.05f, 2 },
-    { "Decel",    "run_decel_mps2",     0.05f, 2 },
-    { "Lat Gain", "track_lat_gain",     0.5f,  1 },
-    { "Head Gain","track_head_gain",    0.05f, 2 },
-    { "Curve K",  "track_curve_gain",   0.5f,  1 }
+    { "Accel",    "run_accel_mps2",       0.05f,   2 },
+    { "Decel",    "run_decel_mps2",       0.05f,   2 },
+    { "Dir Kp",   "direction_rate_kp", 0.001f,  4 },
+    { "Dir Kd",   "direction_rate_kd", 0.001f,  4 }
 };
 
 // 元素页只保留现场需要调整的使能、停车距离和环岛路径参数。
@@ -177,8 +167,7 @@ static const menu_param_item_t s_element_items[] =
     { "Zebra Stop", "zebra_stop_offset_m", 0.01f, 2 },
     { "Ring Angle", "ring_angle",       5.0f, 0 },
     { "Ring CntL",  "ring_s2_cnt_l",   10.0f, 0 },
-    { "Ring CntR",  "ring_s2_cnt_r",   10.0f, 0 },
-    { "Ring Ofs",   "ring_side_offset", 1.0f, 0 }
+    { "Ring CntR",  "ring_s2_cnt_r",   10.0f, 0 }
 };
 
 // 极性取值只有 ±1，步长给 2 保证一次按键就翻符号。
@@ -188,6 +177,7 @@ static const menu_param_item_t s_motor_items[] =
     { "Dir B",    "motor_dir_b",    2.0f,   0 },
     { "Dir C",    "motor_dir_c",    2.0f,   0 },
     { "Enc C",    "enc_dir_c",      2.0f,   0 },
+    { "Steer Dir","steer_dir",      2.0f,   0 },
     { "Duty Fly", "jog_duty_fly",   100.0f, 0 },
     { "Duty Drv", "jog_duty_drive", 100.0f, 0 },
     { "Fly Max",  "fly_speed_limit",100.0f, 0 },
@@ -223,12 +213,12 @@ static const menu_group_t s_groups[] =
     { "Roll",   s_roll_items,   MENU_ITEMS_OF(s_roll_items),   TUNE_AXIS_ROLL,  3, GROUP_KIND_AXIS   },
     { "Pitch",  s_pitch_items,  MENU_ITEMS_OF(s_pitch_items),  TUNE_AXIS_PITCH, 3, GROUP_KIND_AXIS   },
     { "Yaw",    s_yaw_items,    MENU_ITEMS_OF(s_yaw_items),    TUNE_AXIS_YAW,   2, GROUP_KIND_AXIS   },
-    { "Lean",    s_lean_mode0_items, MENU_ITEMS_OF(s_lean_mode0_items), TUNE_AXIS_ROLL, 0, GROUP_KIND_LEAN },
+    { "Lean",    s_lean_items,    MENU_ITEMS_OF(s_lean_items),    TUNE_AXIS_ROLL, 0, GROUP_KIND_LEAN },
     { "Run",     s_run_items,     MENU_ITEMS_OF(s_run_items),     TUNE_AXIS_YAW,  0, GROUP_KIND_RUN     },
     { "Camera",  s_camera_items,  MENU_ITEMS_OF(s_camera_items),  TUNE_AXIS_YAW,  1, GROUP_KIND_CAMERA  },
     { "Element", s_element_items, MENU_ITEMS_OF(s_element_items), TUNE_AXIS_YAW,  0, GROUP_KIND_ELEMENT },
     { "Motor",   s_motor_items,   MENU_ITEMS_OF(s_motor_items),   TUNE_AXIS_ROLL, 6, GROUP_KIND_MOTOR   },
-    { "Zero",    s_zero_items,    MENU_ITEMS_OF(s_zero_items),    TUNE_AXIS_ROLL, 1, GROUP_KIND_ZERO    },
+    { "Zero",    s_zero_items,    MENU_ITEMS_OF(s_zero_items),    TUNE_AXIS_ROLL, 0, GROUP_KIND_ZERO    },
     { "Odometry",s_odometry_items,MENU_ITEMS_OF(s_odometry_items),TUNE_AXIS_PITCH,2, GROUP_KIND_ODOMETRY}
 };
 
@@ -240,8 +230,7 @@ static const menu_group_t s_groups[] =
 //-------------------------------------------------------------------------------------------------------------------
 static const menu_param_item_t *group_items(const menu_group_t *group)
 {
-    if (group->kind != GROUP_KIND_LEAN) return group->items;
-    return (LEAN_MODE == 0) ? s_lean_mode0_items : s_lean_mode1_items;
+    return group->items;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -252,9 +241,7 @@ static const menu_param_item_t *group_items(const menu_group_t *group)
 //-------------------------------------------------------------------------------------------------------------------
 static uint8 group_item_count(const menu_group_t *group)
 {
-    if (group->kind != GROUP_KIND_LEAN) return group->item_count;
-    return (LEAN_MODE == 0) ? MENU_ITEMS_OF(s_lean_mode0_items)
-                            : MENU_ITEMS_OF(s_lean_mode1_items);
+    return group->item_count;
 }
 
 // save_group_action() 在栈上开 UI_MAX_GROUP_ITEMS 个名字指针，任何一页的行数超了都会越界写
@@ -262,8 +249,7 @@ typedef char menu_group_items_fit[
     (MENU_ITEMS_OF(s_roll_items)    <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_pitch_items)   <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_yaw_items)     <= UI_MAX_GROUP_ITEMS &&
-     MENU_ITEMS_OF(s_lean_mode0_items) <= UI_MAX_GROUP_ITEMS &&
-     MENU_ITEMS_OF(s_lean_mode1_items) <= UI_MAX_GROUP_ITEMS &&
+     MENU_ITEMS_OF(s_lean_items)    <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_run_items)     <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_camera_items)  <= UI_MAX_GROUP_ITEMS &&
      MENU_ITEMS_OF(s_element_items) <= UI_MAX_GROUP_ITEMS &&
@@ -832,7 +818,9 @@ static const char *cmd_result_text(vofa_cmd_result_t result)
         case VOFA_CMD_RANGE:       return "CMD DROP: OUT OF RANGE";
         case VOFA_CMD_PREFIX:      return "CMD DROP: BAD PREFIX";
         case VOFA_CMD_FORMAT:      return "CMD DROP: BAD FORMAT";
-        case VOFA_CMD_OVERFLOW:    return "CMD DROP: OVERFLOW";
+        case VOFA_CMD_OVERFLOW:    return "CMD DROP: LINE TOO LONG";
+        case VOFA_CMD_RX_FULL:     return "CMD DROP: RX RING FULL";
+        case VOFA_CMD_STOPPED:     return "CMD: MOTOR STOPPED";
         default:                   return "CMD NONE";
     }
 }
@@ -897,7 +885,7 @@ static void render_run_test(void)
     draw_action_row(1, 1, control_remote_running() ? "Remote: ON" : "Remote: OFF");
     draw_action_row(2, 2, "Back");
     render_run_test_live();
-    ui_line(208, "speed:deg,raw  raw/60=m/s", UI_WHITE);
+    ui_line(208, "speed:deg,raw  raw/30=m/s", UI_WHITE);
     // 232 行由 render_run_test_live() 画最近一次解析到的数值
     ui_line(256, "CRLF each, send >=2 Hz", UI_GRAY);
     draw_status();
@@ -1012,7 +1000,7 @@ static void render_group_live(void)
         return;
     }
 
-    // Zero 页一直显示当前姿态角和已保存的零点，方便对比后再抓零点
+    // Zero 页一直显示当前姿态角和已保存的零点，方便手动调整
     if (group->kind == GROUP_KIND_ZERO)
     {
         (void)snprintf(line, sizeof(line), "NOW  R%7.2f P%7.2f",
@@ -1103,7 +1091,6 @@ static const char *action_name(uint8 action_index)
     const menu_group_t *group = &s_groups[s_group_index];
 
     if (group->kind == GROUP_KIND_MOTOR) return s_motor_action_names[action_index];
-    if (group->kind == GROUP_KIND_ZERO) return "Capture Zero";
     if (group->kind == GROUP_KIND_CAMERA)
         return g_vision_ipm_ok ? "Calib IPM: OK" : "Calib IPM";
     if (group->kind == GROUP_KIND_ODOMETRY)
@@ -1261,41 +1248,6 @@ static void motor_jog_action(uint8 action_index)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     把当前横滚角与俯仰角写进机械零点，车必须先按平衡姿态摆好并静止
-// 参数说明     void
-// 返回参数     void
-// 使用示例     zero_capture_action();
-//-------------------------------------------------------------------------------------------------------------------
-static void zero_capture_action(void)
-{
-    if (!g_imu_ok || imu_link_lost() || attitude_diverged())
-    {
-        menu_status("IMU NOT READY");
-        return;
-    }
-    if (imu_calib_state() != IMU_CALIB_OK)
-    {
-        menu_status("CALIB MOVED / REBOOT");
-        return;
-    }
-    if (!attitude_converged())
-    {
-        menu_status("ATTITUDE NOT READY");
-        return;
-    }
-    if (start_flag != START_STOP || control_test_running() ||
-        control_jog_running() != MOTOR_JOG_NONE)
-    {
-        menu_status("STOP MOTORS FIRST");     // 电机在动时姿态不是静态零点
-        return;
-    }
-
-    (void)param_set_by_name("roll_zero_init", att.roll);
-    (void)param_set_by_name("pitch_zero_init", att.pitch);   // 内部会调 param_sync_zero()
-    menu_status("ZERO CAPTURED");
-    s_dirty = 1;
-}
-
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     启停当前参数组指定动作行
 // 参数说明     action_index    组内动作索引
@@ -1315,13 +1267,6 @@ static void toggle_group_action(uint8 action_index)
         motor_jog_action(action_index);
         return;
     }
-
-    if (group->kind == GROUP_KIND_ZERO)
-    {
-        zero_capture_action();
-        return;
-    }
-
 
     if (group->kind == GROUP_KIND_ODOMETRY)
     {

@@ -13,6 +13,13 @@ typedef enum {
     ELEM_RAMP,                                 // 坡道
 } elem_type_t;
 
+typedef enum {
+    TRACK_MODE_MIDDLE = 0,                     // 普通赛道使用中线
+    TRACK_MODE_LEFT,                           // 元素阶段使用左边线
+    TRACK_MODE_RIGHT,                          // 元素阶段使用右边线
+    TRACK_MODE_HOLD,                           // 十字或丢线时保持进入航向
+} track_mode_t;
+
 typedef struct {
     volatile int cross;         // 十字处理中
     volatile int island;        // 环岛处理中
@@ -34,8 +41,8 @@ typedef struct {
 typedef struct {
     float       speed_limit_mps;  // 当前元素绝对限速(m/s)
     elem_type_t active_elem;      // 当前元素
+    track_mode_t track_mode;      // 当前方向误差使用的跟踪对象
     uint8       stop_request;     // 终点停车请求
-    int         ring_side_offset; // 环岛单边循迹补偿
 } elem_action_t;
 
 typedef struct
@@ -55,7 +62,6 @@ typedef struct
     int    ring_angle;
     int    ring_s2_cnt_l;
     int    ring_s2_cnt_r;
-    int    ring_side_offset;
     uint8  en_zebra;            // 各元素使能，0=本帧不检测并清自己的旗标
     uint8  en_cross;
     uint8  en_ring;

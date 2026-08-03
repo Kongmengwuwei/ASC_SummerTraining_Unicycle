@@ -64,7 +64,14 @@ IFX_INTERRUPT(uart2_tx_isr, 0, UART2_TX_INT_PRIO)
 //-------------------------------------------------------------------------------------------------------------------
 IFX_INTERRUPT(uart2_rx_isr, 0, UART2_RX_INT_PRIO)
 {
-    interrupt_global_enable(0);
+    // **不能** interrupt_global_enable()：本中断要一口气跑完，不许被抢占。
+    // 无线模块驱动写的是逐飞的 fifo_struct，它不可重入，靠一个非原子的 execution 标志做互斥。
+    // 1ms 控制中断(优先级 30)比本中断(17)高，一旦这里开了嵌套，它就能打断
+    // fifo_write_buffer() 的中途，而它自己的 vofa_tick1ms() 正在读同一个 FIFO。
+    // 两边非原子地改 head/size，记账一旦错到 length <= size 恒不成立，
+    // 之后每一次写都被跳过 —— 收字节这条路彻底死掉且不会恢复。
+    // 实车表现就是"无线命令一开始好用，某一刻起再也不接受"。
+    // 本函数只把硬件 FIFO(16 字节)搬进软件环，几微秒，不影响 1ms 节拍。
 
     // 这里不能先调 IfxAsclin_Asc_isrReceive()：设备回调直接读取硬件 FIFO。
     // 回调一次排空当前 FIFO，避免连续字节到达时只取走首字节。
@@ -137,7 +144,9 @@ IFX_INTERRUPT(uart3_tx_isr, 0, UART3_TX_INT_PRIO)
 //-------------------------------------------------------------------------------------------------------------------
 IFX_INTERRUPT(uart3_rx_isr, 0, UART3_RX_INT_PRIO)
 {
-    interrupt_global_enable(0);
+    // 同 uart2_rx_isr：不开嵌套。W_Motor_RxHandler() 要原子地更新
+    // w_motor_rx_buffer / w_motor_rx_length / w_motor_speed_*，
+    // 被 1ms 中断(优先级 30 > 本中断 20)从中间打断会拆散一帧的组包状态
     W_Motor_RxHandler();
 }
 

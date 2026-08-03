@@ -58,7 +58,7 @@ float pid_inc_calc_limited(pid_t *p, float error, float low, float high);
 // 函数简介     浮点限幅
 // 参数说明     amt/low/high    输入值与上下限
 // 返回参数     float           限幅后的值
-// 使用示例     offset = constrain_float(offset, -LEAN_LIMIT, LEAN_LIMIT);
+// 使用示例     offset = constrain_float(offset, -limit, limit);
 //-------------------------------------------------------------------------------------------------------------------
 float constrain_float(float amt, float low, float high);
 

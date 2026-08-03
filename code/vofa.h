@@ -35,7 +35,9 @@ typedef enum
     VOFA_CMD_RANGE,         // 数值超出允许范围，被控制层拒绝
     VOFA_CMD_PREFIX,        // 不是 speed: 开头
     VOFA_CMD_FORMAT,        // 缺逗号、字段为空或数字非法
-    VOFA_CMD_OVERFLOW,      // 接收环或命令行溢出，整行作废
+    VOFA_CMD_OVERFLOW,      // 单行超过 VOFA_CMD_LINE_MAX，整行作废
+    VOFA_CMD_RX_FULL,       // 接收环被写满，前台没来得及取走，整行作废
+    VOFA_CMD_STOPPED,       // 收到 stop，三电机已停、A/B 刹车锁死
 } vofa_cmd_result_t;
 
 extern volatile vofa_mode_t g_vofa_mode;    // 当前波形模式
@@ -82,9 +84,9 @@ void vofa_snapshot(void);
 void vofa_poll(void);
 
 // 下行只接收 Run Test 遥控命令，发送端必须用 "\r\n" 结束每一条命令：
-//   speed:<相对转角>,<速度原始值>，两项范围均为 -90~90，速度值除以 60 得到 m/s
+//   speed:<相对转角>,<速度原始值>，两项范围均为 -90~90，速度值除以 30 得到 m/s
 //   转向 —— 相对命令解析接受瞬间当前航向的目标角度(°)。
-//   速度 —— 原始输入除以 60 后得到线速度(m/s)。
+//   速度 —— 原始输入除以 30 后得到线速度(m/s)。
 // 没有行结束符的残行不会执行，静默 1 秒后作废；接收溢出会清空全部待处理下行数据。
 // speed 命令只在主菜单 Run Test 已启动后生效；无线命令不能发车，返回键始终急停。
 

@@ -3,6 +3,7 @@
 #include "board_config.h"
 #include "control.h"
 #include <stdio.h>
+#include <string.h>
 
 // 全局状态
 volatile vofa_mode_t g_vofa_mode = VOFA_OFF;    // 当前波形模式
@@ -33,7 +34,8 @@ static volatile uint16 s_rx_idle_ms = 0;        // 距最后一个下行字节�
 
 #define VOFA_TX_FIFO_DEPTH  (16u)               // ASCLIN 硬件发送 FIFO 深度
 #define VOFA_TX_SIZE        (2048u)             // 发送环长度，必须是 2 的幂
-#define VOFA_RX_SIZE        (256u)              // 接收环长度，必须是 2 的幂
+#define VOFA_RX_SIZE        (1024u)             // 接收环长度，必须是 2 的幂。
+                                                // 115200 下 1024 字节约 89ms，够盖住一次满屏刷新
 #define VOFA_TX_MASK        (VOFA_TX_SIZE - 1u)
 #define VOFA_RX_MASK        (VOFA_RX_SIZE - 1u)
 
@@ -271,6 +273,94 @@ static vofa_cmd_result_t cmd_execute_speed(char *line)
 // 返回参数     void
 // 使用示例     cmd_submit_line();
 //-------------------------------------------------------------------------------------------------------------------
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     判断整行是不是 stop 命令，忽略大小写
+// 参数说明     line            已去掉首尾空白的命令行
+// 返回参数     uint8           1=是 stop
+// 使用示例     if (cmd_is_stop(line)) { ... }
+//-------------------------------------------------------------------------------------------------------------------
+static uint8 cmd_is_stop(const char *line)
+{
+    static const char word[] = "stop";
+    uint8 i;
+
+    if (line == 0) return 0;
+    for (i = 0; i < 4u; i++)
+    {
+        char c = line[i];
+
+        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+        if (c != word[i]) return 0;
+    }
+    return (uint8)(line[4] == '\0');            // 必须整行就是 stop，不接受后缀
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     判断命令行缓冲的末尾是不是某条命令的开头
+// 参数说明     void
+// 返回参数     uint8           匹配到的前缀长度，0=没匹配上
+// 使用示例     uint8 n = cmd_tail_prefix_len();
+//-------------------------------------------------------------------------------------------------------------------
+//
+// 用来在上位机没发 CR/LF 时重新同步。两条命令的前缀都要认，否则
+// "speed:1,2stop" 这种粘连里的 stop 会被当成上一条命令的一部分丢掉。
+// 浮点字段里只可能出现数字和 . - + e，拼不出 stop 或 speed:，不会误切。
+static uint8 cmd_tail_prefix_len(void)
+{
+    static const char speed_word[] = "speed:";
+    static const char stop_word[] = "stop";
+    uint8 i;
+
+    if (s_cmd_len > 6u)
+    {
+        for (i = 0; i < 6u; i++)
+        {
+            char c = s_cmd_line[s_cmd_len - 6u + i];
+
+            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+            if (c != speed_word[i]) break;
+        }
+        if (i == 6u) return 6u;
+    }
+    if (s_cmd_len > 4u)
+    {
+        for (i = 0; i < 4u; i++)
+        {
+            char c = s_cmd_line[s_cmd_len - 4u + i];
+
+            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+            if (c != stop_word[i]) break;
+        }
+        if (i == 4u) return 4u;
+    }
+    return 0u;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     分发一行下行命令
+// 参数说明     line            已去掉换行符和首尾空白的命令字符串
+// 返回参数     vofa_cmd_result_t 处理结果
+// 使用示例     result = cmd_execute_line(cmd_trim(s_cmd_line));
+//-------------------------------------------------------------------------------------------------------------------
+//
+// stop 任何时候都受理：它只停电机，不可能让车动起来。
+// speed: 仍然只在 Run Test 启动之后才生效 —— 无线命令不许发车。
+static vofa_cmd_result_t cmd_execute_line(char *line)
+{
+    if (cmd_is_stop(line))
+    {
+        control_stop();                 // 三电机清零 + A/B 刹车锁死，与返回键急停同一条路
+        return VOFA_CMD_STOPPED;
+    }
+    return cmd_execute_speed(line);
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     提交一整行下行命令并记账
+// 参数说明     void
+// 返回参数     void
+// 使用示例     cmd_submit_line();
+//-------------------------------------------------------------------------------------------------------------------
 static void cmd_submit_line(void)
 {
     vofa_cmd_result_t result;
@@ -283,9 +373,9 @@ static void cmd_submit_line(void)
     }
 
     s_cmd_line[s_cmd_len] = '\0';
-    result = cmd_execute_speed(cmd_trim(s_cmd_line));
+    result = cmd_execute_line(cmd_trim(s_cmd_line));
     g_vofa_cmd_last = result;
-    if (result == VOFA_CMD_APPLIED) g_vofa_cmd_ok++;
+    if (result == VOFA_CMD_APPLIED || result == VOFA_CMD_STOPPED) g_vofa_cmd_ok++;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -425,6 +515,7 @@ void vofa_tick1ms(void)
 void vofa_cmd_poll(void)
 {
     uint32 tail;
+    uint32 budget;
     uint32 interrupt_state;
 
     interrupt_state = interrupt_global_disable();
@@ -435,17 +526,27 @@ void vofa_cmd_poll(void)
         s_cmd_len = 0;
         s_cmd_ovf = 0;
         g_vofa_cmd_lines++;
-        g_vofa_cmd_last = VOFA_CMD_OVERFLOW;
+        g_vofa_cmd_last = VOFA_CMD_RX_FULL;     // 和"单行超长"分开报，否则查不出是哪一种
         interrupt_global_enable(interrupt_state);
         return;
     }
     tail = s_rx_tail;
     interrupt_global_enable(interrupt_state);
 
-    while (tail != s_rx_head)
+    // 每消费一个字节就立刻发布 s_rx_tail。
+    // 1ms 中断按 (head - s_rx_tail) 判接收环满不满，如果等整个循环跑完才发布一次，
+    // 上位机一旦连续发字节这个循环就一直不退出(消费速度≈到达速度)，
+    // 中断那边看到的 tail 永远停在循环开始时的值，累计过 VOFA_RX_SIZE 就误判溢出 ——
+    // 而前台其实早就把这些字节吃掉了。实车表现是"命令格式完全正确，一持续发就一直报 OVERFLOW"。
+    // budget 给单次调用设字节上限，别让前台被上位机的连续流锁在这个循环里出不去。
+    budget = VOFA_RX_SIZE;
+    while (tail != s_rx_head && budget > 0u)
     {
         char c = (char)s_rx_buf[tail & VOFA_RX_MASK];
+
         tail++;
+        budget--;
+        s_rx_tail = tail;                       // 立刻发布，让中断看到真实的剩余空间
 
         if (c == '\n' || c == '\r')
         {
@@ -459,8 +560,28 @@ void vofa_cmd_poll(void)
             s_cmd_line[s_cmd_len++] = c;
         else
             s_cmd_ovf = 1;                      // 标记命令行溢出，整行作废
+
+        // 上位机没发 CR/LF 时用命令前缀本身重新同步：协议里只有 "speed:" 一种命令，
+        // 它出现就说明上一条已经结束。不这么做的话，命令会一条接一条粘成
+        // "speed:-19.000000,0speed:-19.000000,0..."，18 个字符一条粘 4 条就超过
+        // VOFA_CMD_LINE_MAX，整段作废，屏幕上就是格式明明正确却一直报 LINE TOO LONG。
+        // 正常带换行的情况走不到这里：提交后 s_cmd_len 归零，再收到前缀时正好等于 6
+        {
+            uint8 keep = cmd_tail_prefix_len();
+
+            if (keep > 0u)
+            {
+                char head[6];
+
+                memcpy(head, &s_cmd_line[s_cmd_len - keep], keep);
+                s_cmd_len = (uint8)(s_cmd_len - keep); // 砍掉刚收到的前缀，剩下的是上一条命令
+                cmd_submit_line();                     // 它自己会看 s_cmd_ovf 决定提交还是作废
+                memcpy(s_cmd_line, head, keep);
+                s_cmd_len = keep;
+                s_cmd_ovf = 0;
+            }
+        }
     }
-    s_rx_tail = tail;
 
     if (s_cmd_len > 0u && tail == s_rx_head)
     {

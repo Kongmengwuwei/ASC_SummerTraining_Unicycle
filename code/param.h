@@ -17,9 +17,8 @@ typedef struct
     float run_speed_lost;               // 低质量或短时丢线速度(m/s)
     float run_accel_mps2;               // 正式跑车加速度上限(m/s^2)
     float run_decel_mps2;               // 正式跑车减速度上限(m/s^2)
-    float track_lat_gain;               // 横向误差到目标角速度增益
-    float track_head_gain;              // 航向误差到目标角速度增益
-    float track_curve_gain;             // 曲率前馈增益
+    float direction_balance_kp;         // 方向偏差 P
+    float direction_balance_kd;         // 方向偏差 D
     float zebra_stop_offset_m;          // 识别斑马线后的前行距离(m)
     int   err_front_row;                // 前瞻行，拟合线在这一行求值
     float ipm_h[9];                     // 逆透视矩阵，行优先。不进菜单，由 Calib IPM 写
@@ -58,10 +57,8 @@ typedef struct
     float y_rate_kd;                    // 航向角速度内环 D
 
     // 压弯
-    float lean_turn_k1;                 // 目标横摆角速度累加系数
-    int   lean_mode;                    // 0=固定限幅 1=速度相关限幅
-    float lean_fixed_limit;             // 模式 0 固定压弯上限(°)
-    float lean_speed_cap_k;             // 模式 1 速度限幅系数(°/(m/s))
+    float direction_roll_kp;            // 山大压弯公式方向倾角 Kp
+    float lean_max_angle;               // 压弯动态零点最大值(°)
 
     // 元素使能，0=关 1=开。默认全关，普通循迹跑稳后一次只开一个
     int   elem_en_zebra;                // 斑马线
@@ -72,7 +69,6 @@ typedef struct
     int   ring_angle;                   // 环岛转角阈值
     int   ring_s2_cnt_l;                // 左环编码器阈值
     int   ring_s2_cnt_r;                // 右环编码器阈值
-    int   ring_side_offset;             // 环岛单边巡线横向补偿
 
     // 零点、标定与保护
     float roll_zero_init;               // 横滚机械零点初值
@@ -85,6 +81,7 @@ typedef struct
     int   motor_dir_b;                  // 动量轮B占空比与转速回读极性
     int   motor_dir_c;                  // 行进轮C输出极性
     int   enc_dir_c;                    // C轮脉冲/方向编码器计数符号
+    int   steer_dir;                    // 转向极性，遥控与视觉转向共用
     int   jog_duty_fly;                 // A/B 架空点动占空比，满量程 10000
     int   jog_duty_drive;               // C 架空点动占空比，满量程 10000
     int   fly_speed_limit;              // A/B 转速上限(RPM)，超了停测试，0=关闭
@@ -104,9 +101,8 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define RUN_SPEED_LOST          (g_param.run_speed_lost)
 #define RUN_ACCEL_MPS2          (g_param.run_accel_mps2)
 #define RUN_DECEL_MPS2          (g_param.run_decel_mps2)
-#define TRACK_LAT_GAIN          (g_param.track_lat_gain)
-#define TRACK_HEAD_GAIN         (g_param.track_head_gain)
-#define TRACK_CURVE_GAIN        (g_param.track_curve_gain)
+#define DIRECTION_BALANCE_KP    (g_param.direction_balance_kp)
+#define DIRECTION_BALANCE_KD    (g_param.direction_balance_kd)
 #define ZEBRA_STOP_OFFSET_M     (g_param.zebra_stop_offset_m)
 #define ERR_FRONT_ROW           (g_param.err_front_row)
 #define CAM_EXPOSURE            (g_param.cam_exposure)
@@ -144,10 +140,8 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define Y_RATE_KD               (g_param.y_rate_kd)
 
 // 压弯
-#define LEAN_TURN_K1            (g_param.lean_turn_k1)
-#define LEAN_MODE               (g_param.lean_mode)
-#define LEAN_FIXED_LIMIT        (g_param.lean_fixed_limit)
-#define LEAN_SPEED_CAP_K        (g_param.lean_speed_cap_k)
+#define DIRECTION_ROLL_KP       (g_param.direction_roll_kp)
+#define LEAN_MAX_ANGLE          (g_param.lean_max_angle)
 
 // 零点、标定与保护
 #define ROLL_ZERO_INIT          (g_param.roll_zero_init)
@@ -160,6 +154,7 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define MOTOR_DIR_B             (g_param.motor_dir_b)
 #define MOTOR_DIR_C             (g_param.motor_dir_c)
 #define ENC_DIR_C               (g_param.enc_dir_c)
+#define STEER_DIR               (g_param.steer_dir)
 #define JOG_DUTY_FLY            (g_param.jog_duty_fly)
 #define JOG_DUTY_DRIVE          (g_param.jog_duty_drive)
 #define FLY_SPEED_LIMIT         (g_param.fly_speed_limit)

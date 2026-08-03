@@ -14,7 +14,7 @@ typedef enum {
 
 extern start_state_t start_flag;
 
-extern float g_roll_zero, g_pitch_zero;              // 机械零点(°)，由 Zero 页标定
+extern float g_roll_zero, g_pitch_zero;              // 机械零点(°)，由 Zero 页手动调整
 extern float g_lean_offset;                          // 压弯动态零点偏移(°)，叠加到横滚零点
 extern float g_pwm_roll, g_pwm_pitch, g_pwm_yaw;     // 三轴串级输出，混控前
 extern int16 g_motor_a, g_motor_b, g_motor_c;        // 混控后的三电机控制量
@@ -41,11 +41,12 @@ extern uint8  g_vision_island_state;         // 最新环岛状态号，0=空闲
 extern float  g_vision_lateral_error;        // 车道半宽归一化横向误差
 extern float  g_vision_heading_error;        // 赛道航向误差(°)
 extern float  g_vision_curvature;            // 有符号归一化曲率
+extern float  g_vision_direction_camera;     // 报告同款加权方向偏差
+extern uint8  g_vision_track_mode;           // 中线、单边或航向保持模式
 extern float  g_vision_quality;              // 循迹质量(0..1)
 extern float  g_vision_speed_limit_mps;      // 视觉/元素绝对限速(m/s)
 extern uint8  g_vision_stop_request;         // 斑马线终点请求
 extern float  g_run_speed_target_mps;        // 正式 Run 当前规划速度(m/s)
-extern float  g_run_yaw_rate_cmd;            // 正式 Run 斜率限制后的目标横摆角速度(°/s)
 extern float  g_vision_fps;                  // CPU1 出帧率(帧/s)，1ms 中断写，菜单与图像页读
 
 typedef enum
@@ -158,7 +159,7 @@ uint8 control_ipm_pending(void);
 uint8 control_run_start(void);
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     停止正式跑车并锁停全部电机
+// 函数简介     停止正式跑车，目标速度归零并保持平衡制动
 // 参数说明     void
 // 返回参数     void
 // 使用示例     control_run_stop();

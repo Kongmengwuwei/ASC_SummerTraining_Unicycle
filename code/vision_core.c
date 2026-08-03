@@ -104,7 +104,6 @@ static void vision_feedback_defaults(vision_feedback_t *feedback)
     feedback->ring_angle = RING_ANGLE_DEFAULT;
     feedback->ring_s2_cnt_l = RING_S2_CNT_L_DEFAULT;
     feedback->ring_s2_cnt_r = RING_S2_CNT_R_DEFAULT;
-    feedback->ring_side_offset = RING_SIDE_OFFSET_DEFAULT;
     feedback->cam_exposure = CAM_EXPOSURE_DEFAULT;
     // 元素使能默认全关，CPU0 的首份快照到达前 CPU1 不跑任何元素
     feedback->elem_en_zebra = ELEM_EN_ZEBRA_DEFAULT;
@@ -401,7 +400,6 @@ void vision_core_run(void)
     motion.ring_angle = (int)feedback.ring_angle;
     motion.ring_s2_cnt_l = (int)feedback.ring_s2_cnt_l;
     motion.ring_s2_cnt_r = (int)feedback.ring_s2_cnt_r;
-    motion.ring_side_offset = (int)feedback.ring_side_offset;
     motion.en_zebra = feedback.elem_en_zebra;
     motion.en_cross = feedback.elem_en_cross;
     motion.en_ring = feedback.elem_en_ring;
@@ -422,6 +420,7 @@ void vision_core_run(void)
     result.lateral_error = g_track_lateral;
     result.heading_error = g_track_heading;
     result.curvature = g_track_curvature;
+    result.direction_camera = g_direction_camera;
     result.quality = g_track_quality;
     result.speed_limit_mps = g_elem_action.speed_limit_mps;
     result.ipm_calib_seq = s_ipm_calib_seq;
@@ -433,9 +432,10 @@ void vision_core_run(void)
     result.right_lost = (uint16)my_image.Right_Lost_Counter;
     result.both_lost = (uint16)my_image.Both_Lost_Counter;
     result.active_elem = g_elem_action.active_elem;
+    result.track_mode = g_elem_action.track_mode;
     result.island_state = (uint8)g_island.island_state;
     result.camera_ok = 1;
-    result.track_valid = (uint8)my_image.Track_Valid;
+    result.track_valid = g_direction_valid;
     result.stop_request = g_elem_action.stop_request;
     result.run_active = feedback.run_active;
     vision_result_publish(&result);

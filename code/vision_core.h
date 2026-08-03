@@ -44,6 +44,7 @@ typedef struct
     float       lateral_error;      // 横向误差，单位为半赛道宽，正=左
     float       heading_error;      // 航向误差(°)，正=赛道朝左
     float       curvature;          // 有符号归一化曲率，正=左弯
+    float       direction_camera;   // 报告同款60行加权方向偏差
     float       quality;            // 视觉质量 0..1
     float       speed_limit_mps;    // 元素绝对限速(m/s)
     uint16      threshold;          // 本帧大津阈值
@@ -55,6 +56,7 @@ typedef struct
     uint16      right_lost;         // 前瞻区内右边线丢线行数
     uint16      both_lost;          // 前瞻区内双边丢线行数
     elem_type_t active_elem;        // 当前识别元素
+    track_mode_t track_mode;        // 中线、左边、右边或航向保持
     uint8       island_state;       // 环岛状态机状态号，0=空闲
     uint8       camera_ok;          // 摄像头出帧正常
     uint8       track_valid;        // 本帧循迹是否可信
@@ -80,7 +82,6 @@ typedef struct
     int32  ring_angle;              // 环岛转角阈值(°)
     int32  ring_s2_cnt_l;           // 左环状态2 里程阈值
     int32  ring_s2_cnt_r;           // 右环状态2 里程阈值
-    int32  ring_side_offset;        // 环岛单边巡线横向补偿
     uint16 cam_exposure;            // 曝光时间
     uint8  elem_en_zebra;           // 斑马线使能
     uint8  elem_en_cross;           // 十字使能
