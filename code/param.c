@@ -375,7 +375,15 @@ void param_load_defaults(void)
     g_param.direction_balance_kd   = DIRECTION_BALANCE_KD_DEFAULT;
     g_param.zebra_stop_offset_m    = ZEBRA_STOP_OFFSET_M_DEFAULT;
     g_param.err_front_row    = ERR_FRONT_ROW_DEFAULT;
-    for (int ipm_i = 0; ipm_i < 9; ipm_i++) g_param.ipm_h[ipm_i] = 0.0f;
+    g_param.ipm_h[0] = IPM_H0_DEFAULT;
+    g_param.ipm_h[1] = IPM_H1_DEFAULT;
+    g_param.ipm_h[2] = IPM_H2_DEFAULT;
+    g_param.ipm_h[3] = IPM_H3_DEFAULT;
+    g_param.ipm_h[4] = IPM_H4_DEFAULT;
+    g_param.ipm_h[5] = IPM_H5_DEFAULT;
+    g_param.ipm_h[6] = IPM_H6_DEFAULT;
+    g_param.ipm_h[7] = IPM_H7_DEFAULT;
+    g_param.ipm_h[8] = IPM_H8_DEFAULT;
     g_param.cam_exposure     = CAM_EXPOSURE_DEFAULT;
     g_param.odom_counts_per_m = ODOM_COUNTS_PER_M_DEFAULT;
     g_param.odom_test_speed   = ODOM_TEST_SPEED_DEFAULT;

@@ -36,8 +36,8 @@
 #define MOTOR_DIR_A_DEFAULT     (1)             // A轮输出与转速极性
 #define MOTOR_DIR_B_DEFAULT     (1)             // B轮输出与转速极性
 #define MOTOR_DIR_C_DEFAULT     (1)             // C轮输出极性
-#define ENC_DIR_C_DEFAULT       (-1)            // C轮脉冲/方向编码器计数极性
-#define STEER_DIR_DEFAULT       (1)             // 转向极性，只允许 +1 或 -1
+#define ENC_DIR_C_DEFAULT       (1)             // C轮脉冲/方向编码器计数极性
+#define STEER_DIR_DEFAULT       (-1)            // 转向极性，只允许 +1 或 -1
 
 // 菜单按键
 #define MENU_KEY_UP             (KEY_1)        // P20_6，上
@@ -46,57 +46,57 @@
 #define MENU_KEY_RETURN         (KEY_4)        // P11_3，返回
 
 // 机械零点
-#define ROLL_ZERO_INIT_DEFAULT  (0.0f)         // 横滚机械零点(°)
-#define PITCH_ZERO_INIT_DEFAULT (0.0f)         // 俯仰机械零点(°)
+#define ROLL_ZERO_INIT_DEFAULT  (0.996689558f) // 横滚机械零点(°)
+#define PITCH_ZERO_INIT_DEFAULT (-3.05225325f) // 俯仰机械零点(°)
 
 // 平衡串级 PID 参数
 // Roll：飞轮回收环 -> 角度环 -> 角速度环。
-#define R_RCY_KP_DEFAULT        (0.0f)         // 飞轮回收环 P
+#define R_RCY_KP_DEFAULT        (0.0017f)      // 飞轮回收环 P
 #define R_RCY_KI_DEFAULT        (0.0f)         // 飞轮回收环 I
 #define R_RCY_KD_DEFAULT        (0.0f)         // 飞轮回收环 D
 #define R_RCY_IMAX              (50.0f)        // 飞轮回收环积分限幅
-#define R_ANGLE_KP_DEFAULT      (0.0f)         // 横滚角度环 P
+#define R_ANGLE_KP_DEFAULT      (36.0f)        // 横滚角度环 P
 #define R_ANGLE_KI_DEFAULT      (0.0f)         // 横滚角度环 I
 #define R_ANGLE_KD_DEFAULT      (0.0f)         // 横滚角度环 D
 
 // 角度环输出由角速度环统一限幅，积分只限制累计状态。
 #define R_ANGLE_IMAX            (2000.0f)      // 横滚角度环积分限幅
-#define R_RATE_KP_DEFAULT       (0.0f)         // 横滚角速度环 P
+#define R_RATE_KP_DEFAULT       (-18.0f)       // 横滚角速度环 P
 #define R_RATE_KI_DEFAULT       (0.0f)         // 横滚角速度环 I
-#define R_RATE_KD_DEFAULT       (0.0f)         // 横滚角速度环 D
+#define R_RATE_KD_DEFAULT       (-7.5f)        // 横滚角速度环 D
 #define R_RATE_IMAX             (100.0f)       // 横滚角速度环积分限幅
 
 // Pitch：速度环 -> 角度环 -> 角速度环。
-#define P_VEL_KP_DEFAULT        (0.0f)         // 俯仰速度环 P
-#define P_VEL_KI_DEFAULT        (0.0f)         // 俯仰速度环 I
+#define P_VEL_KP_DEFAULT        (0.065f)       // 俯仰速度环 P
+#define P_VEL_KI_DEFAULT        (0.004f)       // 俯仰速度环 I
 #define P_VEL_KD_DEFAULT        (0.0f)         // 俯仰速度环 D
 
 #define P_VEL_LIMIT             (8.0f)         // 速度环输出的俯仰角目标限幅(°)
 #define P_VEL_IMAX              (200.0f)       // 俯仰速度环累计误差限幅；Ki=-0.01 时积分输出最大约 2°
-#define P_ANGLE_KP_DEFAULT      (0.0f)         // 俯仰角度环 P
+#define P_ANGLE_KP_DEFAULT      (5.6f)         // 俯仰角度环 P
 #define P_ANGLE_KI_DEFAULT      (0.0f)         // 俯仰角度环 I
 #define P_ANGLE_KD_DEFAULT      (0.0f)         // 俯仰角度环 D
 #define P_ANGLE_IMAX            (50.0f)        // 俯仰角度环积分限幅
-#define P_RATE_KP_DEFAULT       (0.0f)         // 俯仰角速度环 P
-#define P_RATE_KI_DEFAULT       (0.0f)         // 俯仰角速度环 I
+#define P_RATE_KP_DEFAULT       (20.0f)        // 俯仰角速度环 P
+#define P_RATE_KI_DEFAULT       (0.5f)         // 俯仰角速度环 I
 #define P_RATE_KD_DEFAULT       (0.0f)         // 俯仰角速度环 D
 #define P_RATE_IMAX             (100.0f)       // 俯仰角速度环积分限幅
 
 // Yaw：转向外环 -> 角速度内环。
-#define Y_ANGLE_KP_DEFAULT      (0.0f)         // 转向外环 P
+#define Y_ANGLE_KP_DEFAULT      (14.0f)        // 转向外环 P
 #define Y_ANGLE_KI_DEFAULT      (0.0f)         // 转向外环 I
 #define Y_ANGLE_KD_DEFAULT      (0.0f)         // 转向外环 D
 #define Y_ANGLE_IMAX            (50.0f)        // 转向外环积分限幅
-#define Y_RATE_KP_DEFAULT       (0.0f)         // 航向角速度内环 P
+#define Y_RATE_KP_DEFAULT       (50.0f)        // 航向角速度内环 P
 #define Y_RATE_KI_DEFAULT       (0.0f)         // 航向角速度内环 I
 #define Y_RATE_KD_DEFAULT       (0.0f)         // 航向角速度内环 D
 #define Y_RATE_IMAX             (100.0f)       // 航向角速度内环积分限幅
 
 
-#define DIRECTION_BALANCE_KP_DEFAULT (0.02f)    // 方向偏差 P，基础转向增益对应值
+#define DIRECTION_BALANCE_KP_DEFAULT (0.023f)   // 方向偏差 P，实车恢复值
 #define DIRECTION_BALANCE_KD_DEFAULT (0.0f)     // 方向偏差 D，报告初值为 0
-#define DIRECTION_ROLL_KP_DEFAULT    (1.3f)     // 山大压弯公式方向倾角 Kp
-#define LEAN_MAX_ANGLE_DEFAULT       (3.0f)     // 压弯动态零点最大值(°)
+#define DIRECTION_ROLL_KP_DEFAULT    (1.5f)     // 山大压弯公式方向倾角 Kp
+#define LEAN_MAX_ANGLE_DEFAULT       (3.1f)     // 压弯动态零点最大值(°)
 #define DIRECTION_CAMERA_LIMIT       (5000.0f)  // direction_camera 加权和限幅
 #define DIRECTION_CAMERA_WEIGHT_SUM  (345.0f)   // 60行方向权重总和，用于还原平均像素偏差
 #define DIRECTION_KP_NOMINAL         (0.02f)    // Dir Kp 等于该值时使用基础转向增益
@@ -138,10 +138,10 @@
 #define FLY_SPEED_LIMIT_DEFAULT (7000)         // A/B 转速上限(RPM)
 
 // A/B 占空比每 1ms 的最大变化量，0 表示关闭斜坡。
-#define FLY_SLEW_DEFAULT        (800)          // 0 到 8000 约 10ms
+#define FLY_SLEW_DEFAULT        (0)            // 实车恢复值；0 表示关闭斜坡
 
 // 姿态保护阈值
-#define ROLL_PROTECT_ANGLE_DEFAULT  (50.0f)    // 横滚误差阈值(°)，台架整定值
+#define ROLL_PROTECT_ANGLE_DEFAULT  (20.0f)    // 横滚误差阈值(°)，实车恢复值
 #define PITCH_PROTECT_ANGLE_DEFAULT (50.0f)    // 俯仰误差阈值(°)，台架整定值
 
 // 摄像头循迹使用整帧：第 0 行为远端，第 IMG_H-1 行为近端。
@@ -190,11 +190,11 @@
 #define RUN_STOP_SPEED_CNT      3              // 判"车已停住"的 20ms 编码器增量阈值
 #define RUN_SPEED_MAX_MPS       (1.50f)         // 正式跑车绝对速度上限(m/s)
 
-#define RUN_SPEED_STRAIGHT_DEFAULT     (0.30f)
-#define RUN_SPEED_CURVE_DEFAULT        (0.20f)
-#define RUN_SPEED_CROSS_DEFAULT        (0.18f)
-#define RUN_SPEED_RING_DEFAULT         (0.15f)
-#define RUN_SPEED_RAMP_DEFAULT         (0.12f)
+#define RUN_SPEED_STRAIGHT_DEFAULT     (0.80f)
+#define RUN_SPEED_CURVE_DEFAULT        (0.30f)
+#define RUN_SPEED_CROSS_DEFAULT        (0.25f)
+#define RUN_SPEED_RING_DEFAULT         (0.25f)
+#define RUN_SPEED_RAMP_DEFAULT         (0.25f)
 #define RUN_SPEED_LOST_DEFAULT         (0.08f)
 #define RUN_ACCEL_MPS2_DEFAULT         (0.50f)
 #define RUN_DECEL_MPS2_DEFAULT         (1.00f)
@@ -214,6 +214,15 @@ typedef enum
 } ipm_pick_t;
 
 #define IPM_HALF_WIDTH          50             // 俯视平面里的赛道半宽，尺度基准
+#define IPM_H0_DEFAULT          (4.89805365f)
+#define IPM_H1_DEFAULT          (0.429295093f)
+#define IPM_H2_DEFAULT          (-437.682922f)
+#define IPM_H3_DEFAULT          (-0.000000901227565f)
+#define IPM_H4_DEFAULT          (7.52013540f)
+#define IPM_H5_DEFAULT          (-637.018188f)
+#define IPM_H6_DEFAULT          (0.00000000355762220f)
+#define IPM_H7_DEFAULT          (0.0787293464f)
+#define IPM_H8_DEFAULT          (0.999999940f)
 // 标定由整段双边直线拟合生成四个角点，并排除补线点。
 #define IPM_MIN_WIDTH           40             // 近端赛道最小像素宽度，比这窄说明没对准
 #define IPM_FAR_MIN_WIDTH       18             // 远端采样行的最小像素宽度
@@ -230,7 +239,7 @@ typedef enum
 
 // 元素使能默认值
 #define ELEM_EN_ZEBRA_DEFAULT    0
-#define ELEM_EN_CROSS_DEFAULT    0
+#define ELEM_EN_CROSS_DEFAULT    1
 #define ELEM_EN_RING_DEFAULT     0
 #define ELEM_EN_RAMP_DEFAULT     0
 
@@ -310,8 +319,8 @@ typedef enum
 #define VISION_FPS_WIN_MS       (500u)         // 帧率统计窗口(ms)，窗口越长读数越稳、跟随越慢
 
 // C 轮里程标定
-#define ODOM_COUNTS_PER_M_DEFAULT   (11695.0f)
-#define ODOM_TEST_SPEED_DEFAULT     (0.10f)
+#define ODOM_COUNTS_PER_M_DEFAULT   (11690.0f)
+#define ODOM_TEST_SPEED_DEFAULT     (0.05f)
 #define ODOM_TEST_DISTANCE_M        (1.0f)
 #define ODOM_TEST_SLOW_DISTANCE_M   (0.20f)
 #define ODOM_TEST_MIN_SPEED_MPS     (0.05f)

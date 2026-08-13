@@ -1615,17 +1615,21 @@ static void handle_ipm(uint8 up, uint8 down, uint8 enter, uint8 back)
         s_ipm_pick = display_ipm_overlay();
 
         ips200_set_color(UI_WHITE, UI_BLACK);
-        if (s_ipm_tried && !g_vision_ipm_ok && s_ipm_pick == (uint8)IPM_PICK_OK)
-            ui_line(176, "CALIB FAILED - move car", UI_RED);
+        // IPM 页处于 320x240 横屏，8x16 字体最后一行只能从 y<=224 开始。
+        // 不能复用竖屏状态栏(UI_STATUS_Y=277)，也不能在 y=240/256 绘制。
+        if (s_status[0] != '\0')
+            ui_line(184, s_status, UI_YELLOW);
+        else if (s_ipm_tried && !g_vision_ipm_ok && s_ipm_pick == (uint8)IPM_PICK_OK)
+            ui_line(184, "CALIB FAILED - move car", UI_RED);
         else
-            ui_line(176, ipm_pick_text(s_ipm_pick),
+            ui_line(184, ipm_pick_text(s_ipm_pick),
                     (s_ipm_pick == (uint8)IPM_PICK_OK) ? UI_GREEN : UI_RED);
 
         (void)snprintf(line, sizeof(line), "IPM %s R%d-%d W%d/%d",
                        g_vision_ipm_ok ? (control_ipm_pending() ? "WR" : "OK") : "--",
                        (int)display_ipm_row_far(), (int)display_ipm_row_near(),
                        display_ipm_width(0u), display_ipm_width(1u));
-        ui_line(192, line, g_vision_ipm_ok ? UI_GREEN : UI_WHITE);
+        ui_line(200, line, g_vision_ipm_ok ? UI_GREEN : UI_WHITE);
 
         if (s_ipm_counting)
         {
@@ -1637,11 +1641,8 @@ static void handle_ipm(uint8 up, uint8 down, uint8 enter, uint8 back)
         }
         else
         {
-            ui_line(216, "Put car on STRAIGHT, centered", UI_GRAY);
+            ui_line(216, "ENT Calib UP/DN Exp BACK Ret", UI_GRAY);
         }
-        ui_line(240, "ENTER Calib  UP/DN Exposure", UI_GRAY);
-        ui_line(256, "BACK Return", UI_GRAY);
-        if (s_status[0] != '\0') draw_status();
     }
 }
 
