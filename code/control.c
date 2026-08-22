@@ -20,6 +20,8 @@ float g_pwm_roll, g_pwm_pitch, g_pwm_yaw;       // 三轴串级输出，混控�
 int16 g_motor_a, g_motor_b, g_motor_c;          // 混控后的三电机控制量
 int   g_target_distance = 0;                    // Pitch 速度环目标(counts/20ms)
 float g_yaw_target = 0;                         // 转向外环目标航向(°)
+float g_flywheel_common_rpm = 0.0f;             // (A+B)/2共模RPM
+float g_yaw_momentum_scale = 1.0f;              // 共模动量剩余权限
 
 float g_dbg_error   = 0.0f;                     // 归一化横向偏差，正值要求正向 Yaw
 uint8 g_imu_ok      = 0;                        // IMU660RB 初始化结果
@@ -210,6 +212,8 @@ static void cascade_reset(void)
     g_lean_offset = 0;
     s_speed_ramp = 0.0f;
     s_rcy_fb = 0.0f;                                 // 回收环反馈
+    g_flywheel_common_rpm = 0.0f;
+    g_yaw_momentum_scale = 1.0f;
     s_direction_offset = 0.0f;
     s_direction_last_error = 0.0f;
     s_direction_yaw_rate_target = 0.0f;
@@ -363,7 +367,8 @@ static void run_vision_target_update(void)
 
     speed_limit = run_speed_limit(g_vision_speed_limit_mps);
     if (speed > speed_limit) speed = speed_limit;
-    g_run_speed_target_mps = run_speed_limit(speed);
+
+    g_run_speed_target_mps = run_speed_limit(speed * g_yaw_momentum_scale);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -558,7 +563,6 @@ static float direction_balance_Control(float direction_now, float direction_zero
 {
     float error = direction_now - direction_zero;
     float error_rate = (error - s_direction_last_error) / 0.020f;
-    float gain_scale = DIRECTION_BALANCE_KP / DIRECTION_KP_NOMINAL;
     float heading = -(float)STEER_DIR * g_vision_heading_error;
     float curvature = -(float)STEER_DIR * g_vision_curvature;
     float yaw_rate;
@@ -567,14 +571,14 @@ static float direction_balance_Control(float direction_now, float direction_zero
                                  -DIRECTION_D_RATE_LIMIT,
                                   DIRECTION_D_RATE_LIMIT);
     s_direction_last_error = error;
-    yaw_rate = gain_scale * (DIRECTION_PIXEL_RATE_GAIN * error +
-                             DIRECTION_HEADING_RATE_GAIN * heading +
-                             DIRECTION_CURVE_RATE_GAIN * fabsf(Y_Motor_GetSpeedMps()) * curvature) +
+    yaw_rate = DIRECTION_PIXEL_KP * error +
+               DIRECTION_HEADING_KP * heading +
+               DIRECTION_CURVE_KFF * fabsf(Y_Motor_GetSpeedMps()) * curvature +
                DIRECTION_BALANCE_KD * error_rate;
     if (!ctrl_is_finite(yaw_rate)) return 0.0f;
     return constrain_float(yaw_rate,
-                           -DIRECTION_YAW_RATE_LIMIT,
-                            DIRECTION_YAW_RATE_LIMIT);
+                           -DIRECTION_YAW_RATE_LIMIT * g_yaw_momentum_scale,
+                            DIRECTION_YAW_RATE_LIMIT * g_yaw_momentum_scale);
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -706,10 +710,29 @@ static float lean_offset_update(float direction_output)
 //-------------------------------------------------------------------------------------------------------------------
 static float roll_recovery_offset(uint8 run20)
 {
+    float warn_rpm;
+    float hard_rpm;
+
     if (!run20) return r_rcy_pid.out;
 
     // 回收环直接使用 CYT2BL3 回传的两轮转速差，不再增加额外低通。
     s_rcy_fb = (float)(W_Motor_GetSpeed1() - W_Motor_GetSpeed2());
+
+    // 同向转速代表Yaw动量占用，只降低转向与Run速度，不改Roll差速回收路径。
+    g_flywheel_common_rpm = 0.5f * ((float)W_Motor_GetSpeed1() +
+                                    (float)W_Motor_GetSpeed2());
+    g_yaw_momentum_scale = 1.0f;
+    if (FLY_SPEED_LIMIT > 0)
+    {
+        warn_rpm = YAW_MOMENTUM_WARN_RATIO * (float)FLY_SPEED_LIMIT;
+        hard_rpm = YAW_MOMENTUM_HARD_RATIO * (float)FLY_SPEED_LIMIT;
+        if (fabsf(g_flywheel_common_rpm) >= hard_rpm)
+            g_yaw_momentum_scale = YAW_MOMENTUM_MIN_SCALE;
+        else if (fabsf(g_flywheel_common_rpm) > warn_rpm && hard_rpm > warn_rpm)
+            g_yaw_momentum_scale = 1.0f -
+                (1.0f - YAW_MOMENTUM_MIN_SCALE) *
+                (fabsf(g_flywheel_common_rpm) - warn_rpm) / (hard_rpm - warn_rpm);
+    }
 
     // 输出直接加进角度环误差，不在回收环内附加输出限幅。
     pid_loc_calc(&r_rcy_pid, s_rcy_fb);
@@ -880,9 +903,11 @@ static void cascade_run(void)
     g_pwm_roll  = roll_cascade_ctrl(g_roll_zero + LEAN_DIR * g_lean_offset, run5, run20);
     g_pwm_pitch = pitch_cascade_ctrl(g_pitch_zero, run5, run20);
 
-    // Roll 与 Yaw 直接合成，再分别限制 A/B 输出；避免 Roll 输出较大时把 Yaw 完全压成 0。
+    // Roll优先：先完整保留平衡控制量，Yaw只使用A/B两侧共同剩余的对称余量。
     roll_cmd = constrain_float(g_pwm_roll, -(float)FLYWHEEL_OUT_LIMIT, (float)FLYWHEEL_OUT_LIMIT);
-    yaw_cmd  = constrain_float(g_pwm_yaw,  -(float)FLYWHEEL_OUT_LIMIT, (float)FLYWHEEL_OUT_LIMIT);
+    yaw_cmd  = constrain_float(g_pwm_yaw,
+                               -((float)FLYWHEEL_OUT_LIMIT - fabsf(roll_cmd)),
+                                ((float)FLYWHEEL_OUT_LIMIT - fabsf(roll_cmd)));
 
     mix_a = (int32)(-roll_cmd + yaw_cmd);                // A：横滚分量取负
     mix_b = (int32)(+roll_cmd + yaw_cmd);                // B：差动出平衡，同向出转向

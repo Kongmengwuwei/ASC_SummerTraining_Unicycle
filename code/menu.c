@@ -153,7 +153,9 @@ static const menu_param_item_t s_run_items[] =
     { "Lost",     "run_speed_lost",     0.01f, 2 },
     { "Accel",    "run_accel_mps2",       0.05f,   2 },
     { "Decel",    "run_decel_mps2",       0.05f,   2 },
-    { "Dir Kp",   "direction_rate_kp", 0.001f,  4 },
+    { "Pixel Kp", "direction_pixel_kp",   0.05f, 3 },
+    { "Head Kp",  "direction_heading_kp", 0.05f, 3 },
+    { "Curve FF", "direction_curve_kff",  0.25f, 2 },
     { "Dir Kd",   "direction_rate_kd", 0.001f,  4 }
 };
 

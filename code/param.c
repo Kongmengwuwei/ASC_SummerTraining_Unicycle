@@ -14,7 +14,9 @@ const param_desc_t g_param_table[] =
     { "run_speed_lost",         &g_param.run_speed_lost,         1, 0.0f,    RUN_SPEED_MAX_MPS },
     { "run_accel_mps2",         &g_param.run_accel_mps2,         1, 0.05f,   10.0f   },
     { "run_decel_mps2",         &g_param.run_decel_mps2,         1, 0.05f,   10.0f   },
-    { "direction_rate_kp",      &g_param.direction_balance_kp,   1, 0.0f,    1.0f    },
+    { "direction_pixel_kp",     &g_param.direction_pixel_kp,     1, 0.0f,    10.0f   },
+    { "direction_heading_kp",   &g_param.direction_heading_kp,   1, 0.0f,    10.0f   },
+    { "direction_curve_kff",    &g_param.direction_curve_kff,    1, 0.0f,    100.0f  },
     { "direction_rate_kd",      &g_param.direction_balance_kd,   1, 0.0f,    1.0f    },
     { "zebra_stop_offset_m",    &g_param.zebra_stop_offset_m,    1, 0.0f,    2.0f    },
     { "err_front_row",    &g_param.err_front_row,    0, 10.0f,   115.0f  },
@@ -371,7 +373,9 @@ void param_load_defaults(void)
     g_param.run_speed_lost         = RUN_SPEED_LOST_DEFAULT;
     g_param.run_accel_mps2         = RUN_ACCEL_MPS2_DEFAULT;
     g_param.run_decel_mps2         = RUN_DECEL_MPS2_DEFAULT;
-    g_param.direction_balance_kp   = DIRECTION_BALANCE_KP_DEFAULT;
+    g_param.direction_pixel_kp     = DIRECTION_PIXEL_KP_DEFAULT;
+    g_param.direction_heading_kp   = DIRECTION_HEADING_KP_DEFAULT;
+    g_param.direction_curve_kff    = DIRECTION_CURVE_KFF_DEFAULT;
     g_param.direction_balance_kd   = DIRECTION_BALANCE_KD_DEFAULT;
     g_param.zebra_stop_offset_m    = ZEBRA_STOP_OFFSET_M_DEFAULT;
     g_param.err_front_row    = ERR_FRONT_ROW_DEFAULT;

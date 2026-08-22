@@ -93,16 +93,14 @@
 #define Y_RATE_IMAX             (100.0f)       // 航向角速度内环积分限幅
 
 
-#define DIRECTION_BALANCE_KP_DEFAULT (0.023f)   // 方向偏差 P，实车恢复值
+#define DIRECTION_PIXEL_KP_DEFAULT   (0.805f)   // 横向像素误差到目标横摆角速度
+#define DIRECTION_HEADING_KP_DEFAULT (0.92f)    // 赛道航向误差到目标横摆角速度
+#define DIRECTION_CURVE_KFF_DEFAULT  (17.25f)   // 速度乘归一化曲率前馈
 #define DIRECTION_BALANCE_KD_DEFAULT (0.0f)     // 方向偏差 D，报告初值为 0
 #define DIRECTION_ROLL_KP_DEFAULT    (1.5f)     // 山大压弯公式方向倾角 Kp
 #define LEAN_MAX_ANGLE_DEFAULT       (3.1f)     // 压弯动态零点最大值(°)
 #define DIRECTION_CAMERA_LIMIT       (5000.0f)  // direction_camera 加权和限幅
 #define DIRECTION_CAMERA_WEIGHT_SUM  (345.0f)   // 60行方向权重总和，用于还原平均像素偏差
-#define DIRECTION_KP_NOMINAL         (0.02f)    // Dir Kp 等于该值时使用基础转向增益
-#define DIRECTION_PIXEL_RATE_GAIN    (0.70f)    // 平均像素偏差到横摆角速度的基础增益
-#define DIRECTION_HEADING_RATE_GAIN  (0.80f)    // 赛道航向误差到横摆角速度的基础增益
-#define DIRECTION_CURVE_RATE_GAIN    (15.0f)    // 速度与曲率前馈增益
 #define DIRECTION_ERROR_ALPHA        (0.25f)    // 方向误差低通的新值权重
 #define DIRECTION_D_RATE_LIMIT       (200.0f)   // 滤波后误差变化率限幅(pixel/s)
 #define DIRECTION_YAW_RATE_LIMIT     (120.0f)   // 正式循迹目标横摆角速度限幅(°/s)
@@ -114,6 +112,9 @@
 #define DIRECTION_LEAN_SLEW          (0.08f)    // 压弯角每5ms最大变化量(°)
 #define DIRECTION_LEAN_LIMIT         (8.0f)     // 压弯角软件硬限幅(°)
 #define ROLL_TARGET_LIMIT            (10.0f)    // 回收与压弯合成后的 Roll 目标限幅(°)
+#define YAW_MOMENTUM_WARN_RATIO      (0.55f)    // 共模RPM从软超速阈值的55%开始降额
+#define YAW_MOMENTUM_HARD_RATIO      (0.85f)    // 共模RPM到软超速阈值的85%时进入最小权限
+#define YAW_MOMENTUM_MIN_SCALE       (0.25f)    // 动量紧张时保留的最小转向/速度比例
 #define LEAN_DIR                     (1)        // +1=沿用实跑版本的压弯方向，-1=反向
 
 #if (LEAN_DIR != 1) && (LEAN_DIR != -1)

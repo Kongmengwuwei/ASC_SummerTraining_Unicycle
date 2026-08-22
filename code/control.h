@@ -20,6 +20,8 @@ extern float g_pwm_roll, g_pwm_pitch, g_pwm_yaw;     // 三轴串级输出，混
 extern int16 g_motor_a, g_motor_b, g_motor_c;        // 混控后的三电机控制量
 extern int   g_target_distance;                      // Pitch 速度环目标(counts/20ms)
 extern float g_yaw_target;                           // 转向外环目标航向(°)
+extern float g_flywheel_common_rpm;                  // (A+B)/2共模RPM，用于Yaw动量预算
+extern float g_yaw_momentum_scale;                   // 共模动量剩余权限(0..1)
 
 extern float  g_dbg_error;                  // 中线偏差，右偏为正
 extern uint8  g_imu_ok;                     // IMU660RB 初始化结果

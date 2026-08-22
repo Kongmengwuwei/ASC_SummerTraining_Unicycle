@@ -17,7 +17,9 @@ typedef struct
     float run_speed_lost;               // 低质量或短时丢线速度(m/s)
     float run_accel_mps2;               // 正式跑车加速度上限(m/s^2)
     float run_decel_mps2;               // 正式跑车减速度上限(m/s^2)
-    float direction_balance_kp;         // 方向偏差 P
+    float direction_pixel_kp;           // 横向像素误差反馈
+    float direction_heading_kp;         // 赛道航向误差反馈
+    float direction_curve_kff;          // 速度-曲率前馈
     float direction_balance_kd;         // 方向偏差 D
     float zebra_stop_offset_m;          // 识别斑马线后的前行距离(m)
     int   err_front_row;                // 前瞻行，拟合线在这一行求值
@@ -101,7 +103,9 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define RUN_SPEED_LOST          (g_param.run_speed_lost)
 #define RUN_ACCEL_MPS2          (g_param.run_accel_mps2)
 #define RUN_DECEL_MPS2          (g_param.run_decel_mps2)
-#define DIRECTION_BALANCE_KP    (g_param.direction_balance_kp)
+#define DIRECTION_PIXEL_KP      (g_param.direction_pixel_kp)
+#define DIRECTION_HEADING_KP    (g_param.direction_heading_kp)
+#define DIRECTION_CURVE_KFF     (g_param.direction_curve_kff)
 #define DIRECTION_BALANCE_KD    (g_param.direction_balance_kd)
 #define ZEBRA_STOP_OFFSET_M     (g_param.zebra_stop_offset_m)
 #define ERR_FRONT_ROW           (g_param.err_front_row)
