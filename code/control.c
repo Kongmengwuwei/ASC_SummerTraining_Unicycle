@@ -358,6 +358,7 @@ static void run_vision_target_update(void)
     else if (g_vision_active_elem == (uint8)ELEM_NONE)
     {
         float quality_min = constrain_float(TRACK_QUALITY_MIN, 0.0f, 1.0f);
+        float valid_speed_floor = run_speed_limit(RUN_VALID_SPEED_FLOOR_MPS);
 
         if (quality_min >= 0.999f)
             quality_ratio = (g_vision_quality >= quality_min) ? 1.0f : 0.0f;
@@ -366,6 +367,7 @@ static void run_vision_target_update(void)
                                              (1.0f - quality_min), 0.0f, 1.0f);
         quality_limit = run_speed_limit(RUN_SPEED_LOST) +
                         (run_speed_limit(RUN_SPEED_STRAIGHT) - run_speed_limit(RUN_SPEED_LOST)) * quality_ratio;
+        if (quality_limit < valid_speed_floor) quality_limit = valid_speed_floor;
         if (speed > quality_limit) speed = quality_limit;
     }
 
@@ -722,14 +724,14 @@ static float roll_recovery_offset(uint8 run20)
     // 回收环直接使用 CYT2BL3 回传的两轮转速差，不再增加额外低通。
     s_rcy_fb = (float)(W_Motor_GetSpeed1() - W_Motor_GetSpeed2());
 
-    // 同向转速代表Yaw动量占用，只降低转向与Run速度，不改Roll差速回收路径。
+    // 单项实测：共模动量在2500~6000RPM区间降低转向与Run速度，不改Roll差速回收路径。
     g_flywheel_common_rpm = 0.5f * ((float)W_Motor_GetSpeed1() +
                                     (float)W_Motor_GetSpeed2());
     g_yaw_momentum_scale = 1.0f;
-    if (FLY_SPEED_LIMIT > 0)
+    warn_rpm = YAW_MOMENTUM_WARN_RPM;
+    hard_rpm = YAW_MOMENTUM_HARD_RPM;
+    if (warn_rpm >= 0.0f && hard_rpm > warn_rpm)
     {
-        warn_rpm = YAW_MOMENTUM_WARN_RATIO * (float)FLY_SPEED_LIMIT;
-        hard_rpm = YAW_MOMENTUM_HARD_RATIO * (float)FLY_SPEED_LIMIT;
         if (fabsf(g_flywheel_common_rpm) >= hard_rpm)
             g_yaw_momentum_scale = YAW_MOMENTUM_MIN_SCALE;
         else if (fabsf(g_flywheel_common_rpm) > warn_rpm && hard_rpm > warn_rpm)

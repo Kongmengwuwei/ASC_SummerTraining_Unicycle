@@ -93,12 +93,12 @@
 #define Y_RATE_IMAX             (100.0f)       // 航向角速度内环积分限幅
 
 
-#define DIRECTION_PIXEL_KP_DEFAULT   (0.805f)   // 横向像素误差到目标横摆角速度
+#define DIRECTION_PIXEL_KP_DEFAULT   (1.200f)   // 横向像素误差到目标横摆角速度
 #define DIRECTION_HEADING_KP_DEFAULT (0.92f)    // 赛道航向误差到目标横摆角速度
-#define DIRECTION_CURVE_KFF_DEFAULT  (17.25f)   // 速度乘归一化曲率前馈
+#define DIRECTION_CURVE_KFF_DEFAULT  (50.0f)    // 速度乘归一化曲率前馈
 #define DIRECTION_BALANCE_KD_DEFAULT (0.0f)     // 方向偏差 D，报告初值为 0
-#define DIRECTION_ROLL_KP_DEFAULT    (1.5f)     // 山大压弯公式方向倾角 Kp
-#define LEAN_MAX_ANGLE_DEFAULT       (3.1f)     // 压弯动态零点最大值(°)
+#define DIRECTION_ROLL_KP_DEFAULT    (2.5f)     // 山大压弯公式方向倾角 Kp
+#define LEAN_MAX_ANGLE_DEFAULT       (5.0f)     // 压弯动态零点最大值(°)
 #define DIRECTION_CAMERA_LIMIT       (5000.0f)  // direction_camera 加权和限幅
 #define DIRECTION_CAMERA_WEIGHT_SUM  (345.0f)   // 60行方向权重总和，用于还原平均像素偏差
 #define DIRECTION_ERROR_ALPHA        (0.25f)    // 方向误差低通的新值权重
@@ -112,8 +112,8 @@
 #define DIRECTION_LEAN_SLEW          (0.08f)    // 压弯角每5ms最大变化量(°)
 #define DIRECTION_LEAN_LIMIT         (8.0f)     // 压弯角软件硬限幅(°)
 #define ROLL_TARGET_LIMIT            (10.0f)    // 回收与压弯合成后的 Roll 目标限幅(°)
-#define YAW_MOMENTUM_WARN_RATIO      (0.55f)    // 共模RPM从软超速阈值的55%开始降额
-#define YAW_MOMENTUM_HARD_RATIO      (0.85f)    // 共模RPM到软超速阈值的85%时进入最小权限
+#define YAW_MOMENTUM_WARN_RPM        (2500.0f)  // 单项实测：共模RPM超过该值后温和降低转向与Run速度
+#define YAW_MOMENTUM_HARD_RPM        (6000.0f)  // 共模RPM达到该值时进入最小权限，不依赖Flash软超速阈值
 #define YAW_MOMENTUM_MIN_SCALE       (0.25f)    // 动量紧张时保留的最小转向/速度比例
 #define LEAN_DIR                     (1)        // +1=沿用实跑版本的压弯方向，-1=反向
 
@@ -191,16 +191,17 @@
 #define RUN_STOP_SPEED_CNT      3              // 判"车已停住"的 20ms 编码器增量阈值
 #define RUN_SPEED_MAX_MPS       (1.50f)         // 正式跑车绝对速度上限(m/s)
 
-#define RUN_SPEED_STRAIGHT_DEFAULT     (1.00f)
-#define RUN_SPEED_CURVE_DEFAULT        (1.00f)
-#define RUN_SPEED_CROSS_DEFAULT        (1.00f)
-#define RUN_SPEED_RING_DEFAULT         (1.00f)
-#define RUN_SPEED_RAMP_DEFAULT         (1.00f)
+#define RUN_SPEED_STRAIGHT_DEFAULT     (1.20f)
+#define RUN_SPEED_CURVE_DEFAULT        (1.20f)
+#define RUN_SPEED_CROSS_DEFAULT        (1.20f)
+#define RUN_SPEED_RING_DEFAULT         (1.20f)
+#define RUN_SPEED_RAMP_DEFAULT         (1.20f)
 #define RUN_SPEED_LOST_DEFAULT         (0.20f)
 #define RUN_ACCEL_MPS2_DEFAULT         (0.50f)
 #define RUN_DECEL_MPS2_DEFAULT         (1.00f)
 #define TRACK_CURVE_FULL_SCALE         (0.60f)
 #define TRACK_QUALITY_MIN              (0.30f)
+#define RUN_VALID_SPEED_FLOOR_MPS      (0.50f)  // 单项实测：有效普通赛道上，质量波动不得把速度压到近停
 #define ZEBRA_STOP_OFFSET_M_DEFAULT    (0.15f)
 
 // IPM 只变换边线点集，俯视坐标以赛道半宽为尺度。
