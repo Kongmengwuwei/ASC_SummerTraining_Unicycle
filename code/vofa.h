@@ -7,6 +7,7 @@ typedef enum
 {
     VOFA_OFF = 0,       // 关闭波形输出
     VOFA_ATT,           // att: Roll、Pitch、Yaw，3 通道
+    VOFA_RUN,           // run: 正式跑车全链路诊断，25 通道
 } vofa_mode_t;
 
 // 调参轴

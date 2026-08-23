@@ -191,12 +191,12 @@
 #define RUN_STOP_SPEED_CNT      3              // 判"车已停住"的 20ms 编码器增量阈值
 #define RUN_SPEED_MAX_MPS       (1.50f)         // 正式跑车绝对速度上限(m/s)
 
-#define RUN_SPEED_STRAIGHT_DEFAULT     (0.80f)
-#define RUN_SPEED_CURVE_DEFAULT        (0.30f)
-#define RUN_SPEED_CROSS_DEFAULT        (0.25f)
-#define RUN_SPEED_RING_DEFAULT         (0.25f)
-#define RUN_SPEED_RAMP_DEFAULT         (0.25f)
-#define RUN_SPEED_LOST_DEFAULT         (0.08f)
+#define RUN_SPEED_STRAIGHT_DEFAULT     (1.00f)
+#define RUN_SPEED_CURVE_DEFAULT        (1.00f)
+#define RUN_SPEED_CROSS_DEFAULT        (1.00f)
+#define RUN_SPEED_RING_DEFAULT         (1.00f)
+#define RUN_SPEED_RAMP_DEFAULT         (1.00f)
+#define RUN_SPEED_LOST_DEFAULT         (0.20f)
 #define RUN_ACCEL_MPS2_DEFAULT         (0.50f)
 #define RUN_DECEL_MPS2_DEFAULT         (1.00f)
 #define TRACK_CURVE_FULL_SCALE         (0.60f)

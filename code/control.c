@@ -92,6 +92,8 @@ static float           s_direction_yaw_rate_target; // 视觉生成的目标横�
 static float           s_direction_yaw_rate_cmd; // 斜率限制后的目标横摆角速度
 static float           s_direction_hold_yaw;     // 十字或丢线进入时锁存的航向
 static uint8           s_direction_last_mode;    // 上一拍跟踪模式
+static float           s_roll_angle_target;      // Roll 回收与压弯合成后的实际角度目标
+static float           s_yaw_output_applied;     // Roll 优先混控后实际分配给 Yaw 的输出
 static uint8           s_zebra_stop_latched;      // 斑马线终点请求锁存
 static int32           s_zebra_stop_start_count;  // 锁存请求时的 C 轮累计里程
 static uint8           s_run_vision_armed;         // 已收到应用本次 Run 快照的视觉帧
@@ -220,6 +222,8 @@ static void cascade_reset(void)
     s_direction_yaw_rate_cmd = 0.0f;
     s_direction_hold_yaw = 0.0f;
     s_direction_last_mode = TRACK_MODE_MIDDLE;
+    s_roll_angle_target = g_roll_zero;
+    s_yaw_output_applied = 0.0f;
 }
 
 //-------------------------------------------------------------------------------------------------------------------
@@ -765,6 +769,7 @@ static float roll_cascade_ctrl(float zero, uint8 run5, uint8 run20)
     angle_target = g_roll_zero + constrain_float(angle_target - g_roll_zero,
                                                   -ROLL_TARGET_LIMIT,
                                                    ROLL_TARGET_LIMIT);
+    s_roll_angle_target = angle_target;
 
     if (run5)
         pid_loc_calc(&r_angle_pid, att.roll - angle_target); // 回收与压弯合成目标限制在 ±10°
@@ -908,6 +913,7 @@ static void cascade_run(void)
     yaw_cmd  = constrain_float(g_pwm_yaw,
                                -((float)FLYWHEEL_OUT_LIMIT - fabsf(roll_cmd)),
                                 ((float)FLYWHEEL_OUT_LIMIT - fabsf(roll_cmd)));
+    s_yaw_output_applied = yaw_cmd;
 
     mix_a = (int32)(-roll_cmd + yaw_cmd);                // A：横滚分量取负
     mix_b = (int32)(+roll_cmd + yaw_cmd);                // B：差动出平衡，同向出转向
@@ -1510,6 +1516,7 @@ uint8 control_run_start(void)
     g_vision_stop_request = 0;
     g_target_distance = 0;
     g_yaw_target = imu_get_angle_yaw();
+    g_vofa_mode = VOFA_RUN;
     return 1;
 }
 
@@ -1555,6 +1562,54 @@ uint8 control_run_running(void)
 run_stop_t control_run_stop_reason(void)
 {
     return s_run_stop;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     复制正式 Run 的全链路诊断状态，保持 1ms 中断路径定长且不做字符串格式化
+// 参数说明     out             输出快照地址，允许为 0
+// 返回参数     void
+// 使用示例     control_run_diag_snapshot(&snapshot);
+//-------------------------------------------------------------------------------------------------------------------
+void control_run_diag_snapshot(volatile control_run_diag_t *out)
+{
+    uint16 flags = 0u;
+
+    if (out == 0) return;
+    if (s_run_active)                    flags |= 0x0001u;
+    if (start_flag == START_BALANCE)     flags |= 0x0002u;
+    if (g_track_valid)                   flags |= 0x0004u;
+    if (s_run_vision_armed)              flags |= 0x0008u;
+    if (g_vision_ipm_ok)                 flags |= 0x0010u;
+    if (s_direction_last_mode == TRACK_MODE_HOLD) flags |= 0x0020u;
+    if (s_zebra_stop_latched)            flags |= 0x0040u;
+    flags |= (uint16)(((uint16)g_vision_active_elem & 0x000Fu) << 8);
+    flags |= (uint16)(((uint16)s_run_stop & 0x0007u) << 12);
+
+    out->uptime_ms            = g_control_uptime_ms;
+    out->roll                 = att.roll;
+    out->roll_target          = s_roll_angle_target;
+    out->roll_rate            = att.roll_rate;
+    out->recovery_feedback    = s_rcy_fb;
+    out->recovery_output      = r_rcy_pid.out;
+    out->roll_output          = g_pwm_roll;
+    out->lean_offset          = g_lean_offset;
+    out->yaw_rate_target      = s_direction_yaw_rate_target;
+    out->yaw_rate_command     = s_direction_yaw_rate_cmd;
+    out->yaw_rate_actual      = imu.gyro_z;
+    out->yaw_output_raw       = g_pwm_yaw;
+    out->yaw_output_applied   = s_yaw_output_applied;
+    out->flywheel_common_rpm  = g_flywheel_common_rpm;
+    out->direction_offset     = s_direction_offset;
+    out->lateral_error        = g_vision_lateral_error;
+    out->heading_error        = g_vision_heading_error;
+    out->curvature            = g_vision_curvature;
+    out->speed_plan_mps       = g_run_speed_target_mps;
+    out->speed_ramp_mps       = Y_Motor_Count20msToMps(s_speed_ramp);
+    out->speed_actual_mps     = Y_Motor_GetSpeedMps();
+    out->momentum_scale       = g_yaw_momentum_scale;
+    out->vision_quality       = g_vision_quality;
+    out->vision_age_ms        = g_vision_age_ms;
+    out->state_flags          = flags;
 }
 
 //-------------------------------------------------------------------------------------------------------------------

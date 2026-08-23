@@ -61,6 +61,37 @@ typedef enum
     RUN_STOP_SAFETY,            // 姿态、IMU、驱动或超速保护
 } run_stop_t;
 
+// 正式 Run 诊断快照。由 CPU0 1ms 控制中断填写，VOFA 前台只读取完整快照并格式化。
+// state_flags 位定义见“调参命令.md”的 run: 通道表。
+typedef struct
+{
+    uint32 uptime_ms;
+    float  roll;
+    float  roll_target;
+    float  roll_rate;
+    float  recovery_feedback;
+    float  recovery_output;
+    float  roll_output;
+    float  lean_offset;
+    float  yaw_rate_target;
+    float  yaw_rate_command;
+    float  yaw_rate_actual;
+    float  yaw_output_raw;
+    float  yaw_output_applied;
+    float  flywheel_common_rpm;
+    float  direction_offset;
+    float  lateral_error;
+    float  heading_error;
+    float  curvature;
+    float  speed_plan_mps;
+    float  speed_ramp_mps;
+    float  speed_actual_mps;
+    float  momentum_scale;
+    float  vision_quality;
+    uint16 vision_age_ms;
+    uint16 state_flags;
+} control_run_diag_t;
+
 typedef enum
 {
     CTRL_TEST_STATUS_OK = 0,        // 已启动
@@ -183,6 +214,14 @@ uint8 control_run_running(void);
 // 使用示例     menu_status(run_stop_text(control_run_stop_reason()));
 //-------------------------------------------------------------------------------------------------------------------
 run_stop_t control_run_stop_reason(void);
+
+//-------------------------------------------------------------------------------------------------------------------
+// 函数简介     复制正式 Run 的定长诊断状态；只做字段赋值，可由 1ms 中断调用
+// 参数说明     out             输出快照地址，允许为 0
+// 返回参数     void
+// 使用示例     control_run_diag_snapshot(&snapshot);
+//-------------------------------------------------------------------------------------------------------------------
+void control_run_diag_snapshot(volatile control_run_diag_t *out);
 
 //-------------------------------------------------------------------------------------------------------------------
 // 函数简介     启动无线 Run Test，进入三轴平衡并等待 speed:turn,speed 命令

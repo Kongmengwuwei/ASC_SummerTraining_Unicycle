@@ -17,11 +17,12 @@ volatile vofa_cmd_result_t g_vofa_cmd_last = VOFA_CMD_NONE;  // 最近一行的�
 volatile float       g_vofa_cmd_turn = 0.0f;    // 最近一次解析成功的转向值(°)，与是否被接受无关
 volatile float       g_vofa_cmd_speed = 0.0f;   // 最近一次解析成功的速度原始值(-90~90)
 
-// 姿态波形快照
-#define VOFA_CH_COUNT   (3u)
+// 波形快照。ISR 只更新定长字段，前台复制完整快照后再格式化。
+#define VOFA_ATT_CH_COUNT   (3u)
 
-static volatile uint32      s_seq = 0;          // 快照序号
-static volatile float       s_ch[VOFA_CH_COUNT];// Roll、Pitch、Yaw
+static volatile uint32             s_seq = 0;   // 快照序号，奇数=正在写
+static volatile float              s_att_ch[VOFA_ATT_CH_COUNT];
+static volatile control_run_diag_t s_run_diag;
 
 // 下行命令缓冲
 #define VOFA_CMD_LINE_MAX   (64)                // 单行命令长度
@@ -379,19 +380,28 @@ static void cmd_submit_line(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     更新 Roll、Pitch、Yaw 姿态波形快照
+// 函数简介     按当前模式更新姿态或正式 Run 诊断快照
 // 参数说明     void
 // 返回参数     void
 // 使用示例     vofa_snapshot();
 //-------------------------------------------------------------------------------------------------------------------
 void vofa_snapshot(void)
 {
-    if (g_vofa_mode != VOFA_ATT) return;
+    vofa_mode_t mode = g_vofa_mode;
+
+    if (mode == VOFA_OFF) return;
 
     s_seq++;                                    // 奇数表示正在写入
-    s_ch[0] = att.roll;
-    s_ch[1] = att.pitch;
-    s_ch[2] = att.yaw;
+    if (mode == VOFA_ATT)
+    {
+        s_att_ch[0] = att.roll;
+        s_att_ch[1] = att.pitch;
+        s_att_ch[2] = att.yaw;
+    }
+    else if (mode == VOFA_RUN)
+    {
+        control_run_diag_snapshot(&s_run_diag);
+    }
     s_seq++;                                    // 偶数表示写入完成
 }
 
@@ -404,27 +414,78 @@ void vofa_snapshot(void)
 void vofa_poll(void)
 {
     static uint32 last_seq = 0;                 // 上次已发送的快照序号
-    float  ch[VOFA_CH_COUNT];
-    char   line[96];
+    static vofa_mode_t last_mode = VOFA_OFF;
+    vofa_mode_t mode = g_vofa_mode;
+    float  att_ch[VOFA_ATT_CH_COUNT];
+    control_run_diag_t run;
+    char   line[256];
     uint32 seq1, seq2;
     int    len;
 
-    if (g_vofa_mode != VOFA_ATT) { last_seq = s_seq; return; }
+    if (mode == VOFA_OFF) { last_seq = s_seq; last_mode = mode; return; }
+    if (mode != last_mode)
+    {
+        last_seq = s_seq;
+        last_mode = mode;
+        return;
+    }
 
     seq1 = s_seq;
     if (seq1 & 1u) return;                                          // 快照正在更新
     if ((seq1 - last_seq) < (uint32)(2u * g_vofa_div)) return;      // 未达到发送分频
 
-    ch[0] = s_ch[0];
-    ch[1] = s_ch[1];
-    ch[2] = s_ch[2];
+    if (mode == VOFA_ATT)
+    {
+        att_ch[0] = s_att_ch[0];
+        att_ch[1] = s_att_ch[1];
+        att_ch[2] = s_att_ch[2];
+    }
+    else
+    {
+        run = s_run_diag;
+    }
     seq2 = s_seq;
     if (seq1 != seq2) return;                                       // 快照读取不完整
 
     last_seq = seq1;
 
-    len = snprintf(line, sizeof(line), "att:%.3f,%.3f,%.3f\n",
-                   (double)ch[0], (double)ch[1], (double)ch[2]);
+    if (mode == VOFA_ATT)
+    {
+        len = snprintf(line, sizeof(line), "att:%.3f,%.3f,%.3f\n",
+                       (double)att_ch[0], (double)att_ch[1], (double)att_ch[2]);
+    }
+    else
+    {
+        len = snprintf(line, sizeof(line),
+                       "run:%lu,%.3f,%.3f,%.2f,%.0f,%.3f,%.0f,%.3f,"
+                       "%.2f,%.2f,%.2f,%.0f,%.0f,%.0f,%.3f,%.3f,"
+                       "%.2f,%.4f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u\n",
+                       (unsigned long)run.uptime_ms,
+                       (double)run.roll,
+                       (double)run.roll_target,
+                       (double)run.roll_rate,
+                       (double)run.recovery_feedback,
+                       (double)run.recovery_output,
+                       (double)run.roll_output,
+                       (double)run.lean_offset,
+                       (double)run.yaw_rate_target,
+                       (double)run.yaw_rate_command,
+                       (double)run.yaw_rate_actual,
+                       (double)run.yaw_output_raw,
+                       (double)run.yaw_output_applied,
+                       (double)run.flywheel_common_rpm,
+                       (double)run.direction_offset,
+                       (double)run.lateral_error,
+                       (double)run.heading_error,
+                       (double)run.curvature,
+                       (double)run.speed_plan_mps,
+                       (double)run.speed_ramp_mps,
+                       (double)run.speed_actual_mps,
+                       (double)run.momentum_scale,
+                       (double)run.vision_quality,
+                       (unsigned int)run.vision_age_ms,
+                       (unsigned int)run.state_flags);
+    }
     if (len <= 0) return;                                           // 格式化失败
     if (len >= (int)sizeof(line)) return;                            // 格式化结果不完整
     (void)tx_push((const uint8 *)line, (uint32)len);                // 写入上行环，装不下就丢弃整帧
