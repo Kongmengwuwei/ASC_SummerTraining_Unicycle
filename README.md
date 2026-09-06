@@ -11,9 +11,9 @@ TC264D 双核 Q 型独轮车调试工程，主要用于姿态、三轴串级、�
 | A/B/C 电机点动与单轴 Test | 代码已实现，PID 默认值全为 0 |
 | 三轴同时闭环 `Balance` | 代码已实现，原地平衡，速度目标恒 0 |
 | CPU1 大津法、八邻域、边线、中线 | 已接入 |
-| 斑马线、十字、环岛、坡道、路障 | 已接入 CPU1，结果只用于调试 |
-| 视觉到 Yaw/速度闭环 | 未接入 |
-| 视觉转向 / 非零速度 / `Run` | 未实现 |
+| 斑马线、十字、环岛、坡道 | 已接入 CPU1；Run 使用视觉/元素结果 |
+| 视觉到 Yaw/速度闭环 | 已接入正式 Run，保留独立 Balance |
+| 视觉转向 / 非零速度 / `Run` | 已实现；实车安全与稳定性需台架和赛道验证 |
 
 
 Flash 里有值时，会覆盖默认参数。
@@ -79,7 +79,7 @@ MENU
 └─ Balance
 ```
 `Balance` 是三轴同时闭环、原地平衡的入口：连按两次确认才松飞轮刹车，速度目标恒 0，视觉不参与。
-运行中再按一次或按返回键停车，翻页不会停。视觉与速度接进来之后才会有真正的 `Run`。
+运行中再按一次或按返回键停车，翻页不会停。当前主菜单已有独立正式 `Run`；`Run Test` 内保留 Balance/Remote。
 
 各页的动作行：
 
@@ -88,7 +88,7 @@ MENU
 | Roll / Pitch / Yaw | `Rate` / `Angle` / `Speed` 分环 Test |
 | Motor | 六个架空点动 |
 | Zero | `Capture Zero` 抓当前姿态角当机械零点 |
-| Camera / Element | 只看实时数据，自动开 `trk` 波形 |
+| Camera / Element | 查看实时数据；当前不输出旧版 `trk` 帧 |
 
 - `Rate` 只开角速度环。
 - `Angle` 再开角度环。
@@ -101,29 +101,21 @@ MENU
 波形和调参走 UART2 @115200 的无线转串口模块，使用 VOFA+ FireWater 文本帧。
 模块连接：RX→`P10_5`、TX→`P10_6`、RTS→`P10_2`。
 
-| tag | 什么时候出 |
+| tag | 当前含义 |
 |---|---|
-| `att` | Attitude 页按 `Test: ON` |
-| `roll` / `pit` / `yaw` | 对应轴页启动分环 Test，由 `control_test_start()` 按轴给 |
-| `mot` | Motor 页点动，由 `control_jog_start()` 给 |
-| `trk` | 进 Camera 或 Element 页 |
-| `bal` | 主菜单启动 `Balance`，由 `control_balance_start()` 给，翻页也不断 |
+| `att` | 三轴姿态；姿态页约 50Hz，cfg 握手后另有低频姿态 |
+| `run` | 正式 Run 的 25 通道诊断，保留时间戳与状态位 |
+| `stat` | 10Hz 明确模式、链路、修订号与参数写权限 |
+| `par` / `rsp` | cfg v1 参数 Schema 与带序号应答 |
 
-其余页面一律 `off`。
+现有 `speed:turn,speed` 仅在车身启动 Remote 后生效；`stop` 使用公共停机路径。
+新增 `cfg:hello/get/set/schema/status/save` 支持参数同步和停车保存，不增加远程发车。
+完整协议见 [上位机协议](tools/unicycle_station/docs/protocol.md)。
 
-下行命令只保留这一种格式：
+## Windows 上位机
 
-```text
-<参数名> <值>\r\n          例如  r_rate_kp 12.5
-```
-
-回 `ack:1.000` 或 `ack:0.000`。
-
-- 只接受 `s_tune_tbl` 里的 24 个 PID 名字，其余参数用菜单或按键改。
-- 非法格式、NaN、Inf 会被拒绝；越界值会钳位。
-- 架空点动期间拒绝改参数；单轴测试期间只放行当前轴、当前最高启用环之内的 PID；`Balance` 期间 24 个全放行。
-- `Params → Reset` 会清掉参数页并恢复默认值，需要二次确认。
-- 子页里的 `Save` 只存那一页的参数（`param_save_names()`），`Params` 最底下的 `Save` 存全部（`param_save()`）。
+程序在 [tools/unicycle_station](tools/unicycle_station/README.md)。双击其中 `start_windows.bat`，或运行打包后的 `dist/EmbeddedStation/EmbeddedStation.exe`。
+包含 Mock、波形、3D 姿态、Schema 参数、日志与回放。当前验证状态见 [validation.md](tools/unicycle_station/docs/validation.md)。
 
 ## 视觉与元素
 
@@ -140,16 +132,16 @@ CPU1 当前流程：
 → 发布给 CPU0
 ```
 
-Image 页用于看屏幕，可切灰度、二值和边线图；`trk` 波形在 `Params → Camera` 和 `Params → Element` 页启动。
+Image 页用于看屏幕，可切灰度、二值和边线图；UART2 当前不持续传图。
 
-元素结果只做调试显示，当前不会直接改电机输出。阈值和状态机仍需实车标定。
+正式 Run 使用视觉/元素结果规划速度与转向；Balance 保持独立。阈值和状态机仍需实车标定。
 
 ## 安全与下一步
 
 - 上电默认 STOP，A/B 软件刹车锁定。
 - IMU、姿态或驱动异常会阻止测试；保护角越界会停机。
 - 返回键在任何页面都可停止当前 Test、点动或 `Balance`。
-- `Balance` 只做原地平衡，视觉和非零速度接进来之前不要上赛道。
+- `Balance` 只做原地平衡；正式 Run 必须先完成台架与视觉安全条件验证。
 
 建议顺序：
 
@@ -157,8 +149,8 @@ Image 页用于看屏幕，可切灰度、二值和边线图；`trk` 波形在 `
 IMU → 电机/编码器方向 → Roll → Pitch → Yaw
 → 机械零点 → Balance 三轴一起站住
 → 普通视觉 → 元素识别
-→ 最后实现 Run、视觉转向和失联保护
+→ 验证已实现的 Run、视觉转向和失联保护
 ```
 
 菜单每一页每一个参数的含义和调法见 [菜单指南.md](菜单指南.md)。
-整定步骤见 [控制调试指南.md](控制调试指南.md) 和 [视觉调试指南.md](视觉调试指南.md)，24 条调参命令的格式见 [调参命令.md](调参命令.md)。
+整定步骤见 [控制调试指南.md](控制调试指南.md) 和 [视觉调试指南.md](视觉调试指南.md)，当前串口命令的格式见 [调参命令.md](调参命令.md)。

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "kind": "pc_release_validation",
+  "verified_at": "2026-09-06T19:26:07.197419",
+  "exe": "dist/EmbeddedStation/EmbeddedStation.exe",
+  "sha256": "34dea9d1a30dd133403516b6b7a91614ea5e19286690d3c76662d768294ba210",
+  "packaged_smoke_exit_code": 0,
+  "packaged_page_screenshots": 8,
+  "unit_and_integration_tests_passed": 40,
+  "isolated_dll_search": true,
+  "ads_tasking_link_completed": false,
+  "hardware_bench_verified": false
+}

@@ -1,0 +1,43 @@
+207 INFO: PyInstaller: 6.22.2, contrib hooks: 2026.7
+208 INFO: Python: 3.13.9
+238 INFO: Platform: Windows-11-10.0.26200-SP0
+238 INFO: Python environment: D:\ASC_SummerTraining_Unicycle\tools\unicycle_station\.venv
+721 INFO: No OpenGL_accelerate module loaded: No module named 'OpenGL_accelerate'
+993 WARNING: Failed to collect submodules for 'pyqtgraph.jupyter' because importing 'pyqtgraph.jupyter' raised: ModuleNotFoundError: No module named 'jupyter_rfb'
+219 INFO: No OpenGL_accelerate module loaded: No module named 'OpenGL_accelerate'
+241 WARNING: Failed to collect submodules for 'OpenGL.raw.GLES3' because importing 'OpenGL.raw.GLES3' raised: AttributeError: 'Win32Platform' object has no attribute 'GLES2'
+695 WARNING: Expected Tk Togl installation in D:\ASC_SummerTraining_Unicycle\tools\unicycle_station\.venv\Lib\site-packages\OpenGL\Tk\togl-win32-64
+695 INFO: Loading Togl from: D:\ASC_SummerTraining_Unicycle\tools\unicycle_station\.venv\Lib\site-packages\OpenGL\Tk\togl-win32-64
+716 ERROR: Failure loading Togl package: can't find package Togl, on debian systems this is provided by `libtogl2`
+727 INFO: Using NT-specific GLUT calls with exit callbacks
+6396 INFO: Module search paths (PYTHONPATH):
+['D:\\ASC_SummerTraining_Unicycle\\tools\\unicycle_station',
+ 'C:\\Users\\kongmeng\\AppData\\Local\\Programs\\Python\\Python313\\python313.zip',
+ 'C:\\Users\\kongmeng\\AppData\\Local\\Programs\\Python\\Python313\\DLLs',
+ 'C:\\Users\\kongmeng\\AppData\\Local\\Programs\\Python\\Python313\\Lib',
+ 'C:\\Users\\kongmeng\\AppData\\Local\\Programs\\Python\\Python313',
+ 'D:\\ASC_SummerTraining_Unicycle\\tools\\unicycle_station\\.venv',
+ 'D:\\ASC_SummerTraining_Unicycle\\tools\\unicycle_station\\.venv\\Lib\\site-packages',
+ '__editable__.embedded_station-0.1.0.finder.__path_hook__',
+ 'D:\\ASC_SummerTraining_Unicycle\\tools\\unicycle_station']
+6902 INFO: Appending 'binaries' from .spec
+6904 INFO: Appending 'datas' from .spec
+7259 INFO: checking Analysis
+7895 INFO: checking PYZ
+8117 INFO: checking PKG
+8120 INFO: Bootloader D:\ASC_SummerTraining_Unicycle\tools\unicycle_station\.venv\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\run.exe
+8120 INFO: checking EXE
+8128 INFO: Building because console changed
+8128 INFO: Building EXE from EXE-00.toc
+8130 INFO: Copying bootloader EXE to D:\ASC_SummerTraining_Unicycle\tools\unicycle_station\build\EmbeddedStation\EmbeddedStation.exe
+8179 INFO: Copying icon to EXE
+8208 INFO: Copying 0 resources to EXE
+8208 INFO: Embedding manifest in EXE
+8233 INFO: Appending PKG archive to EXE
+8240 INFO: Fixing EXE headers
+8465 INFO: Building EXE from EXE-00.toc completed successfully.
+8482 INFO: checking COLLECT
+8517 INFO: Removing dir D:\ASC_SummerTraining_Unicycle\tools\unicycle_station\dist\EmbeddedStation
+9381 INFO: Building COLLECT COLLECT-00.toc
+14059 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+14104 INFO: Build complete! The results are available in: D:\ASC_SummerTraining_Unicycle\tools\unicycle_station\dist

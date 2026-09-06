@@ -2,6 +2,12 @@
 #include "attitude.h"
 #include "board_config.h"
 #include "control.h"
+#include "param.h"
+#include "imu.h"
+#include "W_Motor.h"
+#include "Y_Motor.h"
+#include <math.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -58,15 +64,22 @@ static volatile uint8  s_rx_overflow;           // 接收环溢出，本行命�
 // 返回参数     uint8           1 写入成功，0 空间不足已丢帧
 // 使用示例     (void)tx_push((const uint8 *)line, (uint32)len);
 //-------------------------------------------------------------------------------------------------------------------
+static uint32 s_cfg_rx_error, s_cfg_tx_drop;
+static uint16 s_schema_seq, s_schema_index, s_save_seq;
+static uint32 s_schema_next_ms, s_stop_since, s_cfg_last_status;
+static uint8 s_stop_seen, s_station_att;
+static char s_save_group[24];
+
 static uint8 tx_push(const uint8 *dat, uint32 len)
 {
     uint32 head = s_tx_head;
     uint32 used = head - s_tx_tail;           
     uint32 i;
 
-    if (len == 0u || len > (VOFA_TX_SIZE - used)) return 0;
+    if (len == 0u || len > (VOFA_TX_SIZE - used)) { s_cfg_tx_drop++; return 0; }
 
     for (i = 0; i < len; i++) s_tx_buf[(head + i) & VOFA_TX_MASK] = dat[i];
+    __dsync();
     s_tx_head = head + len;                     // 数据写完再发布下标
     return 1;
 }
@@ -306,53 +319,294 @@ static uint8 cmd_is_stop(const char *line)
 // 用来在上位机没发 CR/LF 时重新同步。两条命令的前缀都要认，否则
 // "speed:1,2stop" 这种粘连里的 stop 会被当成上一条命令的一部分丢掉。
 // 浮点字段里只可能出现数字和 . - + e，拼不出 stop 或 speed:，不会误切。
-static uint8 cmd_tail_prefix_len(void)
+/* UART2 cfg v1. All functions below execute only in CPU0 foreground. */
+static const char *const s_cfg_pid_names[] = {
+    "r_rate_kp", "r_rate_ki", "r_rate_kd", "r_angle_kp", "r_angle_ki", "r_angle_kd", "r_rcy_kp", "r_rcy_ki", "r_rcy_kd",
+    "p_rate_kp", "p_rate_ki", "p_rate_kd", "p_angle_kp", "p_angle_ki", "p_angle_kd", "p_vel_kp", "p_vel_ki", "p_vel_kd",
+    "y_rate_kp", "y_rate_ki", "y_rate_kd", "y_angle_kp", "y_angle_ki", "y_angle_kd"
+};
+
+static int cfg_pid_index(const char *name)
 {
-    static const char speed_word[] = "speed:";
-    static const char stop_word[] = "stop";
     uint8 i;
-
-    if (s_cmd_len > 6u)
-    {
-        for (i = 0; i < 6u; i++)
-        {
-            char c = s_cmd_line[s_cmd_len - 6u + i];
-
-            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-            if (c != speed_word[i]) break;
-        }
-        if (i == 6u) return 6u;
-    }
-    if (s_cmd_len > 4u)
-    {
-        for (i = 0; i < 4u; i++)
-        {
-            char c = s_cmd_line[s_cmd_len - 4u + i];
-
-            if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-            if (c != stop_word[i]) break;
-        }
-        if (i == 4u) return 4u;
-    }
-    return 0u;
+    for (i = 0; i < 24u; i++) if (strcmp(name, s_cfg_pid_names[i]) == 0) return (int)i;
+    return -1;
 }
 
-//-------------------------------------------------------------------------------------------------------------------
-// 函数简介     分发一行下行命令
-// 参数说明     line            已去掉换行符和首尾空白的命令字符串
-// 返回参数     vofa_cmd_result_t 处理结果
-// 使用示例     result = cmd_execute_line(cmd_trim(s_cmd_line));
-//-------------------------------------------------------------------------------------------------------------------
-//
-// stop 任何时候都受理：它只停电机，不可能让车动起来。
-// speed: 仍然只在 Run Test 启动之后才生效 —— 无线命令不许发车。
+static const char *cfg_group(const char *n)
+{
+    if (strncmp(n, "r_", 2) == 0) return "Roll";
+    if (strncmp(n, "p_", 2) == 0) return "Pitch";
+    if (strncmp(n, "y_", 2) == 0) return "Yaw";
+    if (strncmp(n, "lean_", 5) == 0) return "Lean";
+    if (strncmp(n, "ipm_", 4) == 0) return "IPM";
+    if (strncmp(n, "odom_", 5) == 0) return "Odometry";
+    if (strncmp(n, "run_", 4) == 0 || strncmp(n, "direction_", 10) == 0) return "Run";
+    if (strncmp(n, "elem_", 5) == 0 || strncmp(n, "ring_", 5) == 0 || strncmp(n, "zebra_", 6) == 0) return "Element";
+    if (strncmp(n, "cam_", 4) == 0 || strcmp(n, "err_front_row") == 0) return "Camera";
+    if (strncmp(n, "roll_", 5) == 0 || strncmp(n, "pitch_", 6) == 0) return "Zero";
+    if (strncmp(n, "motor_", 6) == 0 || strncmp(n, "enc_", 4) == 0 || strncmp(n, "fly_", 4) == 0 ||
+        strncmp(n, "jog_", 4) == 0 || strcmp(n, "steer_dir") == 0) return "Motor";
+    return "Other";
+}
+
+static uint8 cfg_dangerous(const char *name)
+{
+    const char *group = cfg_group(name);
+    return (uint8)(strcmp(group, "Motor") == 0 || strcmp(group, "Zero") == 0 || strcmp(group, "IPM") == 0);
+}
+
+static uint8 cfg_stopped(void)
+{
+    return (uint8)(start_flag == START_STOP && !control_test_running() &&
+        control_jog_running() == MOTOR_JOG_NONE && !control_run_running() && !control_remote_running());
+}
+
+static uint32 cfg_pid_mask(void)
+{
+    uint32 mask;
+    uint8 rings, shift;
+    if (control_jog_running() != MOTOR_JOG_NONE) return 0;
+    if (control_test_running())
+    {
+        rings = (uint8)g_tune_ring + 1u;
+        if (rings > 3u || g_tune_axis >= TUNE_AXIS_MAX) return 0;
+        if (g_tune_axis == TUNE_AXIS_YAW && rings > 2u) rings = 2u;
+        shift = (uint8)g_tune_axis * 9u;
+        mask = ((1u << (rings * 3u)) - 1u) << shift;
+        return mask;
+    }
+    if (start_flag == START_BALANCE || cfg_stopped()) return 0x00FFFFFFu;
+    return 0;
+}
+
+static uint8 cfg_reply(uint16 seq, const char *state, const char *fields)
+{
+    char line[192];
+    int len = snprintf(line, sizeof(line), "rsp:%u,%s,%s\n", (unsigned int)seq, state, fields);
+    if (len <= 0 || len >= (int)sizeof(line)) { s_cfg_tx_drop++; return 0; }
+    return tx_push((const uint8 *)line, (uint32)len);
+}
+
+static uint8 cfg_status(void)
+{
+    uint32 v[15];
+    uint32 irq;
+    char line[240];
+    int len;
+    /* Fixed-size atomic snapshot; no formatting or Flash with interrupts masked. */
+    irq = interrupt_global_disable();
+    v[0] = g_control_uptime_ms;
+    v[1] = (uint32)start_flag;
+    v[2] = control_run_running();
+    v[3] = control_test_running() ? 1u + (uint32)g_tune_axis * 3u + (uint32)g_tune_ring : 0u;
+    v[4] = (uint32)control_jog_running();
+    v[5] = (uint32)g_imu_ok | ((uint32)(imu_calib_state() == IMU_CALIB_OK) << 1) | ((uint32)!imu_link_lost() << 2);
+    v[6] = (uint32)!W_Motor_LinkLost();
+    v[7] = g_cam_ok;
+    v[8] = (uint32)attitude_converged() | ((uint32)attitude_diverged() << 1);
+    v[9] = (uint32)control_run_stop_reason();
+    v[10] = (uint32)control_test_last_status();
+    v[11] = g_param_revision;
+    v[12] = s_cfg_rx_error;
+    v[13] = s_cfg_tx_drop;
+    v[14] = cfg_pid_mask();
+    interrupt_global_enable(irq);
+    len = snprintf(line, sizeof(line), "stat:%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
+        (unsigned long)v[0], (unsigned long)v[1], (unsigned long)v[2], (unsigned long)v[3], (unsigned long)v[4],
+        (unsigned long)v[5], (unsigned long)v[6], (unsigned long)v[7], (unsigned long)v[8], (unsigned long)v[9],
+        (unsigned long)v[10], (unsigned long)v[11], (unsigned long)v[12], (unsigned long)v[13], (unsigned long)v[14]);
+    if (len <= 0 || len >= (int)sizeof(line)) { s_cfg_tx_drop++; return 0; }
+    return tx_push((const uint8 *)line, (uint32)len);
+}
+
+static vofa_cmd_result_t cfg_execute(char *line)
+{
+    char *fields[5];
+    char *p = line + 4;
+    char payload[144];
+    uint8 count = 1;
+    uint32 seq32 = 0;
+    uint16 seq;
+    const param_desc_t *d;
+    float value, actual;
+    uint32 irq;
+    int pid_index;
+    uint8 allowed;
+    fields[0] = p;
+    for (; *p; p++)
+    {
+        if (*p == ',')
+        {
+            *p = 0;
+            if (count >= 5u) return VOFA_CMD_FORMAT;
+            fields[count++] = p + 1;
+        }
+    }
+    if (count < 2u || fields[1][0] == 0) return VOFA_CMD_FORMAT;
+    for (p = fields[1]; *p; p++)
+    {
+        if (*p < '0' || *p > '9') return VOFA_CMD_FORMAT;
+        seq32 = seq32 * 10u + (uint32)(*p - '0');
+        if (seq32 > 65535u) return VOFA_CMD_FORMAT;
+    }
+    if (seq32 == 0u) return VOFA_CMD_FORMAT;
+    seq = (uint16)seq32;
+    if (strcmp(fields[0], "hello") == 0 && count == 2u)
+    {
+        s_station_att = 1;
+        (void)cfg_reply(seq, "ok", "hello,1,tc264-cfg1,63");
+    }
+    else if (strcmp(fields[0], "status") == 0 && count == 2u)
+    {
+        if (cfg_status()) (void)cfg_reply(seq, "ok", "status");
+        else (void)cfg_reply(seq, "err", "BUSY,Status TX unavailable");
+    }
+    else if (strcmp(fields[0], "schema") == 0 && count == 2u)
+    {
+        if (s_schema_seq || s_save_seq) (void)cfg_reply(seq, "err", "BUSY,Operation pending");
+        else { s_schema_seq = seq; s_schema_index = 0; s_schema_next_ms = g_control_uptime_ms; }
+    }
+    else if ((strcmp(fields[0], "get") == 0 && count == 3u) || (strcmp(fields[0], "set") == 0 && count == 4u))
+    {
+        d = param_find(fields[2]);
+        if (!d) { (void)cfg_reply(seq, "err", "UNKNOWN_PARAM,Unknown name"); return VOFA_CMD_FORMAT; }
+        if (count == 4u)
+        {
+            if (!cmd_parse_float_strict(fields[3], &value) || (!d->is_float && value != floorf(value)))
+            { (void)cfg_reply(seq, "err", "INVALID_VALUE,Finite typed value required"); return VOFA_CMD_FORMAT; }
+            if ((strncmp(d->name, "motor_dir_", 10) == 0 || strcmp(d->name, "enc_dir_c") == 0 || strcmp(d->name, "steer_dir") == 0) && value != 1.0f && value != -1.0f)
+            { (void)cfg_reply(seq, "err", "OUT_OF_RANGE,Polarity must be plus or minus one"); return VOFA_CMD_FORMAT; }
+            if (s_save_seq) { (void)cfg_reply(seq, "err", "BUSY,Save pending"); return VOFA_CMD_FORMAT; }
+            pid_index = cfg_pid_index(d->name);
+            irq = interrupt_global_disable();
+            allowed = (uint8)(cfg_stopped() || (pid_index >= 0 && (cfg_pid_mask() & (1u << pid_index)) != 0u));
+            if (allowed)
+            {
+                /* Descriptor already resolved. Bounded writes; no table search in the critical section. */
+                actual = value < d->vmin ? d->vmin : (value > d->vmax ? d->vmax : value);
+                if (d->is_float) *(float *)d->ptr = actual;
+                else *(int *)d->ptr = (int)actual;
+                if (d->ptr == &g_param.roll_zero_init || d->ptr == &g_param.pitch_zero_init) param_sync_zero();
+                g_param_revision++;
+            }
+            interrupt_global_enable(irq);
+            if (!allowed)
+            { (void)cfg_reply(seq, "err", cfg_dangerous(d->name) ? "UNSAFE_PARAM,Stop required" : "RUNNING_LOCKED,Not an active PID"); return VOFA_CMD_FORMAT; }
+            (void)param_get_by_name(d->name, &actual);
+            (void)snprintf(payload, sizeof(payload), "set,%s,%.9g,%s", d->name, (double)actual,
+                (value < d->vmin || value > d->vmax) ? "CLAMPED" : "APPLIED");
+        }
+        else
+        {
+            (void)param_get_by_name(d->name, &actual);
+            (void)snprintf(payload, sizeof(payload), "get,%s,%.9g", d->name, (double)actual);
+        }
+        (void)cfg_reply(seq, "ok", payload);
+    }
+    else if (strcmp(fields[0], "save") == 0 && count == 3u)
+    {
+        if (!cfg_stopped()) (void)cfg_reply(seq, "err", "SAVE_BLOCKED,Stop required");
+        else if (s_save_seq || s_schema_seq) (void)cfg_reply(seq, "err", "BUSY,Operation pending");
+        else if (strlen(fields[2]) >= sizeof(s_save_group)) (void)cfg_reply(seq, "err", "BAD_FORMAT,Group too long");
+        else { s_save_seq = seq; strcpy(s_save_group, fields[2]); }
+    }
+    else (void)cfg_reply(seq, "err", "UNKNOWN_COMMAND,Unsupported operation or arity");
+    return VOFA_CMD_APPLIED;
+}
+
+static void cfg_poll(void)
+{
+    uint32 now = g_control_uptime_ms;
+    uint8 physically_stopped = (uint8)(cfg_stopped() && !W_Motor_LinkLost() &&
+        abs((int)W_Motor_GetSpeed1()) <= 50 && abs((int)W_Motor_GetSpeed2()) <= 50 && Y_Motor_GetSpeed20ms() == 0);
+    if (!physically_stopped) s_stop_seen = 0;
+    else if (!s_stop_seen) { s_stop_seen = 1; s_stop_since = now; }
+    if ((uint32)(now - s_cfg_last_status) >= 100u)
+    {
+        s_cfg_last_status = now;
+        (void)cfg_status();
+    }
+    if (s_station_att && g_vofa_mode != VOFA_ATT)
+    {
+        static uint32 last_att;
+        float a[3];
+        char line[96];
+        int len;
+        uint32 irq;
+        /* 10Hz auxiliary attitude leaves room for the 25-channel Run stream. */
+        if ((uint32)(now - last_att) >= 100u)
+        {
+            last_att = now;
+            irq = interrupt_global_disable();
+            a[0] = att.roll; a[1] = att.pitch; a[2] = att.yaw;
+            interrupt_global_enable(irq);
+            len = snprintf(line, sizeof(line), "att:%.3f,%.3f,%.3f\n", (double)a[0], (double)a[1], (double)a[2]);
+            if (len > 0 && len < (int)sizeof(line)) (void)tx_push((const uint8 *)line, (uint32)len);
+        }
+    }
+    if (s_schema_seq && (uint32)(now - s_schema_next_ms) >= 30u &&
+        (uint32)(s_tx_head - s_tx_tail) < VOFA_TX_SIZE - 640u)
+    {
+        char line[192];
+        int len;
+        if (s_schema_index < param_count())
+        {
+            const param_desc_t *d = &g_param_table[s_schema_index];
+            float value;
+            uint8 flags = 4u | (cfg_pid_index(d->name) >= 0 ? 1u : 0u) | (cfg_dangerous(d->name) ? 2u : 0u);
+            (void)param_get_by_name(d->name, &value);
+            len = snprintf(line, sizeof(line), "par:%u,%s,%s,%.9g,%.9g,%.9g,%s,%.6g,%u\n",
+                (unsigned int)s_schema_seq, d->name, d->is_float ? "float" : "int", (double)value,
+                (double)d->vmin, (double)d->vmax, cfg_group(d->name), d->is_float ? 0.0001 : 1.0, (unsigned int)flags);
+            if (len > 0 && len < (int)sizeof(line) && tx_push((const uint8 *)line, (uint32)len)) s_schema_index++;
+        }
+        else
+        {
+            (void)snprintf(line, sizeof(line), "schema,%u", (unsigned int)param_count());
+            if (cfg_reply(s_schema_seq, "ok", line)) s_schema_seq = 0;
+        }
+        s_schema_next_ms = now;
+    }
+    if (s_save_seq && s_rx_head == s_rx_tail && s_cmd_len == 0u && s_rx_idle_ms >= 100u)
+    {
+        const char *names[128];
+        uint16 i, count = 0, seq = s_save_seq;
+        uint8 ok = 0;
+        char reply[80];
+        s_save_seq = 0; /* Never auto retry a Flash operation. */
+        if (!physically_stopped || !s_stop_seen || (uint32)(now - s_stop_since) < 500u || control_ipm_pending())
+        { (void)cfg_reply(seq, "err", "SAVE_BLOCKED,Require stable stopped wheels and no IPM save"); return; }
+        if (strcmp(s_save_group, "all") == 0) ok = param_save();
+        else
+        {
+            for (i = 0; i < param_count(); i++)
+                if (strcmp(cfg_group(g_param_table[i].name), s_save_group) == 0)
+                {
+                    if (count == 128u) { (void)cfg_reply(seq, "err", "BUSY,Too many group parameters"); return; }
+                    names[count++] = g_param_table[i].name;
+                }
+            if (!count) { (void)cfg_reply(seq, "err", "BAD_FORMAT,Unknown group"); return; }
+            ok = param_save_names(names, count);
+        }
+        if (ok)
+        {
+            (void)snprintf(reply, sizeof(reply), "save,%s,VERIFIED", s_save_group);
+            (void)cfg_reply(seq, "ok", reply);
+        }
+        else (void)cfg_reply(seq, "err", "FLASH_FAILED,Readback verification failed");
+    }
+}
+
 static vofa_cmd_result_t cmd_execute_line(char *line)
 {
     if (cmd_is_stop(line))
     {
+        s_schema_seq = 0; s_save_seq = 0;
         control_stop();                 // 三电机清零 + A/B 刹车锁死，与返回键急停同一条路
         return VOFA_CMD_STOPPED;
     }
+    if (strncmp(line, "cfg:", 4) == 0) return cfg_execute(line);
     return cmd_execute_speed(line);
 }
 
@@ -369,6 +623,7 @@ static void cmd_submit_line(void)
     g_vofa_cmd_lines++;
     if (s_cmd_ovf)
     {
+        s_cfg_rx_error++;
         g_vofa_cmd_last = VOFA_CMD_OVERFLOW;    // 整行作废，绝不拿截断的命令去发车
         return;
     }
@@ -376,6 +631,7 @@ static void cmd_submit_line(void)
     s_cmd_line[s_cmd_len] = '\0';
     result = cmd_execute_line(cmd_trim(s_cmd_line));
     g_vofa_cmd_last = result;
+    if (result != VOFA_CMD_APPLIED && result != VOFA_CMD_STOPPED) s_cfg_rx_error++;
     if (result == VOFA_CMD_APPLIED || result == VOFA_CMD_STOPPED) g_vofa_cmd_ok++;
 }
 
@@ -422,6 +678,7 @@ void vofa_poll(void)
     uint32 seq1, seq2;
     int    len;
 
+    cfg_poll();
     if (mode == VOFA_OFF) { last_seq = s_seq; last_mode = mode; return; }
     if (mode != last_mode)
     {
@@ -488,6 +745,7 @@ void vofa_poll(void)
     }
     if (len <= 0) return;                                           // 格式化失败
     if (len >= (int)sizeof(line)) return;                            // 格式化结果不完整
+    if ((uint32)(s_tx_head - s_tx_tail) + (uint32)len > VOFA_TX_SIZE - 384u) { s_cfg_tx_drop++; return; }
     (void)tx_push((const uint8 *)line, (uint32)len);                // 写入上行环，装不下就丢弃整帧
 }
 
@@ -499,6 +757,10 @@ void vofa_poll(void)
 //-------------------------------------------------------------------------------------------------------------------
 void vofa_init(void)
 {
+    s_cfg_rx_error = s_cfg_tx_drop = 0;
+    s_schema_seq = s_schema_index = s_save_seq = 0;
+    s_schema_next_ms = s_stop_since = s_cfg_last_status = 0;
+    s_stop_seen = s_station_att = 0;
     (void)wireless_uart_init();
 
     s_tx_head = 0; s_tx_tail = 0;
@@ -558,8 +820,8 @@ void vofa_tick1ms(void)
     if (gpio_get_level(WIRELESS_UART_RTS_PIN)) return;
 
     tail = s_tx_tail;
-    while (tail != s_tx_head &&
-           IfxAsclin_getTxFifoFillLevel(uart2_handle.asclin) < VOFA_TX_FIFO_DEPTH)
+    for (i = 0u; i < VOFA_TX_FIFO_DEPTH && tail != s_tx_head &&
+           IfxAsclin_getTxFifoFillLevel(uart2_handle.asclin) < VOFA_TX_FIFO_DEPTH; i++)
     {
         IfxAsclin_writeTxData(uart2_handle.asclin, s_tx_buf[tail & VOFA_TX_MASK]);
         tail++;
@@ -585,7 +847,8 @@ void vofa_cmd_poll(void)
         s_rx_overflow = 0;
         s_rx_tail = s_rx_head;
         s_cmd_len = 0;
-        s_cmd_ovf = 0;
+        s_cmd_ovf = 1; /* Discard until a line terminator after RX loss. */
+        s_cfg_rx_error++;
         g_vofa_cmd_lines++;
         g_vofa_cmd_last = VOFA_CMD_RX_FULL;     // 和"单行超长"分开报，否则查不出是哪一种
         interrupt_global_enable(interrupt_state);
@@ -617,31 +880,14 @@ void vofa_cmd_poll(void)
             s_cmd_ovf = 0;
             continue;
         }
+        if (((uint8)c < 32u && c != '\t') || (uint8)c > 126u) s_cmd_ovf = 1;
         if (s_cmd_len < (VOFA_CMD_LINE_MAX - 1))
             s_cmd_line[s_cmd_len++] = c;
         else
             s_cmd_ovf = 1;                      // 标记命令行溢出，整行作废
 
-        // 上位机没发 CR/LF 时用命令前缀本身重新同步：协议里只有 "speed:" 一种命令，
-        // 它出现就说明上一条已经结束。不这么做的话，命令会一条接一条粘成
-        // "speed:-19.000000,0speed:-19.000000,0..."，18 个字符一条粘 4 条就超过
-        // VOFA_CMD_LINE_MAX，整段作废，屏幕上就是格式明明正确却一直报 LINE TOO LONG。
-        // 正常带换行的情况走不到这里：提交后 s_cmd_len 归零，再收到前缀时正好等于 6
-        {
-            uint8 keep = cmd_tail_prefix_len();
+        /* Never execute partial lines or resynchronize inside an overflowed command. */
 
-            if (keep > 0u)
-            {
-                char head[6];
-
-                memcpy(head, &s_cmd_line[s_cmd_len - keep], keep);
-                s_cmd_len = (uint8)(s_cmd_len - keep); // 砍掉刚收到的前缀，剩下的是上一条命令
-                cmd_submit_line();                     // 它自己会看 s_cmd_ovf 决定提交还是作废
-                memcpy(s_cmd_line, head, keep);
-                s_cmd_len = keep;
-                s_cmd_ovf = 0;
-            }
-        }
     }
 
     if (s_cmd_len > 0u && tail == s_rx_head)
@@ -651,7 +897,7 @@ void vofa_cmd_poll(void)
             g_vofa_cmd_lines++;
             g_vofa_cmd_last = s_cmd_ovf ? VOFA_CMD_OVERFLOW : VOFA_CMD_FORMAT;
             s_cmd_len = 0;
-            s_cmd_ovf = 0;
+            s_cmd_ovf = 1; /* Remain poisoned until CR/LF. */
         }
     }
 }

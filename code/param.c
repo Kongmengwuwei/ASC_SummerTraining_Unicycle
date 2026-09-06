@@ -97,6 +97,8 @@ const param_desc_t g_param_table[] =
 // 返回参数     int             0 表示相等
 // 使用示例     int equal = (str_icmp(a, b) == 0);
 //-------------------------------------------------------------------------------------------------------------------
+uint16 param_count(void) { return PARAM_TABLE_NUM; }
+
 static int str_icmp(const char *a, const char *b)
 {
     while (*a && *b)

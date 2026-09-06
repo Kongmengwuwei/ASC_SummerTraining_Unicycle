@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "embedded-station"
+version = "0.1.0"
+description = "Profile-driven embedded device measurement station"
+requires-python = ">=3.11"
+dependencies = ["PySide6>=6.8,<7", "pyserial>=3.5,<4", "pyqtgraph>=0.13.7,<0.15", "numpy>=1.26", "PyOpenGL>=3.1.7"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyinstaller>=6", "psutil>=6"]
+
+[project.scripts]
+unicycle-station = "app.main:main"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["profiles/**/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

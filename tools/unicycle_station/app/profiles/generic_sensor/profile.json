@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "kind": "device_profile",
+  "id": "generic_sensor",
+  "name": "通用双通道传感器",
+  "version": "1.0",
+  "protocol_plugin": "firewater_v1",
+  "connection_defaults": {
+    "baudrate": 115200
+  },
+  "channels": {
+    "data": [
+      {
+        "name": "sensor_a",
+        "label": "传感器 A",
+        "unit": "V"
+      },
+      {
+        "name": "sensor_b",
+        "label": "传感器 B",
+        "unit": "V"
+      }
+    ]
+  },
+  "parameters": {},
+  "parameter_groups": [],
+  "dashboards": [
+    "sensor_a",
+    "sensor_b"
+  ],
+  "safety_rules": {},
+  "orientation_mapping": {},
+  "plot_presets": {
+    "传感器": [
+      "sensor_a",
+      "sensor_b"
+    ]
+  }
+}

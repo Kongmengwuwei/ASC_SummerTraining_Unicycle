@@ -174,6 +174,7 @@ typedef struct
     float       vmax;       // 上限
 } param_desc_t;
 
+uint16 param_count(void);
 extern const param_desc_t g_param_table[];      // 参数描述表
 
 //-------------------------------------------------------------------------------------------------------------------

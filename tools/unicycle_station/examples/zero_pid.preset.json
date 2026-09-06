@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "kind": "parameter_preset",
+  "profile_id": "tc264_unicycle",
+  "values": {
+    "r_rate_kp": 0,
+    "r_rate_ki": 0,
+    "r_rate_kd": 0,
+    "r_angle_kp": 0,
+    "r_angle_ki": 0,
+    "r_angle_kd": 0,
+    "r_rcy_kp": 0,
+    "r_rcy_ki": 0,
+    "r_rcy_kd": 0,
+    "p_rate_kp": 0,
+    "p_rate_ki": 0,
+    "p_rate_kd": 0,
+    "p_angle_kp": 0,
+    "p_angle_ki": 0,
+    "p_angle_kd": 0,
+    "p_vel_kp": 0,
+    "p_vel_ki": 0,
+    "p_vel_kd": 0,
+    "y_rate_kp": 0,
+    "y_rate_ki": 0,
+    "y_rate_kd": 0,
+    "y_angle_kp": 0,
+    "y_angle_ki": 0,
+    "y_angle_kd": 0
+  },
+  "description": "仅演示导入与差异预览；零增益不能用于实车平衡"
+}
