@@ -6,6 +6,7 @@
     "name": "TC264D Q 型独轮车",
     "version": "1.0",
     "protocol_plugin": "firewater_v1",
+    "supports_configuration": true,
     "connection_defaults": {
       "baudrate": 115200,
       "bytesize": 8,
@@ -162,77 +163,181 @@
       "stat": [
         {
           "name": "stat_uptime",
-          "label": "stat_uptime",
+          "label": "MCU 时间",
           "unit": ""
         },
         {
           "name": "start_mode",
-          "label": "start_mode",
+          "label": "主模式",
           "unit": ""
         },
         {
           "name": "run_active",
-          "label": "run_active",
+          "label": "Run 状态",
           "unit": ""
         },
         {
           "name": "test_mode",
-          "label": "test_mode",
+          "label": "测试模式",
           "unit": ""
         },
         {
           "name": "jog_mode",
-          "label": "jog_mode",
+          "label": "点动状态",
           "unit": ""
         },
         {
           "name": "imu_state",
-          "label": "imu_state",
+          "label": "IMU 状态",
           "unit": ""
         },
         {
           "name": "bldc_state",
-          "label": "bldc_state",
+          "label": "驱动器状态",
           "unit": ""
         },
         {
           "name": "cam_state",
-          "label": "cam_state",
+          "label": "相机状态",
           "unit": ""
         },
         {
           "name": "att_state",
-          "label": "att_state",
+          "label": "姿态状态",
           "unit": ""
         },
         {
           "name": "run_stop",
-          "label": "run_stop",
+          "label": "Run 停止原因",
           "unit": ""
         },
         {
           "name": "test_status",
-          "label": "test_status",
+          "label": "测试状态",
           "unit": ""
         },
         {
           "name": "param_revision",
-          "label": "param_revision",
+          "label": "参数版本",
           "unit": ""
         },
         {
           "name": "rx_error",
-          "label": "rx_error",
+          "label": "接收错误",
           "unit": ""
         },
         {
           "name": "tx_drop",
-          "label": "tx_drop",
+          "label": "发送丢弃",
           "unit": ""
         },
         {
           "name": "pid_write_mask",
-          "label": "pid_write_mask",
+          "label": "PID 可写权限",
+          "unit": ""
+        }
+      ],
+      "task": [
+        {
+          "name": "task_uptime",
+          "label": "MCU 时间",
+          "unit": ""
+        },
+        {
+          "name": "task_state",
+          "label": "道路状态",
+          "unit": ""
+        },
+        {
+          "name": "task_element",
+          "label": "活动元素",
+          "unit": ""
+        },
+        {
+          "name": "task_phase",
+          "label": "环岛阶段",
+          "unit": ""
+        },
+        {
+          "name": "task_track_mode",
+          "label": "巡线模式",
+          "unit": ""
+        },
+        {
+          "name": "task_run",
+          "label": "Run 状态",
+          "unit": ""
+        },
+        {
+          "name": "task_vision_age",
+          "label": "视觉帧年龄",
+          "unit": ""
+        },
+        {
+          "name": "task_quality",
+          "label": "视觉质量",
+          "unit": ""
+        },
+        {
+          "name": "task_transition",
+          "label": "状态转换序号",
+          "unit": ""
+        },
+        {
+          "name": "task_event_drop",
+          "label": "事件丢弃数",
+          "unit": ""
+        },
+        {
+          "name": "task_yaw",
+          "label": "同步航向",
+          "unit": ""
+        },
+        {
+          "name": "task_speed",
+          "label": "同步轮速",
+          "unit": ""
+        },
+        {
+          "name": "task_vision_seq",
+          "label": "视觉帧序号",
+          "unit": ""
+        }
+      ],
+      "taskevt": [
+        {
+          "name": "task_event_seq",
+          "label": "事件序号",
+          "unit": ""
+        },
+        {
+          "name": "task_event_uptime",
+          "label": "MCU 时间",
+          "unit": ""
+        },
+        {
+          "name": "task_previous",
+          "label": "退出状态",
+          "unit": ""
+        },
+        {
+          "name": "task_next",
+          "label": "进入状态",
+          "unit": ""
+        },
+        {
+          "name": "task_event_element",
+          "label": "活动元素",
+          "unit": ""
+        },
+        {
+          "name": "task_event_phase",
+          "label": "环岛阶段",
+          "unit": ""
+        },
+        {
+          "name": "task_event_run",
+          "label": "Run 状态",
           "unit": ""
         }
       ]
@@ -240,527 +345,527 @@
     "parameters": {
       "run_speed_straight": {
         "label": "直道速度",
+        "step": 0.01,
         "decimals": 2,
         "default": 1.2,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "run_speed_curve": {
         "label": "弯道速度",
+        "step": 0.01,
         "decimals": 2,
         "default": 1.2,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "run_speed_cross": {
         "label": "跑车 · run_speed_cross",
+        "step": 0.01,
         "decimals": 2,
         "default": 1.2,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "run_speed_ring": {
         "label": "跑车 · run_speed_ring",
+        "step": 0.01,
         "decimals": 2,
         "default": 1.2,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "run_speed_ramp": {
         "label": "跑车 · run_speed_ramp",
+        "step": 0.01,
         "decimals": 2,
         "default": 1.2,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "run_speed_lost": {
         "label": "跑车 · run_speed_lost",
+        "step": 0.01,
         "decimals": 2,
         "default": 0.2,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "run_accel_mps2": {
         "label": "跑车 · run_accel_mps2",
+        "step": 0.05,
         "decimals": 2,
         "default": 0.5,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.05
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "run_decel_mps2": {
         "label": "跑车 · run_decel_mps2",
+        "step": 0.05,
         "decimals": 2,
         "default": 1.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.05
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "direction_pixel_kp": {
         "label": "跑车 · direction_pixel_kp",
+        "step": 0.05,
         "decimals": 3,
         "default": 1.2,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.05
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "direction_heading_kp": {
         "label": "跑车 · direction_heading_kp",
+        "step": 0.05,
         "decimals": 3,
         "default": 0.92,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.05
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "direction_curve_kff": {
         "label": "跑车 · direction_curve_kff",
+        "step": 0.25,
         "decimals": 2,
         "default": 50.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.25
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "direction_rate_kd": {
         "label": "跑车 · direction_rate_kd",
+        "step": 0.001,
         "decimals": 4,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "zebra_stop_offset_m": {
         "label": "元素 · zebra_stop_offset_m",
+        "step": 0.01,
         "decimals": 2,
         "default": 0.15,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "err_front_row": {
         "label": "前瞻行",
+        "step": 1.0,
         "decimals": 0,
         "default": 67.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 1.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ipm_h0": {
         "label": "逆透视 · ipm_h0",
+        "step": 0.0001,
         "decimals": 6,
         "default": 4.89805365,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ipm_h1": {
         "label": "逆透视 · ipm_h1",
+        "step": 0.0001,
         "decimals": 6,
         "default": 0.429295093,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ipm_h2": {
         "label": "逆透视 · ipm_h2",
+        "step": 0.0001,
         "decimals": 6,
         "default": -437.682922,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ipm_h3": {
         "label": "逆透视 · ipm_h3",
+        "step": 0.0001,
         "decimals": 6,
         "default": -9.01227565e-07,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ipm_h4": {
         "label": "逆透视 · ipm_h4",
+        "step": 0.0001,
         "decimals": 6,
         "default": 7.5201354,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ipm_h5": {
         "label": "逆透视 · ipm_h5",
+        "step": 0.0001,
         "decimals": 6,
         "default": -637.018188,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ipm_h6": {
         "label": "逆透视 · ipm_h6",
+        "step": 0.0001,
         "decimals": 6,
         "default": 3.5576222e-09,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ipm_h7": {
         "label": "逆透视 · ipm_h7",
+        "step": 0.0001,
         "decimals": 6,
         "default": 0.0787293464,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ipm_h8": {
         "label": "逆透视 · ipm_h8",
+        "step": 0.0001,
         "decimals": 6,
         "default": 0.99999994,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "cam_exposure": {
         "label": "摄像头曝光",
+        "step": 2.0,
         "decimals": 0,
         "default": 48.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 2.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "odom_counts_per_m": {
         "label": "每米编码器计数",
+        "step": 10.0,
         "decimals": 0,
         "default": 11690.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 10.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "odom_test_speed": {
         "label": "里程测试速度",
+        "step": 0.01,
         "decimals": 2,
         "default": 0.05,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "r_rcy_kp": {
         "label": "横滚回收环 KP",
+        "step": 0.0001,
         "decimals": 4,
         "default": 0.0017,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "r_rcy_ki": {
         "label": "横滚回收环 KI",
+        "step": 0.0001,
         "decimals": 4,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "r_rcy_kd": {
         "label": "横滚回收环 KD",
+        "step": 0.0001,
         "decimals": 4,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.0001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "r_angle_kp": {
         "label": "横滚角度环 KP",
+        "step": 0.2,
         "decimals": 2,
         "default": 36.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.2
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "r_angle_ki": {
         "label": "横滚角度环 KI",
+        "step": 0.01,
         "decimals": 3,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "r_angle_kd": {
         "label": "横滚角度环 KD",
+        "step": 0.2,
         "decimals": 2,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.2
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "r_rate_kp": {
         "label": "横滚角速度环 KP",
+        "step": 1.0,
         "decimals": 2,
         "default": -18.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 1.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "r_rate_ki": {
         "label": "横滚角速度环 KI",
+        "step": 0.01,
         "decimals": 3,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "r_rate_kd": {
         "label": "横滚角速度环 KD",
+        "step": 0.5,
         "decimals": 2,
         "default": -7.5,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.5
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "p_vel_kp": {
         "label": "俯仰速度环 KP",
+        "step": 0.001,
         "decimals": 4,
         "default": 0.065,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "p_vel_ki": {
         "label": "俯仰速度环 KI",
+        "step": 0.001,
         "decimals": 4,
         "default": 0.004,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "p_vel_kd": {
         "label": "俯仰速度环 KD",
+        "step": 0.001,
         "decimals": 4,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.001
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "p_angle_kp": {
         "label": "俯仰角度环 KP",
+        "step": 0.2,
         "decimals": 2,
         "default": 5.6,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.2
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "p_angle_ki": {
         "label": "俯仰角度环 KI",
+        "step": 0.01,
         "decimals": 3,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "p_angle_kd": {
         "label": "俯仰角度环 KD",
+        "step": 0.2,
         "decimals": 2,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.2
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "p_rate_kp": {
         "label": "俯仰角速度环 KP",
+        "step": 0.5,
         "decimals": 2,
         "default": 20.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.5
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "p_rate_ki": {
         "label": "俯仰角速度环 KI",
+        "step": 0.01,
         "decimals": 3,
         "default": 0.5,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "p_rate_kd": {
         "label": "俯仰角速度环 KD",
+        "step": 0.5,
         "decimals": 2,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.5
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "y_angle_kp": {
         "label": "航向角度环 KP",
+        "step": 0.1,
         "decimals": 2,
         "default": 14.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.1
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "y_angle_ki": {
         "label": "航向角度环 KI",
+        "step": 0.01,
         "decimals": 3,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "y_angle_kd": {
         "label": "航向角度环 KD",
+        "step": 0.1,
         "decimals": 2,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.1
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "y_rate_kp": {
         "label": "航向角速度环 KP",
+        "step": 0.5,
         "decimals": 2,
         "default": 50.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.5
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "y_rate_ki": {
         "label": "航向角速度环 KI",
+        "step": 0.01,
         "decimals": 3,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.01
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "y_rate_kd": {
         "label": "航向角速度环 KD",
+        "step": 0.5,
         "decimals": 2,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.5
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "lean_roll_kp": {
         "label": "压弯增益",
+        "step": 0.1,
         "decimals": 2,
         "default": 2.5,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.1
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "lean_max_angle": {
         "label": "压弯最大角度",
+        "step": 0.1,
         "decimals": 2,
         "default": 5.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.1
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "elem_en_zebra": {
         "label": "元素 · elem_en_zebra",
+        "step": 1,
         "decimals": 0,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 1
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "elem_en_cross": {
         "label": "元素 · elem_en_cross",
+        "step": 1,
         "decimals": 0,
         "default": 1.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 1
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "elem_en_ring": {
         "label": "元素 · elem_en_ring",
+        "step": 1,
         "decimals": 0,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 1
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "elem_en_ramp": {
         "label": "元素 · elem_en_ramp",
+        "step": 1,
         "decimals": 0,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 1
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ring_angle": {
         "label": "元素 · ring_angle",
+        "step": 5.0,
         "decimals": 0,
         "default": 340.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 5.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ring_s2_cnt_l": {
         "label": "元素 · ring_s2_cnt_l",
+        "step": 10.0,
         "decimals": 0,
         "default": 300.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 10.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "ring_s2_cnt_r": {
         "label": "元素 · ring_s2_cnt_r",
+        "step": 10.0,
         "decimals": 0,
         "default": 400.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 10.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "roll_zero_init": {
         "label": "横滚机械零点",
+        "step": 0.1,
         "decimals": 2,
         "default": 0.996689558,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.1
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "pitch_zero_init": {
         "label": "俯仰机械零点",
+        "step": 0.1,
         "decimals": 2,
         "default": -3.05225325,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 0.1
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "roll_protect": {
         "label": "横滚保护角",
+        "step": 1.0,
         "decimals": 1,
         "default": 20.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 1.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "pitch_protect": {
         "label": "俯仰保护角",
+        "step": 1.0,
         "decimals": 1,
         "default": 50.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 1.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "motor_dir_a": {
         "label": "电机 · motor_dir_a",
+        "step": 2.0,
         "decimals": 0,
         "default": 1.0,
         "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
         "enum_options": {
           "-1": "反向 −1",
           "1": "正向 +1"
-        },
-        "step": 2.0
+        }
       },
       "motor_dir_b": {
         "label": "电机 · motor_dir_b",
+        "step": 2.0,
         "decimals": 0,
         "default": 1.0,
         "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
         "enum_options": {
           "-1": "反向 −1",
           "1": "正向 +1"
-        },
-        "step": 2.0
+        }
       },
       "motor_dir_c": {
         "label": "电机 · motor_dir_c",
+        "step": 2.0,
         "decimals": 0,
         "default": 1.0,
         "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
         "enum_options": {
           "-1": "反向 −1",
           "1": "正向 +1"
-        },
-        "step": 2.0
+        }
       },
       "enc_dir_c": {
         "label": "编码器极性",
+        "step": 2.0,
         "decimals": 0,
         "default": 1.0,
         "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
         "enum_options": {
           "-1": "反向 −1",
           "1": "正向 +1"
-        },
-        "step": 2.0
+        }
       },
       "steer_dir": {
         "label": "转向极性",
+        "step": 2.0,
         "decimals": 0,
         "default": -1.0,
         "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
         "enum_options": {
           "-1": "反向 −1",
           "1": "正向 +1"
-        },
-        "step": 2.0
+        }
       },
       "jog_duty_fly": {
         "label": "电机 · jog_duty_fly",
+        "step": 100.0,
         "decimals": 0,
         "default": 2500.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 100.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "jog_duty_drive": {
         "label": "电机 · jog_duty_drive",
+        "step": 100.0,
         "decimals": 0,
         "default": 800.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 100.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "fly_speed_limit": {
         "label": "飞轮限速",
+        "step": 100.0,
         "decimals": 0,
         "default": 7000.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 100.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
       "fly_slew": {
         "label": "飞轮输出变化率",
+        "step": 100.0,
         "decimals": 0,
         "default": 0.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
-        "step": 100.0
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       }
     },
     "parameter_groups": [
@@ -1568,8 +1673,8 @@
         2
       ],
       "signs": [
-        1,
-        1,
+        -1,
+        -1,
         1
       ],
       "units": "deg",
@@ -1676,6 +1781,17 @@
         "telemetry_lost"
       ]
     },
+    "default_plot_channels": {
+      "Roll": [
+        "roll",
+        "roll_target"
+      ],
+      "Yaw": [
+        "yaw_rate_target",
+        "yaw_rate_command",
+        "yaw_rate_actual"
+      ]
+    },
     "workbenches": {
       "Roll": [
         "roll",
@@ -1698,7 +1814,73 @@
         "yaw_output_applied"
       ]
     },
-    "supports_configuration": true
+    "task_states": {
+      "0": "未知",
+      "1": "直道",
+      "2": "左弯道",
+      "3": "右弯道",
+      "4": "十字路口",
+      "5": "左环岛",
+      "6": "右环岛",
+      "7": "坡道",
+      "8": "斑马线",
+      "9": "丢线",
+      "10": "视觉过期",
+      "11": "航向保持",
+      "12": "等待视觉"
+    },
+    "value_labels": {
+      "start_mode": {
+        "0": "STOP",
+        "1": "C 轮模式",
+        "2": "Balance"
+      },
+      "run_active": {
+        "0": "未运行",
+        "1": "Run"
+      },
+      "jog_mode": {
+        "0": "未点动",
+        "1": "A 轮",
+        "2": "B 轮",
+        "3": "C 轮"
+      },
+      "run_stop": {
+        "0": "无",
+        "1": "斑马线",
+        "2": "丢线",
+        "3": "视觉过期",
+        "4": "人工停车",
+        "5": "安全保护"
+      },
+      "bldc_state": {
+        "0": "链路异常",
+        "1": "链路正常"
+      },
+      "cam_state": {
+        "0": "未就绪",
+        "1": "正常"
+      },
+      "track_valid": {
+        "0": "无效",
+        "1": "有效"
+      },
+      "ipm_valid": {
+        "0": "无效",
+        "1": "有效"
+      }
+    },
+    "bit_labels": {
+      "imu_state": [
+        "初始化",
+        "标定",
+        "链路"
+      ],
+      "att_state": [
+        "已收敛",
+        "曾发散"
+      ]
+    }
   },
   "created": 1788624000,
   "protocol": "1",

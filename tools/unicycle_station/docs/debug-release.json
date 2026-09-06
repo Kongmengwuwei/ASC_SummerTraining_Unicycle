@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "kind": "debug_release_validation",
+  "date": "2026-09-07T00:53:38.287033+08:00",
+  "version": "0.2.0",
+  "executable": "D:\\ASC_SummerTraining_Unicycle\\tools\\unicycle_station\\dist\\debug-workflow\\EmbeddedStation\\EmbeddedStation.exe",
+  "sha256": "86282a209665e77008078aa57a7a251a108e4eb7436bf20667876c2673c4a92c",
+  "tests": {
+    "passed": 70,
+    "failed": 0,
+    "coverage": "PC protocol/task/trajectory/archives/GUI; MCU host C contract (not TASKING)"
+  },
+  "packaged_smoke": {
+    "exit_code": 0,
+    "pages": 10,
+    "transport": "Mock"
+  },
+  "soak": {
+    "duration_seconds": 180.02,
+    "last_sample": {
+      "seconds": 180.02,
+      "rss_mb": 60.2,
+      "frames": 19209,
+      "channels": 77,
+      "max_ring": 6500,
+      "parser_errors": 384,
+      "log_drops": 0,
+      "task_events": 185,
+      "trajectory_points": 605,
+      "trials": 6,
+      "archive_error": ""
+    },
+    "bounded_rings": true,
+    "log_drops": 0,
+    "long_term_memory_stability": "not established by this 3-minute run"
+  },
+  "ads_build": false,
+  "flashed": false,
+  "physical_serial_test": false,
+  "hardware_trajectory_calibration": false,
+  "source_sha256": {
+    "app\\main.py": "acaa3b2aabbdf744d59581ff664232251d9195cbf16b550968861a7e60ad9dd3",
+    "app\\__init__.py": "faae9105aeaea523c725f1715329e765fe3ff8d1c4464e9ec240232691a3a037",
+    "app\\core\\models.py": "5426f5b9f6d8243d5c5b0d9f17a79f937506e100a8917b93daaafc13bc7a2396",
+    "app\\core\\store.py": "50d46fe447c1547fa0802a551d7a0169fe5a26446f3dd16f2386e1e2c145a6ef",
+    "app\\plotting\\measurement.py": "58a0b5b62e71931d53fb0e5a8da542698410dd7a88554a3fa059fc81bd36285d",
+    "app\\plotting\\scope.py": "911b35cd338ec6fcd41e6ca90c4196aa790e1330fa01d104fb9c7461288d8829",
+    "app\\plugins\\registry.py": "9b1615ff0f6cfe54e4e2ce9c5639b41404358e48ca3532660bd0cdb765e608ba",
+    "app\\protocols\\firewater.py": "432d35972dd1ec79beca013a585496fe15c1190e7d968fe0f7d9d8a07f0c08d3",
+    "app\\recording\\session.py": "20d6c952d582677752b0e97b2eec526b1154662fc85edce55b8e39fc661b7145",
+    "app\\services\\background.py": "bebf838c3bf0bddc868261412360c64565588ee03c4d132ff58b740823235e2b",
+    "app\\services\\engine.py": "6bf5b4c09247102a9943c76d5174aa2c5d571b21ff201b61b802d667b3bb02cc",
+    "app\\services\\experiments.py": "8c750744de68022549c6466312581459ad7acd9a294f35a785f57d13911238cc",
+    "app\\services\\requests.py": "dcd7d73f511d1851691ab4b2ac5eb1bcd4aae3cda4e52a679e63fd5432cdd7ce",
+    "app\\services\\task_state.py": "a03ab0cf1e92e5a586639fc493f10dfa98f63dda1247f436afb2a7637d7ee42f",
+    "app\\transports\\mock.py": "4437f5cf203c520c6cca36cd3efb5a914bf7ba1cb53448ae29986e59eaf640e1",
+    "app\\transports\\serial_transport.py": "ef0b8d8502d1f80ff1698bba428ddad6975b5584e57b26fb6886a12bb0ea6e96",
+    "app\\ui\\connection.py": "eea186198c7835262cb447b11d1ef94a4a8b41c55ed5f2c2d22b3670583d6c3c",
+    "app\\ui\\experiments_page.py": "02e0347931be687368abef07aafbc414c9a1a96c1c5ab7551b5b4f18a62ea7e6",
+    "app\\ui\\parameters.py": "34d3f72ddcc2b97c2d6881a42fad8de1ea12de9b0e0fc815208b2c3c9062fa0b",
+    "app\\ui\\task_page.py": "44f032c2432fac045d55901df46581252566791d497f9cd7f0e10398017ef594",
+    "app\\ui\\window.py": "42682ce1a15564a9e19098b6d539c7f2017333f6ff584f5d8ae252f8192a7b07",
+    "app\\ui\\workbench.py": "83c3c5c667dcc8d8575d59de9cb3e1445dba9d45e610502c030cfdba305e8d09",
+    "app\\visualization\\orientation.py": "981d76480c23fec55ac62754accacb71758656f583c91b770fef41b6af75c0b1",
+    "app\\profiles\\generic_sensor\\profile.json": "da2ef990d4ab81d7b62af439069a9e8a99ec1ada82ec1dd33423be8bacd9623e",
+    "app\\profiles\\tc264_unicycle\\display.json": "715186d5e39c8a011adae7c9b9b8ed7cce4f3b33817038e04a3244065e23a390",
+    "app\\profiles\\tc264_unicycle\\profile.json": "9fa48e5e1ff07b3d4fb7b938b5512c7d7c0d118a10ac18fc00cd1a63d7a7c84d",
+    "..\\..\\code\\vofa.c": "bf01f7b994c3f84fa3e5edb1d60b4eedf39dfde97a1d06c69f6d119677a9c8cc",
+    "..\\..\\code\\vofa_task.inc": "f6f7d376c1ceefd0f0f49bfa6d43f1d1481c1a06188049b3997cf8d852559a81"
+  }
+}

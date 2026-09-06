@@ -26,6 +26,7 @@ class MockTransport:
         self.connected = True
         self.origin = self.next_tick = time.monotonic()
         self.index = 0
+        self.task_sequence = 0; self.task_previous = None
         self.manual_stopped = False
         self.queue.clear()
 
@@ -63,6 +64,17 @@ class MockTransport:
                       .9 if track else .1, age, flags]
             if not self.faults or self.random.random() > .08:
                 self.append("run:" + ",".join(f"{v:.6g}" if i not in (0, 24) else str(int(v)) for i, v in enumerate(values)))
+            if self.index % 10 == 0 and self.profile.data.get("task_states"):
+                road = [1,2,4,1,6,7,8,9,10,3,1][int(t/2)%11]
+                element = {4:2,5:3,6:4,7:5,8:1}.get(road,0)
+                phase = 1+int(t)%5 if road in (5,6) else 0
+                state = (road,phase,int(running))
+                if state != self.task_previous:
+                    self.task_sequence += 1
+                    previous = self.task_previous[0] if self.task_previous else 0
+                    self.append(f"taskevt:{self.task_sequence},{ms},{previous},{road},{element},{phase},{int(running)}")
+                    self.task_previous = state
+                self.append(f"task:{ms},{road},{element},{phase},0,{int(running)},{age},0.9,{self.task_sequence},0,{yaw:.3f},{.5*running:.3f},{self.index+1}")
             if self.index % 10 == 0:
                 self.append("stat:" + ",".join(map(str, self.status_values(ms))))
         else:

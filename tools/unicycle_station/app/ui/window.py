@@ -10,7 +10,12 @@ from app.visualization.orientation import OrientationWidget, OrientationPlugin
 from app.plugins.registry import VISUALIZATIONS
 VISUALIZATIONS.setdefault("orientation", OrientationPlugin)
 from app.ui.parameters import ParameterPage
+from app.ui.workbench import TuningPlots
 from app.ui.connection import ConnectionDialog
+from app.ui.task_page import TaskPage
+from app.ui.experiments_page import ExperimentsPage
+from app.services.background import BackgroundJob
+from app.recording.session import ReplayDataSource
 
 BUILTINS=Path(__file__).resolve().parents[1]/"profiles"
 
@@ -41,8 +46,13 @@ class Overview(W.QWidget):
         latest,stamps,_=self.engine.store.snapshot();now=self.engine.store.clock()
         for name,label in self.cards.items():
             stale=now-stamps.get(name,0)>.7
-            label.setText("—" if name not in latest else f"{latest[name]:.5g}")
-            label.setStyleSheet(f"font:22pt 'Consolas';color:{'#647281' if stale else ('#dce5ef' if getattr(self.window(),'dark',True) else '#202b38')}")
+            text="—" if name not in latest else f"{latest[name]:.5g}"
+            if name in latest:
+                text=self.engine.profile.data.get("value_labels",{}).get(name,{}).get(str(int(latest[name])),text)
+                bits=self.engine.profile.data.get("bit_labels",{}).get(name)
+                if bits:text=" / ".join(f"{title}{'✓' if int(latest[name])&(1<<i) else '—'}" for i,title in enumerate(bits))
+            label.setText(text)
+            label.setStyleSheet(f"font:14pt 'Consolas';color:{'#647281' if stale else ('#dce5ef' if getattr(self.window(),'dark',True) else '#202b38')}")
         if self.engine.replay:mode="离线回放 · 控制锁定"
         elif now-self.engine.status_time>.7:mode="状态未知 / STALE · 参数写入锁定"
         elif self.engine.status[4]:mode="Jog · 参数写入锁定"
@@ -110,10 +120,12 @@ class MainWindow(W.QMainWindow):
     def __init__(self,profile=None,restore=True):
         super().__init__()
         self.settings=QtCore.QSettings("EmbeddedStation","Station")
-        self.workspace_path=None;self.dark=True
+        self.workspace_path=None;self.dark=True;self.persist_enabled=True
         self.setWindowTitle("Embedded Station · 嵌入式设备调试平台");self.resize(1520,940)
         self.engine=StationEngine(profile or builtin_profile())
         self.workbenches=[]
+        self.replay_jobs=[]
+        self.profile_generation=0
         self.make_toolbar();self.make_menu();self.build_pages()
         self.apply_theme()
         if restore:
@@ -132,7 +144,7 @@ class MainWindow(W.QMainWindow):
         self.toolbar=self.addToolBar("连接与安全停车");self.toolbar.setObjectName("connection_toolbar");self.toolbar.setMovable(False)
         self.device=W.QLabel();self.toolbar.addWidget(self.device)
         self.endpoint=W.QLabel();self.toolbar.addWidget(self.endpoint)
-        for label,slot in [("串口设置",self.configure),("连接",self.connect_serial),("断开",self.disconnect),("Mock 演示",self.connect_mock)]:
+        for label,slot in [("串口设置",self.configure),("连接",self.connect_serial),("断开",self.disconnect),("Mock 演示",self.connect_mock),("重新握手",lambda:self.engine.submit("handshake"))]:
             action=self.toolbar.addAction(label);action.triggered.connect(slot)
         self.reconnect=W.QCheckBox("重连");self.reconnect.toggled.connect(lambda v:setattr(self.engine.config,"auto_reconnect",v));self.toolbar.addWidget(self.reconnect)
         self.toolbar.addSeparator()
@@ -173,20 +185,23 @@ class MainWindow(W.QMainWindow):
             plugin=VISUALIZATIONS[name]()
             widget=plugin.create_widget(self.engine.profile,self.engine.store)
             self.plugin_pages.append((spec.get("title",name),widget,plugin))
+        self.task_page=TaskPage(self.engine) if self.engine.profile.data.get("task_states") else None
         self.params=ParameterPage(self.engine)
         self.workbenches=[];bench=W.QTabWidget()
         for group,channels in self.engine.profile.data.get("workbenches",{}).items():
-            widget=W.QSplitter(QtCore.Qt.Vertical);params=ParameterPage(self.engine,group);plot=PlotPanel(self.engine.store,group,channels)
-            widget.addWidget(params);widget.addWidget(plot);bench.addTab(widget,group);self.workbenches.append((params,plot))
+            widget=W.QSplitter(QtCore.Qt.Vertical);params=ParameterPage(self.engine,group);plot=TuningPlots(self.engine,group,channels,params)
+            widget.addWidget(params);widget.addWidget(plot);widget.setSizes([420,370]);bench.addTab(widget,group);self.workbenches.append((params,plot))
         self.logs=LogPage(self.engine,self.open_replay)
+        self.experiments=ExperimentsPage(self.engine)
         self.diagnostics=W.QPlainTextEdit();self.diagnostics.setReadOnly(True);self.diagnostics.document().setMaximumBlockCount(600)
         self.settings_page=self.make_settings()
         pages=[("总览",self.overview),("实时波形",self.scope)]
         if self.orientation:pages.append(("3D 姿态",self.orientation))
+        if self.task_page:pages.append(("任务与轨迹",self.task_page))
         if self.engine.profile.data.get("supports_configuration") or self.engine.profile.data.get("parameters") or self.engine.profile.data.get("parameter_groups"):pages.append(("参数调节",self.params))
         if self.workbenches:pages.append(("调参工作台",bench))
         pages.extend((title,widget) for title,widget,plugin in self.plugin_pages)
-        pages.extend([("日志与回放",self.logs),("通信诊断",self.diagnostics),("设置",self.settings_page)])
+        pages.extend([("试验与对比",self.experiments),("日志与回放",self.logs),("通信诊断",self.diagnostics),("设置",self.settings_page)])
         for label,page in pages:
             self.nav.addItem(label)
             if page is self.overview:
@@ -236,6 +251,7 @@ class MainWindow(W.QMainWindow):
     def disconnect(self):self.engine.close()
 
     def change_profile(self,profile):
+        self.profile_generation+=1
         self.engine.close();self.engine=StationEngine(profile);self.build_pages();self.apply_theme()
 
     def load_profile(self):
@@ -248,21 +264,32 @@ class MainWindow(W.QMainWindow):
 
     def workspace(self):
         return {"schema_version":1,"kind":"workspace","profile":self.engine.profile.data,"connection":asdict(self.engine.config),
-                "plots":self.scope.save_state(),"plugins":{title:plugin.save_state() for title,widget,plugin in self.plugin_pages},"orientation":self.orientation.save_state() if self.orientation else {},
-                "favorites":sorted(self.params.favorites),"log_directory":str(self.engine.log_directory),"page":self.nav.currentRow(),
+                "plots":self.scope.save_state(),"plot_layout":self.scope.layout_state(),"plugins":{title:plugin.save_state() for title,widget,plugin in self.plugin_pages},"orientation":self.orientation.save_state() if self.orientation else {},
+                "workbenches":[{"ring":plot.ring.currentIndex(),"tab":plot.currentIndex()} for _,plot in self.workbenches],"fault_capture":self.experiments.capture.isChecked(),
+                "task_view":self.task_page.save_state() if self.task_page else {},"favorites":sorted(self.params.favorites),"log_directory":str(self.engine.log_directory),"page":self.nav.currentRow(),
                 "layout":bytes(self.saveState().toBase64()).decode(),"dark":self.dark,"auto_record":self.engine.auto_record}
 
     def restore_workspace(self,data):
         if data.get("schema_version")!=1 or data.get("kind")!="workspace":raise ValueError("VERSION_MISMATCH: workspace v1 required")
         profile=data["profile"]
         if profile.get("schema_version")!=1 or profile.get("kind")!="device_profile":raise ValueError("VERSION_MISMATCH: profile")
+        if profile.get("id")=="tc264_unicycle":
+            profile=json.loads(json.dumps(profile))
+            current=builtin_profile().data
+            for key in ("task_states","value_labels","bit_labels"):profile.setdefault(key,current[key])
+            for tag in ("task","taskevt"):profile.setdefault("channels",{}).setdefault(tag,current["channels"][tag])
         self.change_profile(DeviceProfile(profile))
         self.engine.config=ConnectionConfig(**data.get("connection",{}));self.engine.config.validate()
         self.scope.restore_state(data.get("plots",[]))
-        self.params.favorites=set(data.get("favorites",[]))
+        self.scope.restore_layout(data.get("plot_layout",{}))
+        for state,(_,plot) in zip(data.get("workbenches",[]),self.workbenches):
+            plot.ring.setCurrentIndex(state.get("ring",0));plot.setCurrentIndex(state.get("tab",0))
+        self.experiments.capture.setChecked(data.get("fault_capture",True))
+        self.engine.favorites.clear();self.engine.favorites.update(data.get("favorites",[]))
         for title,widget,plugin in self.plugin_pages:
             if title in data.get("plugins",{}):plugin.restore_state(data["plugins"][title])
         if self.orientation and data.get("orientation"):self.orientation.restore_state(data["orientation"])
+        if self.task_page:self.task_page.restore_state(data.get("task_view",{}))
         self.engine.log_directory=Path(data.get("log_directory",str(self.engine.log_directory)))
         self.logdir.setText(str(self.engine.log_directory));self.engine.auto_record=data.get("auto_record",True)
         self.nav.setCurrentRow(min(data.get("page",0),self.nav.count()-1))
@@ -281,13 +308,28 @@ class MainWindow(W.QMainWindow):
         if path:write_document(path,"workspace",self.workspace());self.workspace_path=path
 
     def open_replay(self):
-        path,_=W.QFileDialog.getOpenFileName(self,"打开会话 frames.jsonl",str(self.engine.log_directory),"JSONL (*.jsonl)")
+        path,_=W.QFileDialog.getOpenFileName(self,"打开会话或区间日志",str(self.engine.log_directory),"JSONL (*.jsonl)")
         if not path:return
-        try:
-            meta=read_document(Path(path).parent/"session.json","session")
-            if "profile" in meta:self.change_profile(DeviceProfile(meta["profile"]))
-            self.engine.open_replay(path)
-        except (ValueError,OSError,KeyError) as exc:W.QMessageBox.information(self,"回放失败",str(exc))
+        generation=self.profile_generation
+        progress=W.QProgressDialog("建立回放索引…","取消",0,100,self);progress.setMinimumDuration(0)
+        job=BackgroundJob(lambda report:ReplayDataSource(path,progress=report));self.replay_jobs.append(job)
+        progress.canceled.connect(job.cancelled.set);job.signals.progress.connect(progress.setValue)
+        def finished(source):
+            if job in self.replay_jobs:self.replay_jobs.remove(job)
+            if job.cancelled.is_set():return
+            progress.close()
+            if generation!=self.profile_generation:return
+            try:
+                if "profile" in source.metadata:self.change_profile(DeviceProfile(source.metadata["profile"]))
+                self.engine.open_replay(path,source=source)
+            except (ValueError,OSError,KeyError) as exc:W.QMessageBox.information(self,"回放失败",str(exc))
+        def failed(error):
+            if job in self.replay_jobs:self.replay_jobs.remove(job)
+            if job.cancelled.is_set():return
+            progress.close()
+            self.engine.event("REPLAY_ERROR",error)
+        job.signals.finished.connect(finished);job.signals.failed.connect(failed)
+        QtCore.QThreadPool.globalInstance().start(job)
 
     def toggle_theme(self):self.dark=not self.dark;self.apply_theme()
 
@@ -329,11 +371,12 @@ class MainWindow(W.QMainWindow):
             self.rates=(now,self.engine.rx,self.engine.tx,count)
         tracker=self.engine.store.tracker
         loss=100*tracker.lost/max(1,tracker.received+tracker.lost)
-        self.metrics.setText(f"{'● 已连接' if self.engine.connected else '○ 未连接'}  协议 {self.engine.protocol_version}  {self.rate_text}  丢帧估计 {loss:.1f}%  解析错误 {self.engine.parser.errors}  {'● REC' if self.engine.recorder else '未记录'}  {self.engine.stop_message}")
+        self.metrics.setText(f"{self.engine.link_status()}  协议 {self.engine.protocol_version}  {self.rate_text}  丢帧估计 {loss:.1f}%  解析错误 {self.engine.parser.errors}  {'● REC' if self.engine.recorder else '未记录'}  {self.engine.stop_message}")
         rtt = self.engine.requests.rtt_ms
         self.topmetrics.setToolTip(f"最近配置往返耗时 {rtt:.1f} ms" if rtt is not None else "尚无应答；绝对单向链路时延未知")
-        self.topmetrics.setText(f"协议 {self.engine.protocol_version} · {self.rate_text} · 遥测缺口 {loss:.1f}% · 解析错误 {self.engine.parser.errors} · {'REC' if self.engine.recorder else '未记录'}")
+        self.topmetrics.setText(f"{self.engine.link_status()} · 协议 {self.engine.protocol_version} · {self.rate_text} · 累计 RX {self.engine.rx} B / TX {self.engine.tx} B · 遥测缺口 {loss:.1f}% · 解析错误 {self.engine.parser.errors} · {'REC' if self.engine.recorder else '未记录'}")
         self.overview.update_data()
+        if self.task_page and self.task_page.isVisible():self.task_page.update_data()
         if self.scope.isVisible():self.scope.update_data()
         if self.orientation and self.orientation.isVisible():self.orientation.update_data()
         if self.params.isVisible():self.params.update_data()
@@ -342,12 +385,15 @@ class MainWindow(W.QMainWindow):
         for title,widget,plugin in self.plugin_pages:
             if widget.isVisible() and hasattr(widget,"update_data"):widget.update_data()
         if self.logs.isVisible():self.logs.update_data()
+        if self.experiments.isVisible():self.experiments.update_data()
         if self.diagnostics.isVisible():
             self.diagnostics.setPlainText("\n".join(self.engine.diagnostics)+"\n\n最近原始行\n"+"\n".join(self.engine.raw_lines))
 
     def persist(self):
+        if not self.persist_enabled:return
         self.settings.setValue("workspace_json",json.dumps(self.workspace(),ensure_ascii=False))
         self.settings.setValue("geometry",self.saveGeometry())
 
     def closeEvent(self,event):
+        for job in self.replay_jobs + self.experiments.jobs:job.cancelled.set()
         self.persist();self.engine.close();event.accept()

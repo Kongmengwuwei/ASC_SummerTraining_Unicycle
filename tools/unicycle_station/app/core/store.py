@@ -33,6 +33,7 @@ class DataStore:
         self.capacity = capacity
         self.lock = threading.RLock()
         self.event_hook = None
+        self.derived_cache = {}
         self.reset()
 
     def reset(self):
@@ -75,7 +76,11 @@ class DataStore:
             for name, expression in self.profile.data.get("derived_channels", {}).items():
                 try:
                     # Only derive from a frame that supplies at least one operand.
-                    operands = {n.id for n in ast.walk(ast.parse(expression, mode="eval")) if isinstance(n, ast.Name)}
+                    operands = self.derived_cache.get(expression)
+                    if operands is None:
+                        operands = {n.id for n in ast.walk(ast.parse(expression, mode="eval")) if isinstance(n, ast.Name)}
+                        if len(self.derived_cache)>=256:self.derived_cache.clear()
+                        self.derived_cache[expression] = operands
                     if operands.intersection(values):
                         values[name] = float(derive(expression, context))
                 except (KeyError, ValueError, ZeroDivisionError, SyntaxError):

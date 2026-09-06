@@ -72,6 +72,9 @@ profile = dict(schema_version=1, kind="device_profile", id="tc264_unicycle", nam
 def save(path, data):
     path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2),encoding="utf-8")
+display = json.loads((station/"app/profiles/tc264_unicycle/display.json").read_text(encoding="utf-8"))
+profile["channels"].update(display.pop("channels", {}))
+profile.update(display)
 save(station/"app/profiles/tc264_unicycle/profile.json", profile)
 generic = dict(schema_version=1, kind="device_profile", id="generic_sensor", name="通用双通道传感器", version="1.0", protocol_plugin="firewater_v1",
                connection_defaults=dict(baudrate=115200), channels={"data":[dict(name="sensor_a",label="传感器 A",unit="V"),dict(name="sensor_b",label="传感器 B",unit="V")]}, parameters={}, parameter_groups=[], dashboards=["sensor_a","sensor_b"], safety_rules={}, orientation_mapping={}, plot_presets={"传感器":["sensor_a","sensor_b"]})

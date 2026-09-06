@@ -12,7 +12,9 @@ def main():
     args=parser.parse_args()
     fmt=QtGui.QSurfaceFormat();fmt.setDepthBufferSize(24);fmt.setSamples(4);QtGui.QSurfaceFormat.setDefaultFormat(fmt)
     app=QtWidgets.QApplication(sys.argv);app.setApplicationName("Embedded Station")
-    window=MainWindow(restore=not args.fresh and not args.smoke);window.show()
+    window=MainWindow(restore=not args.fresh and not args.smoke)
+    window.persist_enabled=not args.smoke
+    window.show()
     if args.mock or args.smoke:window.connect_mock()
     if args.smoke:
         from pathlib import Path

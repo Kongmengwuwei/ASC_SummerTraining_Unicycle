@@ -41,6 +41,15 @@ class OrientationWidget(W.QWidget):
         self.smooth=W.QCheckBox("显示平滑");self.smooth.setChecked(True);bar.addWidget(self.smooth)
         self.follow=W.QCheckBox("跟随");bar.addWidget(self.follow)
         layout.addLayout(bar)
+        signs = W.QHBoxLayout()
+        signs.addWidget(W.QLabel("仅 3D 显示方向"))
+        self.axis_switches = []
+        for i, name in enumerate(("Roll 反向", "Pitch 反向", "Yaw 反向")):
+            box = W.QCheckBox(name)
+            box.setChecked(self.mapping.get("signs", [1,1,1])[i] < 0)
+            box.toggled.connect(lambda checked, axis=i: self.flip_axis(axis, checked))
+            self.axis_switches.append(box); signs.addWidget(box)
+        signs.addStretch(); layout.addLayout(signs)
         self.caption=W.QLabel("等待姿态 · 显示坐标映射尚未实车校验")
         self.caption.setWordWrap(True);self.caption.setSizePolicy(W.QSizePolicy.Ignored,W.QSizePolicy.Maximum);layout.addWidget(self.caption)
         self.view=gl.GLViewWidget();self.view.setBackgroundColor("#151a20")
@@ -60,6 +69,19 @@ class OrientationWidget(W.QWidget):
         self.note=W.QLabel("FRONT / 车头：箭头所指方向；蓝色为顶部，金色为默认 +X 端。\n世界坐标：X 红 / Y 绿 / Z 蓝；默认 Rz(Yaw)·Ry(Pitch)·Rx(Roll)。\n轴映射仅用于显示，须手动逐轴旋转车体校验。显示归零不会修改 MCU 机械零点。")
         self.note.setWordWrap(True);self.note.setSizePolicy(W.QSizePolicy.Preferred,W.QSizePolicy.Maximum);layout.addWidget(self.note)
         self.reset_view()
+
+    def sync_switches(self):
+        for i, box in enumerate(self.axis_switches):
+            with QtCore.QSignalBlocker(box):
+                box.setChecked(self.mapping.get("signs", [1,1,1])[i] < 0)
+
+    def flip_axis(self, axis, reverse):
+        signs = list(self.mapping.get("signs", [1,1,1]))
+        signs[axis] = -1 if reverse else 1
+        self.mapping["signs"] = signs
+        self.mapping["verified"] = False
+        self.zero = np.eye(3)
+        self.quat = QtGui.QQuaternion()
 
     def vertices(self):
         x,y,z=np.asarray(self.mapping.get("dimensions",[3,1.3,.65]))/2
@@ -81,7 +103,7 @@ class OrientationWidget(W.QWidget):
                 raise ValueError("需要三个姿态通道及有效 FRONT 方向")
             dims=mapping.get("dimensions",[3,1.3,.65])
             if len(dims)!=3 or any(not np.isfinite(v) or v<=0 for v in dims):raise ValueError("模型尺寸非法")
-            self.mapping=mapping;self.zero=np.eye(3)
+            self.mapping=mapping;self.zero=np.eye(3);self.sync_switches()
         except (ValueError,TypeError) as exc:W.QMessageBox.information(self,"映射无效",str(exc))
 
     def update_data(self):
@@ -114,7 +136,7 @@ class OrientationWidget(W.QWidget):
         front_r=rotation_matrix([0,0,theta],{"units":"rad"})
         self.arrow.setData(pos=arrow@front_r.T@r.T)
         self.front.setData(pos=np.array([2,0,1])@front_r.T@r.T)
-        if self.follow.isChecked() and not stale:self.view.setCameraPosition(azimuth=35+angles[2])
+        if self.follow.isChecked() and not stale:self.view.setCameraPosition(azimuth=35+np.degrees(np.arctan2(r[1,0],r[0,0])))
 
     def save_state(self):
         return {"mapping":self.mapping,"distance":self.view.opts["distance"],"elevation":self.view.opts["elevation"],"azimuth":self.view.opts["azimuth"],"smooth":self.smooth.isChecked(),"follow":self.follow.isChecked()}
@@ -122,7 +144,7 @@ class OrientationWidget(W.QWidget):
     def restore_state(self,state):
         mapping=state.get("mapping",state)
         rotation_matrix([0,0,0],mapping)
-        self.mapping=mapping
+        self.mapping=mapping;self.zero=np.eye(3);self.sync_switches()
         self.view.setCameraPosition(distance=state.get("distance",9),elevation=state.get("elevation",25),azimuth=state.get("azimuth",35))
         self.smooth.setChecked(state.get("smooth",True));self.follow.setChecked(state.get("follow",False))
 

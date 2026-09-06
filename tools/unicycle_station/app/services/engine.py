@@ -11,6 +11,8 @@ from app.recording.session import SessionRecorder, ReplayDataSource
 from app.services.requests import RequestManager
 from app.transports.serial_transport import SerialTransport
 from app.transports.mock import MockTransport
+from app.services.task_state import TaskObserver, TrajectoryEstimator
+from app.services.experiments import TrialManager, parameter_snapshot
 
 
 class SerialDataSource(SerialTransport):
@@ -26,6 +28,8 @@ class StationEngine:
     def __init__(self, profile):
         self.profile = profile
         self.store = DataStore(profile)
+        self.task_observer = TaskObserver(profile)
+        self.trajectory = TrajectoryEstimator()
         self.store.event_hook = self.event
         self.config = ConnectionConfig(**profile.connection_defaults)
         self.parser = PROTOCOLS[profile.protocol_plugin]({t: len(v) for t, v in profile.channels.items()})
@@ -40,9 +44,12 @@ class StationEngine:
         self.protocol_ready = False
         self.protocol_version = "未知"
         self.firmware = "未知"
+        self.handshake_status = "等待握手"
+        self.handshake_rx_start = 0
         self.status_time = 0
         self.status = []
         self.params = {}
+        self.favorites = set()
         self.schema_buffer = {}
         self.raw_lines = deque(maxlen=300)
         self.diagnostics = deque(maxlen=500)
@@ -63,9 +70,11 @@ class StationEngine:
         self.stopping_record = False
         self.auto_record = True
         self.log_directory = Path.home() / "Documents" / "EmbeddedStation" / "sessions"
+        self.trials = TrialManager(self)
 
     def event(self, kind, message):
         self.store.event(kind, message)
+        self.trials.trigger(kind,message)
         self.diagnostics.append(f"{time.strftime('%H:%M:%S')} {kind}: {message}")
         if self.recorder:
             self.recorder.put("event", event=kind, message=message)
@@ -78,9 +87,11 @@ class StationEngine:
         self.parser.encoding, self.parser.ending = self.config.encoding, self.config.ending
         self.parser.reset()
         self.store.reset()
+        self.task_observer.reset(); self.trajectory.reset()
         self.shutdown.clear()
         self.stop_requested.clear()
         self.stop_message = ""
+        self.last_running = False
         self.transport = MockDataSource(self.profile, faults) if mode == "mock" else SerialDataSource(self.config)
         self.thread = threading.Thread(target=self._run, name="device-io", daemon=True)
         self.safety_thread = threading.Thread(target=self._stop_loop, name='priority-stop', daemon=True)
@@ -161,17 +172,57 @@ class StationEngine:
         with self.lock:
             self.params.clear()
         self.requests.cancel("RECONNECT")
+        self.protocol_version = self.firmware = "未知"
+        self.handshake_status = "等待 MCU 握手"
+        self.handshake_rx_start = self.rx
         if self.profile.data.get('supports_configuration', False):
             self.requests.enqueue("hello", callback=self._hello)
 
+    def link_status(self):
+        if not self.connected:
+            return "未连接"
+        if not self.profile.data.get("supports_configuration", False):
+            return "串口已打开" if self.mode != "mock" else "Mock 已连接"
+        if self.protocol_ready:
+            return "MCU 已确认" if self.mode != "mock" else "Mock 已确认"
+        return "串口已打开 · " + self.handshake_status
+
     def _hello(self, ok, fields):
-        if not ok or len(fields) < 3 or fields[1] != "1":
-            self.event("VERSION_MISMATCH", "旧固件或不兼容协议：仅监看及停车，参数锁定")
+        self.protocol_ready = False
+        if not ok:
+            reason = fields[0] if fields else "UNKNOWN_ERROR"
+            if reason in ("DISCONNECTED", "RECONNECT", "STOP", "CANCELLED"):
+                self.handshake_status = "握手已取消"
+                return
+            if reason == "TIMEOUT":
+                received = self.rx - self.handshake_rx_start
+                if received == 0:
+                    self.handshake_status = "未收到任何数据"
+                    self.event("NO_RX", "握手超时，本次握手 RX 0 B；无法判断固件版本。请检查端口、车辆运行、无线配对/供电与 MCU 发送流控；参数保持锁定。")
+                else:
+                    self.handshake_status = "未收到有效握手应答"
+                    self.event("HANDSHAKE_TIMEOUT", f"已收到 {received} 字节，但没有匹配的 hello 应答；检查原始数据、波特率及 cfg 支持，参数保持锁定。")
+            elif reason == "VERSION_MISMATCH":
+                self.handshake_status = "设备报告版本不兼容"
+                self.event("VERSION_MISMATCH", "MCU 明确拒绝协议版本：" + ",".join(fields[1:]))
+            else:
+                self.handshake_status = "握手被拒绝"
+                self.event("HANDSHAKE_REJECTED", ",".join(fields))
+            return
+        if len(fields) != 4 or fields[0] != "hello" or not fields[3].isdigit():
+            self.handshake_status = "握手应答格式错误"
+            self.event("BAD_HELLO", "hello 应答格式无效；参数保持锁定")
+            return
+        if fields[1] != "1" or int(fields[3]) < 63:
+            self.handshake_status = "协议版本/命令容量不兼容"
+            self.event("VERSION_MISMATCH", f"设备协议 {fields[1]}、命令上限 {fields[3]}；本机要求 cfg v1 且至少 63 字节")
             return
         self.protocol_version, self.firmware = fields[1:3]
         self.protocol_ready = True
+        self.handshake_status = "握手成功"
+        self.event("HANDSHAKE_OK", f"协议 {self.protocol_version} / 固件 {self.firmware}")
         if self.recorder:
-            self.recorder.metadata.update(protocol=self.protocol_version, firmware=self.firmware)
+            self.recorder.update_metadata(protocol=self.protocol_version, firmware=self.firmware)
         self.requests.enqueue("status")
         self.requests.enqueue("schema", callback=self._schema_complete)
 
@@ -190,6 +241,10 @@ class StationEngine:
                     p.flash_state = "外部变更 / 未确认" if changed else old.flash_state
             self.params = dict(self.schema_buffer)
         self.schema_buffer.clear()
+        if self.recorder:
+            snapshot=parameter_snapshot(self)
+            self.recorder.update_metadata(parameter_snapshot=snapshot)
+            self.recorder.put("parameter_snapshot",parameters=snapshot,revision=self.last_revision)
         self.event("SCHEMA", f"已同步 {len(self.params)} 项参数")
 
     def submit(self, action, *args):
@@ -254,6 +309,20 @@ class StationEngine:
         next_item(0)
 
     def _action(self, action, args):
+        if action == "trial_start":
+            self.trials.start(*args);return
+        if action == "trial_stop":
+            self.trials.stop();return
+        if action == "handshake":
+            if not self.connected:
+                self.event("DISCONNECTED", "请先打开串口")
+            elif self.requests.pending or self.requests.queue:
+                self.event("BUSY", "请等待当前请求完成后重试握手")
+            elif self.protocol_ready:
+                self.event("HANDSHAKE_OK", "协议已经确认，可在参数页读取全部参数")
+            else:
+                self._handshake()
+            return
         if action == 'record_start':
             self.start_recording()
             return
@@ -296,6 +365,8 @@ class StationEngine:
             self.requests.enqueue("save", group, callback=result)
 
     def ingest(self, data, received=None):
+        if not data:
+            return  # A serial read timeout is not a received packet.
         self.rx += len(data)
         if self.recorder:
             self.recorder.raw(data)
@@ -304,7 +375,7 @@ class StationEngine:
             self.raw_lines.append(frame.raw)
             if self.recorder:
                 self.recorder.put("frame", tag=frame.tag, values=frame.values, raw=frame.raw, error=frame.error,
-                                  mcu_uptime=frame.values[0] if frame.tag in ("run", "stat") else None)
+                                  mcu_uptime=frame.values[0] if frame.tag in ("run", "stat", "task") else frame.values[1] if frame.tag=="taskevt" and not frame.error else None)
             if frame.error:
                 self.event("PARSE", frame.error)
                 continue
@@ -323,7 +394,9 @@ class StationEngine:
                 running = any(frame.values[i] for i in (1, 2, 3, 4))
                 if running != self.last_running:
                     self.event("MODE", "车辆进入运行" if running else "MCU 确认 STOP")
+                    if running and self.auto_record:self.trials.start("自动运行试验",automatic=True)
                     if not running:
+                        if self.trials.current and self.trials.current.get("automatic"):self.trials.tail_deadline=time.monotonic()+2
                         self.protected_until = time.monotonic()+2
                     self.last_running = running
                 # A periodic buffered stat alone must not confirm a newly sent stop.
@@ -337,7 +410,13 @@ class StationEngine:
                         self.event("PROTECTION", f"停车原因 {protection[0]} / 测试状态 {protection[1]}")
                     self.last_protection = protection
                 if self.recorder:
-                    self.recorder.metadata["param_revision"] = int(frame.values[11])
+                    self.recorder.update_metadata(param_revision=int(frame.values[11]))
+            if frame.tag in ("task", "taskevt") and self.profile.data.get("task_states"):
+                for kind,message in self.task_observer.accept(frame):
+                    if not self.replay:self.event(kind,message)
+            if self.profile.data.get("task_states") and frame.tag in ("task","run"):
+                latest,stamps,_=self.store.snapshot()
+                self.trajectory.accept(frame,latest,stamps)
             self.store.accept(frame)
 
     def _run(self):
@@ -349,7 +428,7 @@ class StationEngine:
                         self.connected = True
                         if self.auto_record and self.recorder is None:
                             self.start_recording()
-                        self.event("CONNECTED", self.mode)
+                        self.event("CONNECTED", f"{self.mode} {self.config.port or 'Mock'} @ {self.config.baudrate} / {self.config.bytesize}{self.config.parity}{self.config.stopbits:g}")
                         self._handshake()
                     if self.stop_requested.is_set():
                         self.requests.cancel("STOP")
@@ -373,6 +452,7 @@ class StationEngine:
                     if self.requests.pending and self.requests.pending.operation in ("set", "save") and time.monotonic()-self.status_time >= .7:
                         self.requests.cancel("STALE_STATUS")
                     self.requests.tick()
+                    self.trials.poll()
                     if self.schema_refresh_needed and self.protocol_ready and not self.requests.pending and not self.requests.queue and self.actions.empty():
                         self.schema_refresh_needed = False
                         self.schema_buffer.clear()
@@ -404,6 +484,7 @@ class StationEngine:
         self.log_directory.mkdir(parents=True, exist_ok=True)
         path = self.log_directory / (time.strftime("%Y%m%d_%H%M%S")+f"_{time.time_ns()%1000000:06d}")
         self.recorder = SessionRecorder(path, self.profile)
+        self.recorder.update_metadata(transport=self.mode, connection=asdict(self.config))
         self.stopping_record = False
         self.event("RECORD", str(path))
 
@@ -414,16 +495,19 @@ class StationEngine:
             self.stopping_record = True
             self.event("RECORD", "运行中继续记录，停车后保留至少 2 秒")
             return
+        self.trials.finish()
         recorder, self.recorder = self.recorder, None
         recorder.close()
+        self.trials.finish(flushed=True)
         self.stopping_record = False
 
-    def open_replay(self, path):
+    def open_replay(self, path, source=None):
         self.close()
-        self.replay = ReplayDataSource(path)
+        self.replay = source if source is not None else ReplayDataSource(path)
         self.replay.open()
         self.parser.reset()
         self.store.reset()
+        self.task_observer.reset(); self.trajectory.reset()
         self.status = []
         self.params.clear()
         self.store.display_time = self.store.started
@@ -446,5 +530,6 @@ class StationEngine:
             self.replay.seek(seconds)
             self.parser.reset()
             self.store.reset()
+            self.task_observer.reset(); self.trajectory.reset()
             self.store.display_time = self.store.started+self.replay.position
             self.status_time = 0

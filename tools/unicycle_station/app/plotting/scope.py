@@ -1,3 +1,4 @@
+import uuid
 import csv
 import math
 import time
@@ -6,10 +7,13 @@ import pyqtgraph as pg
 import pyqtgraph.exporters
 from PySide6 import QtCore, QtGui, QtWidgets as W
 
+from app.plotting.measurement import CursorMeasurement, points_with_gaps
+
 PALETTE = ["#56b6f7", "#e5b567", "#b294e2", "#56c5a7", "#e58caf", "#90a7bc"]
 
 
 class PlotPanel(W.QWidget):
+    cursor_moved = QtCore.Signal(float)
     def __init__(self, store, title="图表", channels=None, parent=None):
         super().__init__(parent)
         self.store = store
@@ -18,6 +22,7 @@ class PlotPanel(W.QWidget):
         self.styles = {}
         self.curves = {}
         self.events = []
+        self.event_items = {}
         self.held_at = None
         layout = W.QVBoxLayout(self)
         layout.setContentsMargins(4,4,4,4)
@@ -58,6 +63,9 @@ class PlotPanel(W.QWidget):
         self.plot.addItem(self.vline, ignoreBounds=True)
         self.plot.addItem(self.hline, ignoreBounds=True)
         self.plot.scene().sigMouseMoved.connect(self.cursor)
+        self.measurement = CursorMeasurement(self)
+        layout.addWidget(self.measurement)
+        measure=W.QPushButton("双光标");measure.setCheckable(True);measure.toggled.connect(self.measurement.toggle);bar.addWidget(measure)
         self.set_channels(self.channels)
 
     def cursor(self, point):
@@ -65,6 +73,7 @@ class PlotPanel(W.QWidget):
             mapped = self.plot.plotItem.vb.mapSceneToView(point)
             self.vline.setPos(mapped.x())
             self.hline.setPos(mapped.y())
+            self.cursor_moved.emit(mapped.x())
 
     def set_paused(self, paused):
         self.held_at = self.store.clock() if paused else None
@@ -94,8 +103,8 @@ class PlotPanel(W.QWidget):
         data = self.store.series(self.channels, seconds, end)
         for name, series in data.items():
             if series:
-                points = np.asarray(series)
-                self.curves[name].setData(points[:,0]-self.store.started, points[:,1])
+                points = points_with_gaps(series)
+                self.curves[name].setData(points[:,0]-self.store.started, points[:,1], connect="finite")
             else:
                 self.curves[name].setData([], [])
         if self.follow.isChecked():
@@ -108,16 +117,15 @@ class PlotPanel(W.QWidget):
             lines.append(f"{name}: {a[-1]:.4g}  min {a.min():.4g}  max {a.max():.4g}  mean {a.mean():.4g}  P-P {np.ptp(a):.4g}  RMS {np.sqrt(np.mean(a*a)):.4g}")
         self.stats.setText("\n".join(lines[:2]) or "等待通道数据")
         self.stats.setToolTip("\n".join(lines))
-        for item in self.events:
-            self.plot.removeItem(item)
-        self.events.clear()
+        self.measurement.refresh()
         _, _, events = self.store.snapshot()
-        for event_index,event in enumerate(events[-30:]):
-            if end-seconds <= event["time"] <= end:
-                item = pg.InfiniteLine(event["time"]-self.store.started, pen=pg.mkPen("#78694e",style=QtCore.Qt.DotLine),
-                                       label=event["kind"], labelOpts={"position":.9-(event_index%4)*.09,"color":"#ac9975"})
-                self.plot.addItem(item, ignoreBounds=True)
-                self.events.append(item)
+        event_labels={"TASK_ENTER":"道路状态","PARAMETER":"参数修改","PROTECTION":"保护","STOP_SENT":"停车","MODE":"模式","TRIAL_START":"试验开始"}
+        visible={(event["time"],event["kind"],event["message"]):event for event in events[-30:] if end-seconds<=event["time"]<=end and event["kind"] in event_labels}
+        for key in set(self.event_items)-set(visible):self.plot.removeItem(self.event_items.pop(key))
+        for index,(key,event) in enumerate(visible.items()):
+            if key in self.event_items:continue
+            item=pg.InfiniteLine(event["time"]-self.store.started,pen=pg.mkPen("#78694e",style=QtCore.Qt.DotLine),label=event_labels[event["kind"]],labelOpts={"position":.9-(index%4)*.09,"color":"#ac9975"})
+            item.setToolTip(event["message"]);self.plot.addItem(item,ignoreBounds=True);self.event_items[key]=item
 
     def range_dialog(self):
         text, ok = W.QInputDialog.getText(self, "Y 轴范围", "输入 min,max；留空自动缩放")
@@ -193,6 +201,7 @@ class ScopePage(W.QWidget):
         bar.addWidget(self.target)
         for text,slot in [("添加图表",lambda:self.add_plot()),("删除图表",self.remove_plot),("选择应用到图表",self.assign)]:
             b=W.QPushButton(text);b.clicked.connect(slot);bar.addWidget(b)
+        self.linked=W.QCheckBox("多图联动");self.linked.setChecked(True);self.linked.toggled.connect(self.link_panels);bar.addWidget(self.linked)
         self.presets=W.QComboBox()
         self.presets.addItems(list(store.profile.data.get("plot_presets",{})))
         bar.addWidget(self.presets)
@@ -218,15 +227,20 @@ class ScopePage(W.QWidget):
             return
         title=title or f"图表 {len(self.panels)+1}"
         panel=PlotPanel(self.store,title,channels)
-        dock=W.QDockWidget(title,self.host);dock.setObjectName(f"plot_{len(self.panels)}")
+        dock=W.QDockWidget(title,self.host);dock.setObjectName("plot_"+uuid.uuid4().hex)
         dock.setWidget(panel);self.host.addDockWidget(QtCore.Qt.BottomDockWidgetArea,dock)
         if self.panels:self.host.splitDockWidget(self.panels[-1][0],dock,QtCore.Qt.Vertical)
         self.panels.append((dock,panel));self.target.addItem(title)
+        panel.cursor_moved.connect(lambda x,p=panel:self.sync_cursor(p,x))
+        panel.window.currentTextChanged.connect(lambda *args,p=panel:self.sync_controls(p))
+        panel.pause.toggled.connect(lambda *args,p=panel:self.sync_controls(p))
+        panel.follow.toggled.connect(lambda *args,p=panel:self.sync_controls(p))
+        self.link_panels()
 
     def remove_plot(self):
         i=self.target.currentIndex()
         if i>=0:
-            dock,panel=self.panels.pop(i);self.host.removeDockWidget(dock);dock.deleteLater();self.target.removeItem(i)
+            dock,panel=self.panels.pop(i);self.host.removeDockWidget(dock);dock.deleteLater();self.target.removeItem(i);self.link_panels()
 
     def assign(self):
         i=self.target.currentIndex()
@@ -258,9 +272,44 @@ class ScopePage(W.QWidget):
         for dock,panel in self.panels:
             if dock.isVisible():panel.update_data()
 
-    def save_state(self):return [p.save_state() for _,p in self.panels]
+    def sync_cursor(self,source,x):
+        if self.linked.isChecked():
+            for _,panel in self.panels:
+                if panel is not source:panel.vline.setPos(x)
+
+    def sync_controls(self,source):
+        if not self.linked.isChecked():return
+        for _,panel in self.panels:
+            if panel is source:continue
+            for target,origin in ((panel.window,source.window),(panel.pause,source.pause),(panel.follow,source.follow)):
+                with QtCore.QSignalBlocker(target):
+                    if isinstance(target,W.QComboBox):target.setCurrentText(origin.currentText())
+                    else:target.setChecked(origin.isChecked())
+            panel.held_at=source.held_at
+
+    def link_panels(self,*args):
+        if not self.panels:return
+        first=self.panels[0][1]
+        for _,panel in self.panels:
+            panel.plot.setXLink(first.plot if self.linked.isChecked() and panel is not first else None)
+        self.sync_controls(first)
+
+    def layout_state(self):
+        return {"docks":bytes(self.host.saveState().toBase64()).decode(),"linked":self.linked.isChecked()}
+
+    def restore_layout(self,state):
+        self.linked.setChecked(state.get("linked",True))
+        if state.get("docks"):self.host.restoreState(QtCore.QByteArray.fromBase64(state["docks"].encode()))
+        self.link_panels()
+
+    def save_state(self):return [{**p.save_state(),"dock_name":d.objectName()} for d,p in self.panels]
 
     def restore_state(self,states):
+        linked=self.linked.isChecked()
+        with QtCore.QSignalBlocker(self.linked):self.linked.setChecked(False)
         while self.panels:self.target.setCurrentIndex(0);self.remove_plot()
         for state in states[:8]:
             self.add_plot(state.get("title","图表"),state.get("channels",[]));self.panels[-1][1].restore_state(state)
+            if state.get("dock_name"):self.panels[-1][0].setObjectName(state["dock_name"])
+        with QtCore.QSignalBlocker(self.linked):self.linked.setChecked(linked)
+        self.link_panels()

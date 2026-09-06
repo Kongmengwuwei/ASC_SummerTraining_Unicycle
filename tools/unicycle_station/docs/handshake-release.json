@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "kind": "handshake_fix_release",
+  "verified_at": "2026-09-06T20:09:30.790862",
+  "exe": "dist/handshake-fix/EmbeddedStation/EmbeddedStation.exe",
+  "sha256": "62878bc4a518917c5929d38e73b316446c501e7d9273bcdb2417d6bd3a505320",
+  "pytest_passed": 50,
+  "packaged_mock_smoke_exit": 0,
+  "packaged_page_screenshots": 8,
+  "hardware_link_verified": false,
+  "firmware_changed_for_this_fix": false
+}

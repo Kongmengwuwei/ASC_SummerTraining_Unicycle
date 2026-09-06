@@ -20,11 +20,18 @@ class SessionRecorder:
         self.error = ""
         self.origin = time.monotonic()
         self.finished = threading.Event()
+        self.metadata_lock = threading.RLock()
         self.metadata = {"profile": profile.data, "created": time.time(), "protocol": "unconfirmed",
                          "firmware": "unconfirmed", "param_revision": None}
         write_document(self.path / "session.json", "session", self.metadata)
         self.worker = threading.Thread(target=self._run, name="session-writer", daemon=True)
         self.worker.start()
+
+    def update_metadata(self, **data):
+        with self.metadata_lock:self.metadata.update(data)
+
+    def save_metadata(self):
+        with self.metadata_lock:write_document(self.path / "session.json", "session", self.metadata)
 
     def put(self, kind, **data):
         record = {"schema_version": 1, "kind": kind, "time": time.monotonic()-self.origin, "pc_time": time.time(), **data}
@@ -41,8 +48,8 @@ class SessionRecorder:
         self.worker.join(timeout=5)
         if self.worker.is_alive():
             self.error = "日志线程未在 5 秒内退出"
-        self.metadata.update(dropped=self.dropped, error=self.error)
-        write_document(self.path / "session.json", "session", self.metadata)
+        self.update_metadata(dropped=self.dropped, error=self.error)
+        self.save_metadata()
 
     def _run(self):
         try:
@@ -61,13 +68,14 @@ class SessionRecorder:
                         raw.flush()
                         structured.flush()
                         last_flush = time.monotonic()
+                        self.save_metadata()
         except Exception as exc:
             self.error = str(exc)
 
 
 class ReplayDataSource:
     """Disk backed playback; sparse seek index bounds memory even for long sessions."""
-    def __init__(self, path):
+    def __init__(self, path, progress=lambda n:None):
         self.path = Path(path)
         if self.path.is_dir():
             self.path /= "frames.jsonl"
@@ -80,6 +88,7 @@ class ReplayDataSource:
         self.statistics = {}
         self.pending_events = deque(maxlen=500)
         self.last_time = 0
+        total_size=max(1,self.path.stat().st_size);progress(0)
         with self.path.open("rb") as f:
             last_index = -1
             while True:
@@ -93,6 +102,7 @@ class ReplayDataSource:
                 except (ValueError, KeyError):
                     continue  # A crash can leave an incomplete final line.
                 self.count += 1
+                if self.count%1000==0:progress(min(99,int(f.tell()*100/total_size)))
                 if item["kind"] == "frame" and not item.get("error"):
                     for i, value in enumerate(item.get("values", [])[:128]):
                         if type(value) not in (float, int) or not math.isfinite(value):
@@ -112,6 +122,7 @@ class ReplayDataSource:
                     last_index = at
                 if item["kind"] == "event" and len(self.events) < 10000:
                     self.events.append((at, item.get("message", "event")))
+        progress(100)
         self.speed = 1
         self.paused = True
         self.position = 0

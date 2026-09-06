@@ -40,7 +40,7 @@
 	<filteredResources>
 		<filter>
 			<id>1788624000000</id><name></name><type>30</type>
-			<matcher><id>org.eclipse.core.resources.regexFilterMatcher</id><arguments>tools</arguments></matcher>
+			<matcher><id>org.eclipse.core.resources.regexFilterMatcher</id><arguments>tools|\.ads|\.metadata</arguments></matcher>
 		</filter>
 	</filteredResources>
 </projectDescription>

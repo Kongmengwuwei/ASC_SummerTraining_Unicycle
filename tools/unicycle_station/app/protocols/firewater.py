@@ -69,6 +69,8 @@ class FireWaterParser:
                     if float(fields[4]) > float(fields[5]) or float(fields[7]) <= 0:
                         raise ValueError("BAD_SCHEMA_RANGE")
                 return Frame(tag, fields, raw, stamp)
+            if tag in ("task", "taskevt") and len(fields) != (13 if tag == "task" else 7):
+                raise ValueError("FIELD_COUNT")
             if tag in self.counts and len(fields) != self.counts[tag]:
                 raise ValueError("FIELD_COUNT")
             if len(fields) > 128:
@@ -79,6 +81,11 @@ class FireWaterParser:
                     raise ValueError("BAD_UPTIME")
                 if not 0 <= values[24] <= 65535 or values[24] != int(values[24]):
                     raise ValueError("BAD_FLAGS")
+            if tag in ("task", "taskevt"):
+                integers = [v for i,v in enumerate(values) if tag == "taskevt" or i not in (7,10,11)]
+                if any(v < 0 or v > 0xffffffff or v != int(v) for v in integers):raise ValueError("BAD_TASK")
+                if tag == "task" and (values[1]>12 or values[2]>5 or values[5]>1 or not 0<=values[7]<=1):raise ValueError("BAD_TASK")
+                if tag == "taskevt" and (values[2]>12 or values[3]>12 or values[6]>1):raise ValueError("BAD_TASK_EVENT")
             if tag == "stat" and any(x < 0 or x > 0xffffffff or x != int(x) for x in values):
                 raise ValueError("BAD_STATUS")
             return Frame(tag, values, raw, stamp)

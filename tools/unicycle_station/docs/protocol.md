@@ -10,7 +10,7 @@
 
 | 请求 | 成功应答 |
 |---|---|
-| `cfg:hello,1` | `rsp:1,ok,hello,1,tc264-cfg1,63` |
+| `cfg:hello,1` | `rsp:1,ok,hello,1,tc264-cfg1-task1,63` |
 | `cfg:status,2` | `stat:…`，然后 `rsp:2,ok,status` |
 | `cfg:schema,3` | 多条 `par:3,…`，最后 `rsp:3,ok,schema,72`（数量以当前表为准） |
 | `cfg:get,4,r_rate_kp` | `rsp:4,ok,get,r_rate_kp,实际值` |
@@ -69,3 +69,19 @@ Flash 保存先排队，待下行已消费完且静默 100 ms 后执行；要求
 上行帧装不下则整帧丢弃，并累计 tx_drop。遥测为应答预留 384 字节；Schema 每次前台最多发一个参数，间隔至少 30 ms。hello 后提供额外 10 Hz 姿态（当原 att 模式未启用），便于 Run 时看到 Pitch/Yaw。
 
 115200 的理论有效载荷约 11520 B/s。25 通道文本帧长度随数值变化，不能保证任何数值下持续 50 Hz 加完整配置流都无丢帧；PC 将遥测缺口与控制停顿区分。准确单向链路时延无法由未同步 PC/MCU 时钟直接求得，界面提供接收年龄、遥测间隔和应答耗时，不冒充绝对链路时延。
+
+
+## task1 诊断扩展（cfg v1 保持兼容）
+
+新 hello 固件标识为 `tc264-cfg1-task1`，不增加下行命令。完成 hello 后，独立于普通 VOFA 模式输出：
+
+```text
+task:uptime_ms,state,element,phase,track_mode,run_active,vision_age_ms,quality,transition_seq,event_drop,yaw_deg,speed_mps,vision_frame_seq
+taskevt:sequence,uptime_ms,previous_state,current_state,element,phase,run_active
+```
+
+`task` 固定 13 项、5 Hz；`taskevt` 固定 7 项，单调 uint32 序号，只在道路、环岛阶段或 Run 标志改变时生成，最多 50 条/秒出队。时间和事件计数可按 uint32 回绕。初始状态 previous=0 表示首次观测；相同道路状态的事件表示阶段或 Run 改变。字段定义和诊断阈值见 [调试增强说明](debug-workflow.md)。
+
+实现位于 `code/vofa_task.inc`，由 vofa.c 包含，无需新增 ADS 翻译单元。CPU0 的 vofa_snapshot 在现有 1 ms ISR 内执行固定次数诊断比较和定长快照/队列写入，无字符串格式化和动态分配。CPU0 前台 vofa_poll 取快照并格式化，状态帧为配置应答预留发送空间。16 项 SPSC 事件环使用发布/获取内存屏障；队列满增加丢弃计数并保留原有事件顺序。约 5 Hz 的同步速度/航向供上位机估算，不参与控制。
+
+普通 att/run/stat 字段与 cfg 写入/停车权限保持原约定。旧 cfg v1 固件没有 task 帧时，上位机仍开放正常的兼容功能，任务页面提示等待数据。

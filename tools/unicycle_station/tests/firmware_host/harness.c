@@ -8,6 +8,11 @@ start_state_t start_flag;
 attitude_t att;
 uint8 g_imu_ok=1, g_cam_ok=1;
 volatile uint32 g_control_uptime_ms;
+uint8 g_track_valid=1,g_vision_active_elem,g_vision_island_state,g_vision_track_mode;
+volatile uint16 g_vision_age_ms;
+volatile uint32 g_vision_frame_seq=1;
+float g_vision_curvature,g_vision_quality=1;
+float Y_Motor_GetSpeedMps(void) { return 0.0f; }
 static uint8 mock_test, mock_jog, mock_run, mock_remote;
 static int save_count, stop_count;
 static int wheel_speed;
@@ -79,5 +84,21 @@ int main(void) {
     feed("cfg:schema,15\n");for(unsigned i=0;i<5;i++){g_control_uptime_ms+=31;cfg_poll();}assert(strstr(drain(),"rsp:15,ok,schema,4"));
     g_control_uptime_ms+=600;cfg_poll();drain();
     feed("cfg:save,16,all\n");s_rx_idle_ms=101;cfg_poll();assert(save_count==1);assert(strstr(drain(),"save,all,VERIFIED"));
+    /* Diagnostic state capture continues with ordinary VOFA output disabled. */
+    task_reset();s_station_att=1;g_vofa_mode=VOFA_OFF;
+    g_control_uptime_ms=1000;g_vision_active_elem=ELEM_NONE;g_vision_age_ms=0;
+    g_vision_curvature=0;vofa_snapshot();assert(s_task.state==1 && s_task_head==1);
+    g_vision_curvature=.04f;g_control_uptime_ms=1010;task_capture();assert(s_task.state==1);
+    g_control_uptime_ms=1160;task_capture();assert(s_task.state==2);
+    g_vision_curvature=.025f;g_control_uptime_ms=1200;task_capture();assert(s_task.state==2);
+    g_vision_active_elem=ELEM_CROSS;g_control_uptime_ms=1201;task_capture();assert(s_task.state==4);
+    task_poll();assert(strstr(drain(),"taskevt:1,1000,0,1,"));
+    g_vision_active_elem=ELEM_RING_LEFT;g_vision_island_state=1;g_control_uptime_ms=1400;task_capture();
+    g_vision_island_state=2;g_control_uptime_ms++;task_capture();assert(s_task.phase==2);
+    g_vision_age_ms=VISION_LINK_TIMEOUT_MS+1;g_control_uptime_ms++;task_capture();assert(s_task.state==10);
+    for(unsigned i=0;i<40;i++){g_vision_age_ms=(i&1)?0:VISION_LINK_TIMEOUT_MS+1;g_control_uptime_ms++;task_capture();}
+    assert(s_task_dropped>0 && s_task_head-s_task_tail==TASK_EVENT_CAPACITY);
+    g_control_uptime_ms+=200;task_poll();assert(strstr(drain(),"task:"));
+    assert(save_count==1 && stop_count==2);
     printf("MCU host contract checks passed (not an ADS/TASKING build)\n");return 0;
 }

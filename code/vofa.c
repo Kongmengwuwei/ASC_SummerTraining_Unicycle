@@ -455,7 +455,7 @@ static vofa_cmd_result_t cfg_execute(char *line)
     if (strcmp(fields[0], "hello") == 0 && count == 2u)
     {
         s_station_att = 1;
-        (void)cfg_reply(seq, "ok", "hello,1,tc264-cfg1,63");
+        (void)cfg_reply(seq, "ok", "hello,1,tc264-cfg1-task1,63");
     }
     else if (strcmp(fields[0], "status") == 0 && count == 2u)
     {
@@ -514,6 +514,8 @@ static vofa_cmd_result_t cfg_execute(char *line)
     else (void)cfg_reply(seq, "err", "UNKNOWN_COMMAND,Unsupported operation or arity");
     return VOFA_CMD_APPLIED;
 }
+
+#include "vofa_task.inc"
 
 static void cfg_poll(void)
 {
@@ -645,6 +647,7 @@ void vofa_snapshot(void)
 {
     vofa_mode_t mode = g_vofa_mode;
 
+    task_capture();
     if (mode == VOFA_OFF) return;
 
     s_seq++;                                    // 奇数表示正在写入
@@ -679,6 +682,7 @@ void vofa_poll(void)
     int    len;
 
     cfg_poll();
+    task_poll();
     if (mode == VOFA_OFF) { last_seq = s_seq; last_mode = mode; return; }
     if (mode != last_mode)
     {
@@ -761,6 +765,7 @@ void vofa_init(void)
     s_schema_seq = s_schema_index = s_save_seq = 0;
     s_schema_next_ms = s_stop_since = s_cfg_last_status = 0;
     s_stop_seen = s_station_att = 0;
+    task_reset();
     (void)wireless_uart_init();
 
     s_tx_head = 0; s_tx_tail = 0;

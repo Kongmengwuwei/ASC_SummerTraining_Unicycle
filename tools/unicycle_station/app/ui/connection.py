@@ -10,6 +10,7 @@ class ConnectionDialog(W.QDialog):
         self.setWindowTitle("串口连接配置");self.resize(650,650)
         outer=W.QVBoxLayout(self);form=W.QFormLayout();outer.addLayout(form)
         self.fields={}
+        self.original=config
         self.port=W.QComboBox();self.port.setEditable(True)
         self.port.addItem(config.port);self.fields["port"]=self.port
         row=W.QHBoxLayout();row.addWidget(self.port)
@@ -32,10 +33,13 @@ class ConnectionDialog(W.QDialog):
         self.refresh()
 
     def refresh(self):
-        current=self.port.currentText();self.port.clear();lines=[]
+        current=self.port.currentText().split(" · ",1)[0];self.port.clear();lines=[]
         for p in SerialTransport.available_devices():
-            self.port.addItem(p["port"]);lines.append(f"{p['port']} · {p['description']} · VID {p['vid']} PID {p['pid']} · SN {p['serial_number']}")
-        self.port.setCurrentText(current);self.info.setText("\n".join(lines) or "未发现串口，可手动输入 COM 端口")
+            self.port.addItem(f"{p['port']} · {p['description']}",p["port"]);lines.append(f"{p['port']} · {p['description']} · VID {p['vid']} PID {p['pid']} · SN {p['serial_number']}")
+        index=self.port.findData(current)
+        if index>=0:self.port.setCurrentIndex(index)
+        else:self.port.setCurrentText(current)
+        self.info.setText("\n".join(lines) or "未发现串口，可手动输入 COM 端口")
 
     def config(self):
         values={}
@@ -43,6 +47,10 @@ class ConnectionDialog(W.QDialog):
             values[name]=field.isChecked() if isinstance(field,W.QCheckBox) else field.value() if isinstance(field,W.QDoubleSpinBox) else field.currentText()
         values["baudrate"]=int(values["baudrate"]);values["bytesize"]=int(values["bytesize"]);values["stopbits"]=float(values["stopbits"])
         values["ending"]=values["ending"].replace(r"\r","\r").replace(r"\n","\n").replace(r"\t","\t")
+        values["port"]=values["port"].split(" · ",1)[0].strip()
+        for device in SerialTransport.available_devices():
+            if device["port"]==values["port"]:
+                values.update(device_vid=device.get("vid"),device_pid=device.get("pid"),device_serial=device.get("serial_number") or "",device_location=device.get("location") or "")
         config=ConnectionConfig(**values);config.validate();return config
 
     def validate_accept(self):

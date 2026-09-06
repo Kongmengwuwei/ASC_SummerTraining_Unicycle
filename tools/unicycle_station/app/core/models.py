@@ -27,6 +27,10 @@ def write_document(path: str | Path, kind: str, data: dict) -> None:
 @dataclass
 class ConnectionConfig:
     port: str = ""
+    device_vid: int | None = None
+    device_pid: int | None = None
+    device_serial: str = ""
+    device_location: str = ""
     baudrate: int = 115200
     bytesize: int = 8
     parity: str = "N"

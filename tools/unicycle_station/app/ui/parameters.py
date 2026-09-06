@@ -8,7 +8,8 @@ class ParameterPage(W.QWidget):
         super().__init__()
         self.engine=engine
         self.fixed_group=group
-        self.favorites=set()
+        self.name_prefix=""
+        self.favorites=engine.favorites
         self.signature=None
         self.editors={}
         self.rows={}
@@ -63,6 +64,7 @@ class ParameterPage(W.QWidget):
         selected=self.selected_name()
         for name,p in self.engine.params.copy().items():
             if only_selected and name!=selected:continue
+            if not only_selected and self.name_prefix and not name.startswith(self.name_prefix):continue
             if not only_selected and self.group.currentText() not in ("全部",p.group):continue
             if p.pending is not None and p.pending!=p.value:result.append((name,p.pending))
         return result
@@ -92,12 +94,12 @@ class ParameterPage(W.QWidget):
 
     def revert_pending(self):
         for p in self.engine.params.values():p.pending=None
-        self.signature=None
+        self.table.setFocus()
 
     def rollback(self):
         name=self.selected_name()
         if name and self.engine.params[name].previous is not None:
-            self.engine.params[name].pending=self.engine.params[name].previous;self.signature=None
+            self.engine.params[name].pending=self.engine.params[name].previous;self.table.setFocus()
 
     def nudge(self,amount,percent):
         name=self.selected_name()
@@ -105,9 +107,9 @@ class ParameterPage(W.QWidget):
         p=self.engine.params[name]
         if p.type=="string":return
         value=p.value if p.pending is None else p.pending
-        delta=abs(value)*amount if percent else p.step*amount
+        delta=max(abs(value)*abs(amount),p.step)*(1 if amount>=0 else -1) if percent else p.step*amount
         if p.type in ("int","bool","enum"):delta=round(delta)
-        try:p.pending=p.coerce(value+delta);self.signature=None
+        try:p.pending=p.coerce(value+delta);self.table.setFocus()
         except ValueError as exc:self.status.setText(str(exc))
 
     def import_preset(self):
@@ -135,8 +137,9 @@ class ParameterPage(W.QWidget):
 
     def update_data(self):
         params=self.engine.params.copy()
-        signature=tuple((n,p.type,p.value,p.previous) for n,p in params.items())
+        signature=tuple((n,p.type,p.min,p.max,p.step,tuple(p.enum_options.items())) for n,p in params.items())
         if signature!=self.signature:
+            selected=self.selected_name(); scroll=self.table.verticalScrollBar().value()
             self.signature=signature;self.table.setRowCount(0);self.editors.clear();self.rows.clear()
             for row,(name,p) in enumerate(sorted(params.items(),key=lambda x:(x[1].group,x[1].sort_order,x[0]))):
                 self.table.insertRow(row);self.rows[name]=row
@@ -164,15 +167,27 @@ class ParameterPage(W.QWidget):
                     editor.valueChanged.connect(lambda v,n=name:self.pending_changed(n,v))
                 self.table.setCellWidget(row,3,editor);self.editors[name]=editor
                 self.table.setRowHeight(row,48)
+            if selected in self.rows:self.table.selectRow(self.rows[selected])
+            self.table.verticalScrollBar().setValue(scroll)
         values={n:p.value for n,p in params.items()}
         for name,row in self.rows.items():
             p=params[name]
             allowed,why=self.engine.permission(p,self.advanced.isChecked())
-            self.editors[name].setEnabled(allowed)
+            editor=self.editors[name]
+            editor.setEnabled(allowed)
+            desired=p.value if p.pending is None else p.pending
+            if not editor.hasFocus() and not editor.isAncestorOf(W.QApplication.focusWidget()):
+                with QtCore.QSignalBlocker(editor):
+                    if isinstance(editor,W.QComboBox):editor.setCurrentIndex(max(0,editor.findData(str(desired))))
+                    elif isinstance(editor,W.QLineEdit):
+                        if editor.text()!=str(desired):editor.setText(str(desired))
+                    elif editor.value()!=desired:editor.setValue(desired)
+            star=self.table.cellWidget(row,0)
+            with QtCore.QSignalBlocker(star):star.setChecked(name in self.favorites)
             self.table.item(row,2).setText(str(p.value))
             self.table.item(row,6).setText(("RAM 已改 / " if p.ram_dirty else "RAM 同步 / ")+p.flash_state)
             self.table.item(row,7).setText(("危险 · " if p.dangerous else "")+why)
-            hidden=(self.group.currentText() not in ("全部",p.group) or self.search.text().lower() not in (name+p.label).lower()
+            hidden=((self.name_prefix and not name.startswith(self.name_prefix)) or self.group.currentText() not in ("全部",p.group) or self.search.text().lower() not in (name+p.label).lower()
                     or (self.modified.isChecked() and p.pending in (None,p.value) and not p.ram_dirty)
                     or (self.starred.isChecked() and name not in self.favorites) or not p.condition(p.visible_if,values))
             self.table.setRowHidden(row,hidden)
