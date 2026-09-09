@@ -12,6 +12,8 @@ VISUALIZATIONS.setdefault("orientation", OrientationPlugin)
 from app.ui.parameters import ParameterPage
 from app.ui.workbench import TuningPlots
 from app.ui.interactions import UiInteractions
+from app.ui.navigation import Navigation
+from app.ui.remote_page import RemotePage
 from app.ui.overview import Overview
 from app.ui.edit_history import change
 from app.ui.connection import ConnectionDialog
@@ -84,7 +86,7 @@ class MainWindow(W.QMainWindow):
     def __init__(self,profile=None,restore=True):
         super().__init__()
         self.settings=QtCore.QSettings("EmbeddedStation","Station")
-        self.workspace_path=None;self.dark=True;self.persist_enabled=True
+        self.workspace_path=None;self.dark=True;self.persist_enabled=True;self.animations=True
         self.setWindowTitle("Embedded Station · 嵌入式设备调试平台");self.resize(1520,940)
         self.history=QtGui.QUndoStack(self);self.history.setUndoLimit(100)
         self.engine=StationEngine(profile or builtin_profile());self.engine.ui_history=self.history
@@ -119,7 +121,12 @@ class MainWindow(W.QMainWindow):
         self.stop.clicked.connect(lambda:self.engine.emergency_stop());self.toolbar.insertWidget(self.toolbar.actions()[0],self.stop)
         self.stop.setToolTip("优先发送 stop；Space 快捷键。等待 MCU 状态确认停止。")
         action=QtGui.QAction(self);action.setShortcut(QtGui.QKeySequence("Space"));action.triggered.connect(lambda:self.engine.emergency_stop());self.addAction(action)
-        self.zoom_label=W.QLabel("100%");self.statusBar().addPermanentWidget(self.zoom_label)
+        self.zoom_label=W.QToolButton();self.zoom_label.setText("100% ▾")
+        zoom_menu=W.QMenu(self.zoom_label)
+        for percentage in (70,80,90,100,110,125,140,160):
+            zoom_menu.addAction(f"{percentage}%" + (" · 默认" if percentage==100 else "")).triggered.connect(lambda checked=False,p=percentage:self.interactions.set_zoom(p/100))
+        self.zoom_label.setMenu(zoom_menu);self.zoom_label.setPopupMode(W.QToolButton.InstantPopup)
+        self.statusBar().addPermanentWidget(self.zoom_label)
         self.metrics=W.QLabel();self.metrics.setSizePolicy(W.QSizePolicy.Ignored,W.QSizePolicy.Maximum);self.statusBar().addPermanentWidget(self.metrics,1)
         self.addToolBarBreak()
         self.metricsbar=self.addToolBar("测量状态");self.metricsbar.setObjectName("metrics");self.metricsbar.setMovable(False)
@@ -133,16 +140,18 @@ class MainWindow(W.QMainWindow):
         undo=self.history.createUndoAction(self,"撤销");undo.setShortcut(QtGui.QKeySequence.Undo);edit.addAction(undo)
         redo=self.history.createRedoAction(self,"重做");redo.setShortcuts([QtGui.QKeySequence("Ctrl+Shift+Z"),QtGui.QKeySequence("Ctrl+Y")]);edit.addAction(redo)
         self.view_menu=self.menuBar().addMenu("视图")
-        for label,delta in (("放大界面",.1),("缩小界面",-.1),("恢复 100% · Ctrl+0",0)):
+        for label,delta in (("放大界面",.05),("缩小界面",-.05),("恢复 100% · Ctrl+0",0)):
             self.view_menu.addAction(label).triggered.connect(lambda checked=False,d=delta:self.interactions.set_zoom(self.interactions.factor+d if d else 1))
         self.view_menu.addAction("深色 / 浅色").triggered.connect(self.toggle_theme)
+        self.motion_action=self.view_menu.addAction("界面动效");self.motion_action.setCheckable(True);self.motion_action.setChecked(True)
+        self.motion_action.toggled.connect(self.set_motion)
         self.menuBar().addMenu("帮助").addAction("使用说明").triggered.connect(lambda:W.QMessageBox.information(self,"首次联调","先运行 Mock；实车固定于台架，先读取状态与参数，再验证停车。\n上位机没有远程发车、Balance、Test 或 Jog 启动入口。\n详见项目 tools/unicycle_station/README.md。"))
 
     def build_pages(self):
         if hasattr(self,"navdock"):
             self.removeDockWidget(self.navdock);self.navdock.deleteLater()
         self.stack=W.QStackedWidget();self.setCentralWidget(self.stack)
-        self.nav=W.QListWidget();self.nav.setSpacing(4);self.nav.setMinimumWidth(135)
+        self.nav=Navigation();self.nav.setObjectName("navigationList");self.nav.setSpacing(3);self.nav.setMinimumWidth(145);self.nav.motion_enabled=self.animations
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.navdock=W.QDockWidget("工作页面",self);self.navdock.setObjectName("navigation");self.navdock.setWidget(self.nav)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea,self.navdock)
@@ -169,6 +178,7 @@ class MainWindow(W.QMainWindow):
         self.experiments=ExperimentsPage(self.engine)
         self.diagnostics=W.QPlainTextEdit();self.diagnostics.setReadOnly(True);self.diagnostics.document().setMaximumBlockCount(600)
         self.settings_page=self.make_settings()
+        self.remote_page=RemotePage(self.engine) if self.engine.profile.data.get("id")=="tc264_unicycle" else None
         pages=[("总览",self.overview),("实时波形",self.scope)]
         if self.orientation:pages.append(("3D 姿态",self.orientation))
         if self.task_page:pages.append(("任务与轨迹",self.task_page))
@@ -176,6 +186,7 @@ class MainWindow(W.QMainWindow):
         if self.workbenches:pages.append(("调参工作台",bench))
         pages.extend((title,widget) for title,widget,plugin in self.plugin_pages)
         pages.extend([("试验与对比",self.experiments),("日志与回放",self.logs),("通信诊断",self.diagnostics),("设置",self.settings_page)])
+        if self.remote_page:pages.append(("遥控驾驶",self.remote_page))
         for label,page in pages:
             self.nav.addItem(label)
             scroll=W.QScrollArea();scroll.setWidgetResizable(True);scroll.setFrameShape(W.QFrame.NoFrame)
@@ -239,7 +250,7 @@ class MainWindow(W.QMainWindow):
     def workspace(self):
         return {"schema_version":1,"kind":"workspace","profile":self.engine.profile.data,"connection":asdict(self.engine.config),
                 "plots":self.scope.save_state(),"plot_layout":self.scope.layout_state(),"plugins":{title:plugin.save_state() for title,widget,plugin in self.plugin_pages},"orientation":self.orientation.save_state() if self.orientation else {},
-                "ui_scale":self.interactions.factor,"parameter_layout":self.params.ui.save(),"parameter_view":self.params.save_view(),"overview_order":self.overview.order,"overview_items":self.overview.order,
+                "ui_scale":self.interactions.factor,"animations":self.animations,"parameter_layout":self.params.ui.save(),"parameter_view":self.params.save_view(),"overview_order":self.overview.order,"overview_items":self.overview.order,
                 "workbenches":[{"ring":plot.ring.currentIndex(),"tab":plot.currentIndex(),"parameter_view":params.save_view()} for params,plot in self.workbenches],"fault_capture":self.experiments.capture.isChecked(),
                 "task_view":self.task_page.save_state() if self.task_page else {},"favorites":sorted(self.params.favorites),"log_directory":str(self.engine.log_directory),"page":self.nav.currentRow(),
                 "layout":bytes(self.saveState().toBase64()).decode(),"dark":self.dark,"auto_record":self.engine.auto_record}
@@ -272,6 +283,7 @@ class MainWindow(W.QMainWindow):
         self.logdir.setText(str(self.engine.log_directory));self.engine.auto_record=data.get("auto_record",True)
         self.nav.setCurrentRow(min(data.get("page",0),self.nav.count()-1))
         if data.get("layout"):self.restoreState(QtCore.QByteArray.fromBase64(data["layout"].encode()))
+        self.set_motion(data.get("animations",True));self.motion_action.setChecked(self.animations)
         self.dark=data.get("dark",True);self.apply_theme()
         self.interactions.set_zoom(data.get("ui_scale",1))
         self.history.clear()
@@ -311,21 +323,44 @@ class MainWindow(W.QMainWindow):
         job.signals.finished.connect(finished);job.signals.failed.connect(failed)
         QtCore.QThreadPool.globalInstance().start(job)
 
+    def set_motion(self,enabled):
+        self.animations=bool(enabled)
+        if hasattr(self,"nav"):
+            self.nav.motion_enabled=self.animations
+            if not self.animations:self.nav.snap()
+
     def toggle_theme(self):self.dark=not self.dark;self.apply_theme()
 
     def apply_theme(self):
-        bg,fg,panel,border=("#10151b","#d7e0ea","#1b232d","#303d4b") if self.dark else ("#edf1f5","#202b38","#ffffff","#c7d1dc")
+        bg,fg,panel,border=("#101720","#dce5ef","#18232f","#2b3b4b") if self.dark else ("#f3f6fa","#223345","#ffffff","#d6e0ea")
         self.setStyleSheet(f"""
             QWidget {{ background:{bg}; color:{fg}; font-family:'Microsoft YaHei UI'; font-size:12px; }}
             QToolBar {{ padding:6px; spacing:8px; border-bottom:1px solid {border}; }}
             QPushButton, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox {{ background:{panel}; border:1px solid {border}; border-radius:5px; padding:6px; }}
-            QPushButton:hover {{ border-color:#5489b5; }}
+            QPushButton:hover, QToolButton:hover {{ border-color:#65b7e8; background:{'#233649' if self.dark else '#e7f1fa'}; }}
+            QPushButton:pressed {{ background:{'#31536f' if self.dark else '#cbe2f4'}; }}
+            QPushButton:focus, QLineEdit:focus, QComboBox:focus {{ border-color:#65b7e8; }}
+            QToolButton {{ padding:6px; border:1px solid transparent; border-radius:5px; }}
+            QLabel#pageTitle {{ font-size:24px; font-weight:600; padding:6px 0; }}
+            QLabel#muted {{ color:{'#99adbf' if self.dark else '#536b80'}; }}
+            QLabel#remoteStatus {{ background:{panel}; padding:14px; border:1px solid {border}; border-radius:8px; }}
+            QLabel#remoteTarget {{ font-size:22px; font-weight:600; padding:16px; }}
+            QPushButton#remoteEnable:checked {{ background:#236792; border-color:#65b7e8; color:white; }}
+            QCheckBox::indicator {{ width:15px; height:15px; border:1px solid {border}; border-radius:3px; background:{panel}; }}
+            QCheckBox::indicator:checked {{ background:#3489bd; border:3px solid #9ccbea; }}
+            QPushButton#driveButton {{ font-size:17px; border-radius:12px; }}
+            QScrollBar:vertical {{ background:transparent; width:10px; margin:0; }}
+            QScrollBar::handle:vertical {{ background:{'#42596c' if self.dark else '#b4c6d6'}; min-height:24px; border-radius:5px; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background:transparent; }}
             QPushButton:disabled {{ color:#647180; }}
             QPushButton#emergency {{ background:#b93f46; color:white; font-size:15px; font-weight:bold; border:none; padding:8px; }}
             QFrame#card {{ background:{panel}; border:1px solid {border}; border-radius:8px; }}
             QFrame#card QLabel {{ background:transparent; border:none; }}
-            QListWidget::item {{ padding:12px 8px; }}
-            QListWidget::item:selected {{ background:#244663; color:#dcecff; border-radius:5px; }}
+            QListWidget::item {{ padding:10px 12px; }}
+            QListWidget#navigationList {{ border:0; background:transparent; }}
+            QListWidget::item:hover {{ background:{panel}; border-radius:7px; }}
+            QListWidget::item:selected {{ background:{"#234561" if self.dark else "#d9eafb"}; color:{"#e3f3ff" if self.dark else "#174d78"}; border-radius:7px; }}
             QHeaderView::section {{ background:{panel}; padding:8px; border:0; }}
             QTableWidget {{ gridline-color:{border}; }}
             QDockWidget::title {{ background:{panel}; padding:7px; }}
@@ -351,11 +386,11 @@ class MainWindow(W.QMainWindow):
             self.rates=(now,self.engine.rx,self.engine.tx,count)
         tracker=self.engine.store.tracker
         loss=100*tracker.lost/max(1,tracker.received+tracker.lost)
-        self.metrics.setText(f"{self.engine.link_status()}  协议 {self.engine.protocol_version}  {self.rate_text}  丢帧估计 {loss:.1f}%  解析错误 {self.engine.parser.errors}  {'● REC' if self.engine.recorder else '未记录'}  {self.engine.stop_message}")
+        self.metrics.setText(self.engine.stop_message or "Ctrl+滚轮 缩放 · Ctrl+0 复原 · Space 立即停车")
         rtt = self.engine.requests.rtt_ms
         self.topmetrics.setToolTip(f"最近配置往返耗时 {rtt:.1f} ms" if rtt is not None else "尚无应答；绝对单向链路时延未知")
         self.topmetrics.setText(f"{self.engine.link_status()} · 协议 {self.engine.protocol_version} · {self.rate_text} · 累计 RX {self.engine.rx} B / TX {self.engine.tx} B · 遥测缺口 {loss:.1f}% · 解析错误 {self.engine.parser.errors} · {'REC' if self.engine.recorder else '未记录'}")
-        self.overview.update_data()
+        if self.overview.isVisible():self.overview.update_data()
         if self.task_page and self.task_page.isVisible():self.task_page.update_data()
         if self.scope.isVisible():self.scope.update_data()
         if self.orientation and self.orientation.isVisible():self.orientation.update_data()

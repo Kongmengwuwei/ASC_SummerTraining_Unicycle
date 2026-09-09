@@ -41,6 +41,7 @@ void control_stop(void) {start_flag=START_STOP;mock_test=mock_jog=mock_run=mock_
 run_stop_t control_run_stop_reason(void) {return RUN_STOP_NONE;}
 control_test_status_t control_test_last_status(void) {return CTRL_TEST_STATUS_OK;}
 uint8 control_ipm_pending(void) {return 0;}
+void control_remote_status(float *steer,float *speed,uint16 *age,uint8 *seen) {*steer=10;*speed=.15f;*age=25;*seen=1;}
 uint8 control_remote_command(float a,float b) {(void)a;(void)b;return mock_remote;}
 void control_run_diag_snapshot(volatile control_run_diag_t *out) {(void)out;}
 imu_calib_state_t imu_calib_state(void) {return IMU_CALIB_OK;}
@@ -64,6 +65,9 @@ static void feed(const char *text) {
 int main(void) {
     vofa_init();start_flag=START_STOP;
     feed("cfg:hello,1\r\n");assert(strstr(drain(),"rsp:1,ok,hello,1,"));
+    feed("cfg:remote,21\n");assert(strstr(drain(),"rsp:21,ok,remote,1,0,10,0.15,25,1"));
+    mock_remote=1;feed("cfg:remote,22\n");assert(strstr(drain(),"remote,1,1,"));mock_remote=0;
+    feed("cfg:remote,23,start\n");assert(strstr(drain(),"err,"));assert(!mock_remote);
     feed("cfg:set,2,r_rate_kp,9999\r\n");assert(g_param.r_rate_kp==2000);assert(strstr(drain(),"2000,CLAMPED"));
     feed("cfg:set,3,r_rate_kp,nan\n");assert(g_param.r_rate_kp==2000);assert(strstr(drain(),"INVALID_VALUE"));
     feed("cfg:set,4,cam_exposure,4.5\n");assert(strstr(drain(),"INVALID_VALUE"));

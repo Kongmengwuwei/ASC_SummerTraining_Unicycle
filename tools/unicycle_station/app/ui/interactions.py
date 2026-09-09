@@ -8,6 +8,9 @@ class UiInteractions(QtCore.QObject):
     def __init__(self,window):
         super().__init__(window)
         self.window=window;self.factor=1.0;self.busy=False;self.wheel_delta=0
+        self.pending_factor=1.0
+        self.zoom_timer=QtCore.QTimer(self);self.zoom_timer.setSingleShot(True);self.zoom_timer.setInterval(35)
+        self.zoom_timer.timeout.connect(lambda:self.set_zoom(self.pending_factor))
         W.QApplication.instance().installEventFilter(self)
 
     def owns(self,obj):
@@ -27,7 +30,9 @@ class UiInteractions(QtCore.QObject):
             self.wheel_delta+=delta
             if abs(self.wheel_delta)>=120:
                 steps=int(self.wheel_delta/120);self.wheel_delta-=steps*120
-                self.set_zoom(self.factor+steps*.1)
+                base=self.pending_factor if self.zoom_timer.isActive() else self.factor
+                self.pending_factor=max(.7,min(1.6,round(base+steps*.05,2)))
+                if not self.zoom_timer.isActive():self.zoom_timer.start()
             event.accept();return True
         if kind in (QtCore.QEvent.ShortcutOverride,QtCore.QEvent.KeyPress) and event.modifiers()&QtCore.Qt.ControlModifier:
             key=event.key()
@@ -66,12 +71,8 @@ class UiInteractions(QtCore.QObject):
             scaled=re.sub(r'(?<![\w#])([0-9]+(?:\.[0-9]+)?)(px|pt)\b',lambda m:f'{float(m[1])*self.factor:g}{m[2]}',base)
             widget.setProperty('_zoom_applied_style',scaled)
             if scaled!=style:widget.setStyleSheet(scaled)
-            if widget.property('_zoom_font') is None:
-                widget.setProperty('_zoom_font',widget.font())
-            font=QtGui.QFont(widget.property('_zoom_font'))
-            if font.pixelSize()>0:font.setPixelSize(max(8,round(font.pixelSize()*self.factor)))
-            else:font.setPointSizeF(max(6,font.pointSizeF()*self.factor))
-            if widget.font()!=font:widget.setFont(font)
+            # Fonts inherit the single root QSS size. Per-widget font multiplication
+            # captured already-scaled inherited fonts and caused cumulative drift.
             if widget is not self.window and not isinstance(widget,(W.QDockWidget,W.QStackedWidget,W.QToolBar,W.QScrollArea)):
                 if widget.property('_zoom_limits') is None:
                     widget.setProperty('_zoom_limits',[widget.minimumWidth(),widget.minimumHeight(),widget.maximumWidth(),widget.maximumHeight()])
@@ -89,20 +90,32 @@ class UiInteractions(QtCore.QObject):
 
     def dispose(self):
         app=W.QApplication.instance()
+        self.zoom_timer.stop()
         if app:app.removeEventFilter(self)
 
     def set_zoom(self,factor):
+        self.zoom_timer.stop()
         self.factor=max(.7,min(1.6,round(float(factor),2)))
-        # Scale descendants before root QSS to avoid capturing inherited scaled fonts.
-        widgets=self.window.findChildren(W.QWidget)
-        for widget in widgets:self.scale_widget(widget)
-        self.scale_widget(self.window)
-        for page in [self.window.params]+[p for p,_ in self.window.workbenches]:page.set_zoom(self.factor)
-        self.window.overview.reflow(self.factor)
-        import pyqtgraph as pg
-        for plot in self.window.findChildren(pg.PlotWidget):
-            font=QtGui.QFont('Microsoft YaHei UI');font.setPixelSize(round(12*self.factor))
-            for name in ('bottom','left'):
-                axis=plot.getAxis(name);axis.setStyle(tickFont=font)
-        self.window.zoom_label.setText(f'{self.factor:.0%}')
-        self.window.zoom_label.setToolTip('Ctrl + 滚轮缩放界面 · Ctrl + 0 恢复 100%')
+        self.pending_factor=self.factor
+        window=self.window
+        scroll=window.stack.currentWidget()
+        bar=scroll.verticalScrollBar() if isinstance(scroll,W.QScrollArea) else None
+        ratio=bar.value()/max(1,bar.maximum()) if bar else 0
+        window.setUpdatesEnabled(False)
+        try:
+            widgets=window.findChildren(W.QWidget)
+            for widget in widgets:self.scale_widget(widget)
+            self.scale_widget(window)
+            for page in [window.params]+[p for p,_ in window.workbenches]:page.set_zoom(self.factor)
+            window.overview.reflow(self.factor)
+            window.nav.setIconSize(QtCore.QSize(round(18*self.factor),round(18*self.factor)))
+            import pyqtgraph as pg
+            for plot in window.findChildren(pg.PlotWidget):
+                font=QtGui.QFont('Microsoft YaHei UI');font.setPixelSize(round(12*self.factor))
+                for name in ('bottom','left'):plot.getAxis(name).setStyle(tickFont=font)
+            window.zoom_label.setText(f'{self.factor:.0%} ▾')
+            window.zoom_label.setToolTip('Ctrl + 滚轮：每格 5% · Ctrl + 0：恢复 100% · 点击选择比例')
+        finally:window.setUpdatesEnabled(True)
+        def restore_position():
+            if bar is not None and isValid(bar):bar.setValue(round(ratio*bar.maximum()))
+        QtCore.QTimer.singleShot(0,restore_position)

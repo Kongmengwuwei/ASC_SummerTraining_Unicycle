@@ -87,3 +87,9 @@ taskevt:sequence,uptime_ms,previous_state,current_state,element,phase,run_active
 实现位于 `code/vofa_task.inc`，由 vofa.c 包含，无需新增 ADS 翻译单元。CPU0 的 vofa_snapshot 在现有 1 ms ISR 内执行固定次数诊断比较和定长快照/队列写入，无字符串格式化和动态分配。CPU0 前台 vofa_poll 取快照并格式化，状态帧为配置应答预留发送空间。16 项 SPSC 事件环使用发布/获取内存屏障；队列满增加丢弃计数并保留原有事件顺序。约 5 Hz 的同步速度/航向供上位机估算，不参与控制。
 
 task 诊断中的视觉过期判断为 age >100 ms，Run 停帧退出为 age ≥100 ms，边界相差一拍。普通 att/run/stat 字段与 cfg 写入/停车权限保持原约定。旧 cfg v1 固件没有 task 帧时，上位机仍开放正常的兼容功能，任务页面提示等待数据。
+
+## Remote 只读确认（0.5.0）
+
+请求：`cfg:remote,<seq>`，无参数；应答：`rsp:<seq>,ok,remote,1,<active>,<steer_deg>,<speed_mps>,<age_ms>,<seen>`。`1` 是该扩展版本，active/seen 为 0/1，age_ms 是最后一条合法遥控命令的年龄（0–65535）。该接口不会启动 Remote；现有 hello 标识、stat 15 字段及其余命令保持兼容。
+
+PC 使用新鲜 Remote 查询和 stat 双重确认再允许现有 speed 指令。speed 的第一项是相对当前航向角，第二项是速度原始输入（m/s ×40）；正负转向遵循 STEER_DIR。超时回零与操作步骤见 [遥控说明](experience-remote.md)。

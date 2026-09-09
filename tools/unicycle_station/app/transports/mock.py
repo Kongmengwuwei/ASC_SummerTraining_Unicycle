@@ -21,6 +21,7 @@ class MockTransport:
         self.revision = 1
         self.command_fault = ""
         self.saved = {}
+        self.remote_steer = self.remote_speed = self.remote_at = 0.
 
     def open(self):
         self.connected = True
@@ -37,11 +38,19 @@ class MockTransport:
         self.queue.extend((line + "\n").encode("ascii"))
 
     def status_values(self, ms):
-        return [ms, 2 if self.mode in ("Run", "Balance") else 0, int(self.mode == "Run"),
+        return [ms, 2 if self.mode in ("Run", "Balance", "Remote") else 0, int(self.mode == "Run"),
                 1 if self.mode == "Test" else 0, int(self.mode == "Jog"), 7, 1, 1, 1, 0,
-                0, self.revision, 0, 0, 0x00ffffff if self.mode in ("STOP", "Balance", "Run") else 7]
+                0, self.revision, 0, 0, 0x00ffffff if self.mode in ("STOP", "Balance", "Run", "Remote") else 7]
+
+    def enter_remote_demo(self):
+        with self.lock:
+            self.mode = "Remote"
+            self.manual_stopped = True
+            self.remote_steer = self.remote_speed = self.remote_at = 0.
 
     def telemetry(self):
+        if self.mode == "Remote" and time.monotonic()-self.remote_at > 1:
+            self.remote_steer = self.remote_speed = 0.
         t = self.index * .02
         if not self.manual_stopped:
             self.mode = "Run" if 5 <= t % 30 < 25 else "STOP"
@@ -56,7 +65,7 @@ class MockTransport:
             age = 180 if phase == 3 else 20
             permission = .15 if phase == 4 else 1
             running = self.mode == "Run"
-            flags = int(running) | (int(self.mode in ("Run", "Balance")) << 1) | (int(track) << 2) | 16
+            flags = int(running) | (int(self.mode in ("Run", "Balance", "Remote")) << 1) | (int(track) << 2) | 16
             values = [ms, roll, 1.5 * curve, 6 * math.cos(t), 350 * curve, .2 * curve, 500 * curve,
                       curve, 20 * curve, 18 * curve, 16 * curve, 900 * curve, 700 * curve,
                       6800 if phase == 4 else 800 * curve, 12 * curve, .3 * curve, 8 * curve,
@@ -109,6 +118,13 @@ class MockTransport:
                     self.manual_stopped = True
                     self.append("stat:" + ",".join(map(str, self.status_values(int((time.monotonic()-self.origin)*1000)))))
                     continue
+                if line.lower().startswith("speed:"):
+                    try:
+                        steer, raw = map(float, line[6:].split(","))
+                        if self.mode == "Remote" and all(math.isfinite(v) for v in (steer,raw)) and abs(steer)<=90 and abs(raw)<=60:
+                            self.remote_steer, self.remote_speed, self.remote_at = steer, raw/40, time.monotonic()
+                    except ValueError:pass
+                    continue
                 if not line:
                     continue
                 fields = line.split(",")
@@ -124,6 +140,9 @@ class MockTransport:
                     continue
                 if op == "hello":
                     self.append(prefix + "ok,hello,1,mock-0.1,63")
+                elif op == "remote":
+                    age=min(65535,int((time.monotonic()-self.remote_at)*1000))
+                    self.append(prefix + f"ok,remote,1,{int(self.mode=='Remote')},{self.remote_steer:.3f},{self.remote_speed:.3f},{age},{int(self.remote_at>0)}")
                 elif op == "status":
                     self.append("stat:" + ",".join(map(str, self.status_values(int((time.monotonic()-self.origin)*1000)))))
                     self.append(prefix + "ok,status")

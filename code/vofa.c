@@ -462,6 +462,20 @@ static vofa_cmd_result_t cfg_execute(char *line)
         if (cfg_status()) (void)cfg_reply(seq, "ok", "status");
         else (void)cfg_reply(seq, "err", "BUSY,Status TX unavailable");
     }
+    else if (strcmp(fields[0], "remote") == 0 && count == 2u)
+    {
+        float steer, speed;
+        uint16 age;
+        uint8 seen, active;
+        irq = interrupt_global_disable();
+        active = control_remote_running();
+        control_remote_status(&steer, &speed, &age, &seen);
+        interrupt_global_enable(irq);
+        /* Read-only snapshot; no start command and no formatting inside the ISR. */
+        (void)snprintf(payload, sizeof(payload), "remote,1,%u,%.6g,%.6g,%u,%u",
+            (unsigned)active, (double)steer, (double)speed, (unsigned)age, (unsigned)seen);
+        (void)cfg_reply(seq, "ok", payload);
+    }
     else if (strcmp(fields[0], "schema") == 0 && count == 2u)
     {
         if (s_schema_seq || s_save_seq) (void)cfg_reply(seq, "err", "BUSY,Operation pending");

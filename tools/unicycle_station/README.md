@@ -6,9 +6,9 @@
 
 ## 启动
 
-**最新版 0.4.1**：双击本目录的 `start_app.bat`，或打开 `dist/EmbeddedStation/EmbeddedStation.exe`。无需安装 Python；复制到其他电脑时须复制整个 `EmbeddedStation` 文件夹。
+**最新版 0.5.0**：双击本目录的 `start_app.bat`，或打开 `dist/EmbeddedStation/EmbeddedStation.exe`。无需安装 Python；复制到其他电脑时须复制整个 `EmbeddedStation` 文件夹。
 
-本目录只保留这一份发行程序。历史源码与验证记录保存在 Git；安装包不纳入 Git，需要旧版时从对应提交重新构建。最新改动见 [版本说明](docs/stability-0.4.1.md)，验证结果见 [验证记录](docs/validation.md)。
+本目录只保留这一份发行程序。历史源码与验证记录保存在 Git；安装包不纳入 Git，需要旧版时从对应提交重新构建。最新改动见 [版本说明](docs/experience-remote.md)，验证结果见 [验证记录](docs/validation.md)。
 
 快捷键、折叠和排序见 [交互说明](docs/interaction-workflow.md)，Run 记录、名称自定义及总览显隐见 [个性化说明](docs/personalization-workflow.md)，任务轨迹等见 [调试说明](docs/debug-workflow.md)。串口连接问题见 [连接排查](docs/handshake-diagnosis.md)。
 
@@ -26,6 +26,7 @@
 
 ## 操作
 
+- **遥控驾驶**：车身进入 Remote 后，启用本次遥控，按住 W/A/S/D、方向键或方向按钮控制前进、后退、转向；松手回零，失焦或切页自动释放。车端需更新状态查询接口，详见 [遥控与界面说明](docs/experience-remote.md)。
 - **总览**：姿态、运行模式、链路、视觉、速度与参数 revision。
 - **实时波形**：左侧搜索与勾选通道，选择目标图表后勾选即显示；“显示姿态”用于快速检查，“恢复实时显示”恢复跟随和自动纵轴。可添加/删除/停靠/浮动图表、添加设备预设。同一通道可显示在多个图表。右键图表进一步调整坐标，支持暂停、跟随、5–120 秒窗口、十字线、样式、别名、统计、CSV/PNG 导出。统计下方悬停可查看全部已选通道。
 - **3D 姿态**：非对称长方体、车头箭头、彩色坐标轴、地面网格；鼠标旋转/缩放/平移。默认 ZYX 旋转，轴映射 JSON 可配置。先逐轴转动车体校验映射；显示归零只作用于画面。超过 700 ms 无姿态输入显示 STALE，停止运动。

@@ -99,7 +99,10 @@ def test_ctrl_wheel_changes_ui_not_parameter_or_plot_range(window):
     editor=window.params.editors['r_rate_kp'];before=editor.value()
     event=QtGui.QWheelEvent(QtCore.QPointF(5,5),QtCore.QPointF(editor.mapToGlobal(QtCore.QPoint(5,5))),QtCore.QPoint(),QtCore.QPoint(0,120),QtCore.Qt.NoButton,QtCore.Qt.ControlModifier,QtCore.Qt.NoScrollPhase,False)
     W.QApplication.sendEvent(editor,event)
-    assert window.interactions.factor==1.1 and editor.value()==before
+    for _ in range(50):
+        if window.interactions.factor==1.05:break
+        QtTest.QTest.qWait(20)
+    assert window.interactions.factor==1.05 and editor.value()==before
     assert window.engine.params['r_rate_kp'].pending is None
     window.interactions.set_zoom(.7);height=window.params.table.rowHeight(window.params.rows['r_rate_kp'])
     window.interactions.set_zoom(1.6);assert window.params.table.rowHeight(window.params.rows['r_rate_kp'])>height

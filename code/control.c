@@ -507,6 +507,10 @@ static void motion_target_update(void)
         if (!s_remote_timeout_latched)
         {
             s_remote_timeout_latched = 1;
+            /* Also release steering: do not finish an old turn after link loss. */
+            s_remote_steer_angle = 0.0f;
+            s_remote_yaw_target = imu_get_angle_yaw();
+            g_yaw_target = s_remote_yaw_target;
             s_speed_ramp = 0.0f;
             pid_reset(&p_vel_pid);
         }

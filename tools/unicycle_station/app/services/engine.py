@@ -9,6 +9,7 @@ from app.core.store import DataStore
 from app.plugins.registry import PROTOCOLS
 from app.recording.session import SessionRecorder, ReplayDataSource
 from app.services.requests import RequestManager
+from app.services.remote import RemoteControl
 from app.transports.serial_transport import SerialTransport
 from app.transports.mock import MockTransport
 from app.services.task_state import TaskObserver, TrajectoryEstimator, RunSession
@@ -72,6 +73,7 @@ class StationEngine:
         self.auto_record = True
         self.log_directory = Path.home() / "Documents" / "EmbeddedStation" / "sessions"
         self.trials = TrialManager(self)
+        self.remote = RemoteControl(self)
 
     def event(self, kind, message):
         self.store.event(kind, message)
@@ -100,6 +102,8 @@ class StationEngine:
         self.thread.start()
 
     def close(self):
+        self.remote.disarm("连接已关闭", flush=True)
+        self.remote.reset()
         self.shutdown.set()
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=5)
@@ -122,6 +126,10 @@ class StationEngine:
                 break
 
     def emergency_stop(self):
+        with self.tx_lock:
+            self.remote.armed = False
+            self.remote.intent = (0., 0.)
+            self.remote.neutral_remaining = 0
         if self.replay or not self.connected:
             self.stop_message = "未连接车辆，停车命令未发送"
             return
@@ -465,6 +473,7 @@ class StationEngine:
                         pass
                     if self.requests.pending and self.requests.pending.operation in ("set", "save") and time.monotonic()-self.status_time >= .7:
                         self.requests.cancel("STALE_STATUS")
+                    self.remote.tick()
                     self.requests.tick()
                     self.trials.poll()
                     if self.schema_refresh_needed and self.protocol_ready and not self.requests.pending and not self.requests.queue and self.actions.empty():
@@ -474,6 +483,7 @@ class StationEngine:
                     if self.stopping_record and not self.last_running and time.monotonic() >= self.protected_until:
                         self.stop_recording(force=True)
                 except (OSError, RuntimeError) as exc:
+                    self.remote.reset()
                     self.event("DISCONNECTED", str(exc))
                     self.connected = self.protocol_ready = False
                     self.status_time = 0

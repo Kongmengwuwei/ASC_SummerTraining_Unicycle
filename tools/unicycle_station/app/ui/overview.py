@@ -7,9 +7,9 @@ class Overview(W.QWidget):
     def __init__(self,engine):
         super().__init__();self.engine=engine;self.ui=parameter_ui(engine)
         self.cards={};self.card_widgets={};self.titles={};self.units={}
-        self.order=[];self.zoom=1.0
+        self.order=[];self.zoom=1.0;self.columns=0;self._grid_order=()
         outer=W.QVBoxLayout(self);bar=W.QHBoxLayout()
-        title=W.QLabel('设备总览');title.setStyleSheet('font-size:25px;font-weight:600');bar.addWidget(title);bar.addStretch()
+        title=W.QLabel('设备总览');title.setObjectName('pageTitle');bar.addWidget(title);bar.addStretch()
         button=W.QPushButton('显示项目');button.clicked.connect(self.choose_items);bar.addWidget(button);outer.addLayout(bar)
         self.state=W.QLabel('未连接 · 等待设备状态');self.state.setStyleSheet('font-size:16px;color:#9aabbc');outer.addWidget(self.state)
         self.grid=W.QGridLayout();self.grid.setSpacing(12);outer.addLayout(self.grid)
@@ -34,6 +34,7 @@ class Overview(W.QWidget):
             if name in self.card_widgets:continue
             box=MetricCard(self,name);box.setObjectName('card');box.setCursor(QtCore.Qt.OpenHandCursor)
             layout=W.QVBoxLayout(box);title=W.QLabel();value=W.QLabel('—');unit=W.QLabel()
+            value.setSizePolicy(W.QSizePolicy.Ignored,W.QSizePolicy.Preferred);value.setMinimumWidth(0);value.setWordWrap(True)
             title.setWordWrap(True);title.setStyleSheet('color:#a3b0bf;font-size:12px');unit.setStyleSheet('color:#899aac')
             for label in (title,value,unit):layout.addWidget(label);label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
             self.card_widgets[name]=box;self.cards[name]=value;self.titles[name]=title;self.units[name]=unit
@@ -83,11 +84,20 @@ class Overview(W.QWidget):
 
     def reflow(self,factor):
         self.zoom=factor
+        width=max(1,self.width()-self.layout().contentsMargins().left()-self.layout().contentsMargins().right())
+        columns=max(1,min(6,int((width+12)/(230*factor+12))))
+        if self.columns==columns and self._grid_order==tuple(self.order):return
+        self.columns=columns;self._grid_order=tuple(self.order)
         while self.grid.count():self.grid.takeAt(0)
+        for col in range(6):self.grid.setColumnStretch(col,1 if col<columns else 0)
         for name,widget in self.card_widgets.items():widget.setVisible(name in self.order)
-        columns=max(2,min(6,round(4/factor)))
+
         for index,name in enumerate(self.order):self.grid.addWidget(self.card_widgets[name],index//columns,index%columns)
         self.empty.setVisible(not self.order)
+
+    def resizeEvent(self,event):
+        super().resizeEvent(event)
+        self.reflow(self.zoom)
 
     def update_data(self):
         latest,stamps,_=self.engine.store.snapshot();now=self.engine.store.clock();definitions=self.definitions()
@@ -103,8 +113,9 @@ class Overview(W.QWidget):
                 text=self.engine.profile.data.get('value_labels',{}).get(name,{}).get(str(int(latest[name])),text)
                 bits=self.engine.profile.data.get('bit_labels',{}).get(name)
                 if bits:text=' / '.join(f"{title}{'✓' if int(latest[name])&(1<<i) else '—'}" for i,title in enumerate(bits))
-            label.setText(text)
-            label.setStyleSheet(f"font:14pt 'Consolas';color:{'#647281' if stale else ('#dce5ef' if getattr(self.window(),'dark',True) else '#202b38')}")
+            label.setText(text);label.setToolTip(text)
+            style=f"font:14pt 'Consolas';color:{'#647281' if stale else ('#dce5ef' if getattr(self.window(),'dark',True) else '#202b38')}"
+            if label.property("_zoom_base_style")!=style and label.styleSheet()!=style:label.setStyleSheet(style)
         if self.engine.replay:mode="离线回放 · 控制锁定"
         elif now-self.engine.status_time>.7:mode="状态未知 / STALE · 参数写入锁定"
         elif self.engine.status[4]:mode="Jog · 参数写入锁定"

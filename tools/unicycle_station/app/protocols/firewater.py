@@ -100,11 +100,11 @@ class FireWaterParser:
     def encode_command(self, operation, seq, *args):
         if operation == "stop":
             return b"stop\r\n"
-        if operation not in ("hello", "schema", "get", "set", "save", "status"):
+        if operation not in ("hello", "schema", "get", "set", "save", "status", "remote"):
             raise ValueError("UNKNOWN_COMMAND / remote starts are forbidden")
         if not 1 <= seq <= 65535:
             raise ValueError("INVALID_SEQ")
-        arity = {"hello": 0, "schema": 0, "get": 1, "set": 2, "save": 1, "status": 0}
+        arity = {"hello": 0, "schema": 0, "get": 1, "set": 2, "save": 1, "status": 0, "remote": 0}
         if len(args) != arity[operation]:
             raise ValueError("BAD_FORMAT")
         values = [str(v) for v in args]
