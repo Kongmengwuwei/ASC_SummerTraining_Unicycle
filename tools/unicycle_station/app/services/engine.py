@@ -11,7 +11,7 @@ from app.recording.session import SessionRecorder, ReplayDataSource
 from app.services.requests import RequestManager
 from app.transports.serial_transport import SerialTransport
 from app.transports.mock import MockTransport
-from app.services.task_state import TaskObserver, TrajectoryEstimator
+from app.services.task_state import TaskObserver, TrajectoryEstimator, RunSession
 from app.services.experiments import TrialManager, parameter_snapshot
 
 
@@ -30,6 +30,7 @@ class StationEngine:
         self.store = DataStore(profile)
         self.task_observer = TaskObserver(profile)
         self.trajectory = TrajectoryEstimator()
+        self.run_session = RunSession()
         self.store.event_hook = self.event
         self.config = ConnectionConfig(**profile.connection_defaults)
         self.parser = PROTOCOLS[profile.protocol_plugin]({t: len(v) for t, v in profile.channels.items()})
@@ -87,7 +88,7 @@ class StationEngine:
         self.parser.encoding, self.parser.ending = self.config.encoding, self.config.ending
         self.parser.reset()
         self.store.reset()
-        self.task_observer.reset(); self.trajectory.reset()
+        self.task_observer.reset(); self.trajectory.reset(); self.run_session.reset()
         self.shutdown.clear()
         self.stop_requested.clear()
         self.stop_message = ""
@@ -236,6 +237,7 @@ class StationEngine:
                 old = self.params.get(name)
                 if old:
                     p.pending, p.previous = old.pending, old.previous
+                    p.edit_revision,p.edit_target=old.edit_revision,old.edit_target
                     changed = p.value != old.value
                     p.ram_dirty = old.ram_dirty or changed
                     p.flash_state = "外部变更 / 未确认" if changed else old.flash_state
@@ -288,6 +290,7 @@ class StationEngine:
                 self.event("BATCH_STOPPED", str(self.batch_results))
                 return
             value = p.coerce(value)
+            edit_revision=p.edit_revision
             def result(ok, fields):
                 valid = ok and len(fields) >= 3 and fields[1] == name
                 if valid:
@@ -297,7 +300,10 @@ class StationEngine:
                         valid = False
                 if valid:
                     with self.lock:
-                        p.previous, p.value, p.pending = p.value, actual, None
+                        p.previous,p.value=p.value,actual
+                        if p.edit_revision==edit_revision:
+                            if p.pending==value:p.pending=None
+                        else:p.pending=None if p.edit_target==actual else p.edit_target
                         p.ram_dirty, p.flash_state = True, "未保存"
                     self.event("PARAMETER", f"{name}: {p.previous} → {p.value} ({','.join(fields[3:])})")
                 self.batch_results.append((name, valid, fields))
@@ -411,12 +417,20 @@ class StationEngine:
                     self.last_protection = protection
                 if self.recorder:
                     self.recorder.update_metadata(param_revision=int(frame.values[11]))
-            if frame.tag in ("task", "taskevt") and self.profile.data.get("task_states"):
-                for kind,message in self.task_observer.accept(frame):
-                    if not self.replay:self.event(kind,message)
-            if self.profile.data.get("task_states") and frame.tag in ("task","run"):
-                latest,stamps,_=self.store.snapshot()
-                self.trajectory.accept(frame,latest,stamps)
+            if self.profile.data.get("task_states"):
+                transition=self.run_session.observe(frame)
+                if transition=='start':
+                    with self.task_observer.lock:self.task_observer.reset()
+                    self.trajectory.reset()
+                elif transition=='stop':
+                    with self.trajectory.lock:self.trajectory.last=None
+                if frame.tag in ("task","taskevt","run") and self.run_session.accepts(frame):
+                    if frame.tag in ("task","taskevt"):
+                        for kind,message in self.task_observer.accept(frame):
+                            if not self.replay:self.event(kind,message)
+                    if frame.tag in ("task","run"):
+                        latest,stamps,_=self.store.snapshot()
+                        self.trajectory.accept(frame,latest,stamps)
             self.store.accept(frame)
 
     def _run(self):
@@ -507,7 +521,7 @@ class StationEngine:
         self.replay.open()
         self.parser.reset()
         self.store.reset()
-        self.task_observer.reset(); self.trajectory.reset()
+        self.task_observer.reset(); self.trajectory.reset(); self.run_session.reset()
         self.status = []
         self.params.clear()
         self.store.display_time = self.store.started
@@ -530,6 +544,6 @@ class StationEngine:
             self.replay.seek(seconds)
             self.parser.reset()
             self.store.reset()
-            self.task_observer.reset(); self.trajectory.reset()
+            self.task_observer.reset(); self.trajectory.reset(); self.run_session.reset()
             self.store.display_time = self.store.started+self.replay.position
             self.status_time = 0

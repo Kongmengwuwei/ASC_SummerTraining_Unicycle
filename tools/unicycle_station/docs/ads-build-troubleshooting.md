@@ -1,5 +1,7 @@
 # ADS：specs.src duplicate action
 
+这是 2026-09-06 构建故障的处理记录，2026-09-07 核对文档时保留。下述备份和清理属于当时操作，本次没有再次移动生成目录或启动 ADS；当前是否编译成功需另查对应构建记录。
+
 ## 原因
 
 此前在工程内部创建了临时 headless 工作区 `.ads/station-build`。ADS 扫描到了其中的 Eclipse 编译器探测文件 `specs.c` 和 `specs.cpp`，两者被生成成同名目标 `specs.src`，使 TASKING amk 报 F126。该错误发生在构建规则解析阶段。

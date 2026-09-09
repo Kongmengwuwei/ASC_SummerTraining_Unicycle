@@ -48,15 +48,19 @@ class TaskObserver:
                         return []
                     if delta > 1:
                         messages.append(("TASK_EVENT_GAP", f"任务事件序号缺口 {delta-1} 条，不补造进入/退出事件"))
+                first=self.last_seq is None
                 self.last_seq = seq
                 if previous != current:
                     if previous:
                         messages.append(("TASK_EXIT", f"退出 {self.label(previous)}"))
                     messages.append(("TASK_ENTER", f"进入 {self.label(current)}" if previous else f"首次观测 {self.label(current)}"))
+                elif first:
+                    messages.append(("TASK_ENTER", f"首次观测 {self.label(current)}"))
                 else:
-                    messages.append(("TASK_PHASE", f"{self.label(current)} · 环岛阶段 {phase} · {'Run' if running else '观察/未Run'}"))
+                    detail=f"环岛阶段 {phase}" if current in (5,6) else "状态更新"
+                    messages.append(("TASK_PHASE", f"{self.label(current)} · {detail} · {'Run' if running else '观察/未Run'}"))
                 for kind, text in messages:
-                    self.events.append({"seq":seq,"uptime":uptime,"time":frame.received,"kind":kind,"message":text,"phase":phase})
+                    self.events.append({"seq":seq,"uptime":uptime,"time":frame.received,"kind":kind,"message":text,"phase":phase,"state":current})
         return messages
 
 
@@ -87,6 +91,9 @@ class TrajectoryEstimator:
             heading = math.radians(yaw * self.yaw_sign)
             speed *= self.speed_sign
             previous = self.last
+            if previous is not None:
+                delta=(int(uptime)-previous[0]) & 0xffffffff
+                if delta==0 or delta>=0x80000000:return
             self.last = (int(uptime), speed, heading)
             self.source = source
             if previous is None:
@@ -119,3 +126,53 @@ class TrajectoryEstimator:
             else:
                 self.last = None
                 self.source = "缺少新鲜航向，暂停估算"
+
+
+class RunSession:
+    """Gate task diagnostics by explicit Run flags, never by Balance/start_flag."""
+    def __init__(self):self.reset()
+
+    def reset(self):
+        self.active=False;self.number=0;self.started=None;self.ended=None;self.latest=None
+        self.reset_candidate=None;self.rejected_frame=None;self.accepted_times={}
+
+    def observe(self,frame):
+        self.rejected_frame=None
+        indexes={'stat':(0,2),'run':(0,24),'task':(0,5),'taskevt':(1,6)}
+        if frame.tag not in indexes:return None
+        ti,ri=indexes[frame.tag];uptime=int(frame.values[ti]);running=bool(int(frame.values[ri]) & 1)
+        if self.latest is not None:
+            delta=(uptime-self.latest)&0xffffffff
+            if delta>=0x80000000:
+                # A single old snapshot is not proof of a reboot. Require two
+                # consistent snapshots on the new time line without a current
+                # time-line packet arriving between them.
+                if frame.tag=='taskevt' or self.latest-uptime<1000:return None
+                candidate=self.reset_candidate
+                self.rejected_frame=frame
+                self.reset_candidate=(frame.tag,uptime)
+                if candidate is None:return None
+                progress=uptime-candidate[1]
+                if not (0<=progress<=1000 and (progress>0 or frame.tag!=candidate[0])):return None
+                self.active=False;self.started=None;self.ended=None;self.accepted_times.clear()
+                self.rejected_frame=None
+        self.reset_candidate=None
+        self.latest=uptime
+        if running and not self.active:
+            self.active=True;self.number+=1;self.started=uptime;self.ended=None;self.accepted_times.clear()
+            return 'start'
+        if not running and self.active:
+            self.active=False;self.ended=uptime
+            return 'stop'
+        return None
+
+    def accepts(self,frame):
+        if not self.active or self.started is None or self.rejected_frame is frame:return False
+        uptime=int(frame.values[1 if frame.tag=='taskevt' else 0])
+        if ((uptime-self.started)&0xffffffff)>=0x80000000:return False
+        previous=self.accepted_times.get(frame.tag)
+        if previous is not None:
+            delta=(uptime-previous)&0xffffffff
+            if delta>=0x80000000 or (delta==0 and frame.tag!='taskevt'):return False
+        self.accepted_times[frame.tag]=uptime
+        return True

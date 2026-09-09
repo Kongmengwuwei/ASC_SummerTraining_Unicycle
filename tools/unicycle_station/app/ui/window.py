@@ -11,6 +11,9 @@ from app.plugins.registry import VISUALIZATIONS
 VISUALIZATIONS.setdefault("orientation", OrientationPlugin)
 from app.ui.parameters import ParameterPage
 from app.ui.workbench import TuningPlots
+from app.ui.interactions import UiInteractions
+from app.ui.overview import Overview
+from app.ui.edit_history import change
 from app.ui.connection import ConnectionDialog
 from app.ui.task_page import TaskPage
 from app.ui.experiments_page import ExperimentsPage
@@ -23,45 +26,6 @@ BUILTINS=Path(__file__).resolve().parents[1]/"profiles"
 def builtin_profile():return DeviceProfile.load(BUILTINS/"tc264_unicycle/profile.json")
 
 
-class Overview(W.QWidget):
-    def __init__(self,engine):
-        super().__init__();self.engine=engine;self.cards={}
-        outer=W.QVBoxLayout(self)
-        title=W.QLabel("设备总览");title.setStyleSheet("font-size:25px;font-weight:600");outer.addWidget(title)
-        self.state=W.QLabel("未连接 · 等待设备状态");self.state.setStyleSheet("font-size:16px;color:#9aabbc");outer.addWidget(self.state)
-        grid=W.QGridLayout();grid.setSpacing(12)
-        definitions={ch["name"]:ch for values in engine.profile.channels.values() for ch in values}
-        for i,name in enumerate(engine.profile.dashboards):
-            box=W.QFrame();box.setObjectName("card");layout=W.QVBoxLayout(box)
-            d=definitions.get(name,{})
-            label=W.QLabel(d.get("label",name));label.setStyleSheet("color:#a3b0bf;font-size:12px");layout.addWidget(label)
-            value=W.QLabel("—");value.setStyleSheet("font: 22pt 'Consolas';");layout.addWidget(value)
-            unit=W.QLabel(d.get("unit",""));unit.setStyleSheet("color:#899aac");layout.addWidget(unit)
-            self.cards[name]=value;grid.addWidget(box,i//4,i%4)
-        outer.addLayout(grid);outer.addStretch()
-        self.note=W.QLabel("测量数据来自数值遥测。UART2 不传输摄像头原图；视觉图像需独立高速数据源。")
-        self.note.setWordWrap(True);outer.addWidget(self.note)
-
-    def update_data(self):
-        latest,stamps,_=self.engine.store.snapshot();now=self.engine.store.clock()
-        for name,label in self.cards.items():
-            stale=now-stamps.get(name,0)>.7
-            text="—" if name not in latest else f"{latest[name]:.5g}"
-            if name in latest:
-                text=self.engine.profile.data.get("value_labels",{}).get(name,{}).get(str(int(latest[name])),text)
-                bits=self.engine.profile.data.get("bit_labels",{}).get(name)
-                if bits:text=" / ".join(f"{title}{'✓' if int(latest[name])&(1<<i) else '—'}" for i,title in enumerate(bits))
-            label.setText(text)
-            label.setStyleSheet(f"font:14pt 'Consolas';color:{'#647281' if stale else ('#dce5ef' if getattr(self.window(),'dark',True) else '#202b38')}")
-        if self.engine.replay:mode="离线回放 · 控制锁定"
-        elif now-self.engine.status_time>.7:mode="状态未知 / STALE · 参数写入锁定"
-        elif self.engine.status[4]:mode="Jog · 参数写入锁定"
-        elif self.engine.status[3]:mode=f"Test {int(self.engine.status[3])} · 当前闭环 PID 可调"
-        elif self.engine.status[2]:mode="Run · 危险参数锁定"
-        elif self.engine.status[1]==2:mode="Balance · 三轴闭环"
-        elif self.engine.stopped():mode="STOP · MCU 确认停止"
-        else:mode="其他运行状态"
-        self.state.setText(mode)
 
 
 class LogPage(W.QWidget):
@@ -122,12 +86,15 @@ class MainWindow(W.QMainWindow):
         self.settings=QtCore.QSettings("EmbeddedStation","Station")
         self.workspace_path=None;self.dark=True;self.persist_enabled=True
         self.setWindowTitle("Embedded Station · 嵌入式设备调试平台");self.resize(1520,940)
-        self.engine=StationEngine(profile or builtin_profile())
+        self.history=QtGui.QUndoStack(self);self.history.setUndoLimit(100)
+        self.engine=StationEngine(profile or builtin_profile());self.engine.ui_history=self.history
         self.workbenches=[]
         self.replay_jobs=[]
         self.profile_generation=0
         self.make_toolbar();self.make_menu();self.build_pages()
         self.apply_theme()
+        self.interactions=UiInteractions(self)
+        self.interactions.set_zoom(1)
         if restore:
             try:
                 data=self.settings.value("workspace_json","")
@@ -152,6 +119,7 @@ class MainWindow(W.QMainWindow):
         self.stop.clicked.connect(lambda:self.engine.emergency_stop());self.toolbar.insertWidget(self.toolbar.actions()[0],self.stop)
         self.stop.setToolTip("优先发送 stop；Space 快捷键。等待 MCU 状态确认停止。")
         action=QtGui.QAction(self);action.setShortcut(QtGui.QKeySequence("Space"));action.triggered.connect(lambda:self.engine.emergency_stop());self.addAction(action)
+        self.zoom_label=W.QLabel("100%");self.statusBar().addPermanentWidget(self.zoom_label)
         self.metrics=W.QLabel();self.metrics.setSizePolicy(W.QSizePolicy.Ignored,W.QSizePolicy.Maximum);self.statusBar().addPermanentWidget(self.metrics,1)
         self.addToolBarBreak()
         self.metricsbar=self.addToolBar("测量状态");self.metricsbar.setObjectName("metrics");self.metricsbar.setMovable(False)
@@ -161,7 +129,12 @@ class MainWindow(W.QMainWindow):
         file=self.menuBar().addMenu("工作区")
         for label,slot in [("新建 / 恢复默认布局",self.reset_workspace),("打开 / 导入",self.open_workspace),("保存",self.save_workspace),("另存为 / 导出",lambda:self.save_workspace(True)),("加载设备 Profile",self.load_profile)]:
             file.addAction(label).triggered.connect(slot)
+        edit=self.menuBar().addMenu("编辑")
+        undo=self.history.createUndoAction(self,"撤销");undo.setShortcut(QtGui.QKeySequence.Undo);edit.addAction(undo)
+        redo=self.history.createRedoAction(self,"重做");redo.setShortcuts([QtGui.QKeySequence("Ctrl+Shift+Z"),QtGui.QKeySequence("Ctrl+Y")]);edit.addAction(redo)
         self.view_menu=self.menuBar().addMenu("视图")
+        for label,delta in (("放大界面",.1),("缩小界面",-.1),("恢复 100% · Ctrl+0",0)):
+            self.view_menu.addAction(label).triggered.connect(lambda checked=False,d=delta:self.interactions.set_zoom(self.interactions.factor+d if d else 1))
         self.view_menu.addAction("深色 / 浅色").triggered.connect(self.toggle_theme)
         self.menuBar().addMenu("帮助").addAction("使用说明").triggered.connect(lambda:W.QMessageBox.information(self,"首次联调","先运行 Mock；实车固定于台架，先读取状态与参数，再验证停车。\n上位机没有远程发车、Balance、Test 或 Jog 启动入口。\n详见项目 tools/unicycle_station/README.md。"))
 
@@ -174,8 +147,9 @@ class MainWindow(W.QMainWindow):
         self.navdock=W.QDockWidget("工作页面",self);self.navdock.setObjectName("navigation");self.navdock.setWidget(self.nav)
         self.addDockWidget(QtCore.Qt.LeftDockWidgetArea,self.navdock)
         self.view_menu.addAction(self.navdock.toggleViewAction())
-        self.overview=Overview(self.engine);self.scope=ScopePage(self.engine.store)
+        self.overview=Overview(self.engine);self.scope=ScopePage(self.engine.store,self.history)
         self.orientation=OrientationWidget(self.engine.profile,self.engine.store) if self.engine.profile.orientation_mapping else None
+        if self.orientation:self.orientation.history=self.history
         self.plugin_pages=[]
         for spec in self.engine.profile.data.get("visualization_plugins", []):
             name=spec["plugin"]
@@ -204,9 +178,8 @@ class MainWindow(W.QMainWindow):
         pages.extend([("试验与对比",self.experiments),("日志与回放",self.logs),("通信诊断",self.diagnostics),("设置",self.settings_page)])
         for label,page in pages:
             self.nav.addItem(label)
-            if page is self.overview:
-                scroll=W.QScrollArea();scroll.setWidgetResizable(True);scroll.setWidget(page);self.stack.addWidget(scroll)
-            else:self.stack.addWidget(page)
+            scroll=W.QScrollArea();scroll.setWidgetResizable(True);scroll.setFrameShape(W.QFrame.NoFrame)
+            scroll.setWidget(page);self.stack.addWidget(scroll)
         self.nav.setCurrentRow(0)
 
     def make_settings(self):
@@ -252,7 +225,8 @@ class MainWindow(W.QMainWindow):
 
     def change_profile(self,profile):
         self.profile_generation+=1
-        self.engine.close();self.engine=StationEngine(profile);self.build_pages();self.apply_theme()
+        self.engine.close();self.history.clear();self.engine=StationEngine(profile);self.engine.ui_history=self.history;self.build_pages();self.apply_theme()
+        if hasattr(self,"interactions"):self.interactions.set_zoom(self.interactions.factor)
 
     def load_profile(self):
         path,_=W.QFileDialog.getOpenFileName(self,"选择 Device Profile",str(BUILTINS),"JSON (*.json)")
@@ -265,7 +239,8 @@ class MainWindow(W.QMainWindow):
     def workspace(self):
         return {"schema_version":1,"kind":"workspace","profile":self.engine.profile.data,"connection":asdict(self.engine.config),
                 "plots":self.scope.save_state(),"plot_layout":self.scope.layout_state(),"plugins":{title:plugin.save_state() for title,widget,plugin in self.plugin_pages},"orientation":self.orientation.save_state() if self.orientation else {},
-                "workbenches":[{"ring":plot.ring.currentIndex(),"tab":plot.currentIndex()} for _,plot in self.workbenches],"fault_capture":self.experiments.capture.isChecked(),
+                "ui_scale":self.interactions.factor,"parameter_layout":self.params.ui.save(),"parameter_view":self.params.save_view(),"overview_order":self.overview.order,"overview_items":self.overview.order,
+                "workbenches":[{"ring":plot.ring.currentIndex(),"tab":plot.currentIndex(),"parameter_view":params.save_view()} for params,plot in self.workbenches],"fault_capture":self.experiments.capture.isChecked(),
                 "task_view":self.task_page.save_state() if self.task_page else {},"favorites":sorted(self.params.favorites),"log_directory":str(self.engine.log_directory),"page":self.nav.currentRow(),
                 "layout":bytes(self.saveState().toBase64()).decode(),"dark":self.dark,"auto_record":self.engine.auto_record}
 
@@ -282,8 +257,11 @@ class MainWindow(W.QMainWindow):
         self.engine.config=ConnectionConfig(**data.get("connection",{}));self.engine.config.validate()
         self.scope.restore_state(data.get("plots",[]))
         self.scope.restore_layout(data.get("plot_layout",{}))
-        for state,(_,plot) in zip(data.get("workbenches",[]),self.workbenches):
-            plot.ring.setCurrentIndex(state.get("ring",0));plot.setCurrentIndex(state.get("tab",0))
+        self.params.ui.restore(data.get("parameter_layout",{}));self.params.restore_view(data.get("parameter_view",{}))
+        if 'overview_items' in data:self.overview.restore_items(data['overview_items'])
+        else:self.overview.restore_order(data.get("overview_order",[]))
+        for state,(params,plot) in zip(data.get("workbenches",[]),self.workbenches):
+            plot.ring.setCurrentIndex(state.get("ring",0));plot.setCurrentIndex(state.get("tab",0));params.restore_view(state.get("parameter_view",{}))
         self.experiments.capture.setChecked(data.get("fault_capture",True))
         self.engine.favorites.clear();self.engine.favorites.update(data.get("favorites",[]))
         for title,widget,plugin in self.plugin_pages:
@@ -295,6 +273,8 @@ class MainWindow(W.QMainWindow):
         self.nav.setCurrentRow(min(data.get("page",0),self.nav.count()-1))
         if data.get("layout"):self.restoreState(QtCore.QByteArray.fromBase64(data["layout"].encode()))
         self.dark=data.get("dark",True);self.apply_theme()
+        self.interactions.set_zoom(data.get("ui_scale",1))
+        self.history.clear()
 
     def open_workspace(self):
         path,_=W.QFileDialog.getOpenFileName(self,"打开工作区","","JSON (*.json)")
@@ -395,5 +375,6 @@ class MainWindow(W.QMainWindow):
         self.settings.setValue("geometry",self.saveGeometry())
 
     def closeEvent(self,event):
+        self.interactions.dispose()
         for job in self.replay_jobs + self.experiments.jobs:job.cancelled.set()
         self.persist();self.engine.close();event.accept()

@@ -1,0 +1,178 @@
+{
+  "version": "0.4.1",
+  "date": "2026-09-09T00:08:10.626551+08:00",
+  "executable": "dist\\stability-0.4.1\\EmbeddedStation\\EmbeddedStation.exe",
+  "executable_sha256": "490bd116d536f8f54a7ab7dff48ed1fbe60c0cb732f4dee45f0f4bf4299f7497",
+  "tests": {
+    "passed": 94,
+    "failed": 0,
+    "report": "docs/stability-tests.txt"
+  },
+  "packaged_smoke": {
+    "exit_code": 0,
+    "pages": 10
+  },
+  "source_visual_smoke": [
+    {
+      "name": "run-waiting",
+      "size": [
+        1520,
+        940
+      ],
+      "scale": 1.0,
+      "run_active": false,
+      "run_number": 0,
+      "distance": 0.0,
+      "events": 0,
+      "frames": 488
+    },
+    {
+      "name": "run-active",
+      "size": [
+        1520,
+        940
+      ],
+      "scale": 1.0,
+      "run_active": true,
+      "run_number": 1,
+      "distance": 0.7,
+      "events": 1,
+      "frames": 655
+    },
+    {
+      "name": "run-stopped",
+      "size": [
+        1520,
+        940
+      ],
+      "scale": 1.0,
+      "run_active": false,
+      "run_number": 1,
+      "distance": 0.7,
+      "events": 1,
+      "frames": 742
+    },
+    {
+      "name": "run-frozen",
+      "size": [
+        1520,
+        940
+      ],
+      "scale": 1.0,
+      "run_active": false,
+      "run_number": 1,
+      "distance": 0.7,
+      "events": 1,
+      "frames": 828
+    },
+    {
+      "name": "run-restarted",
+      "size": [
+        1520,
+        940
+      ],
+      "scale": 1.0,
+      "run_active": true,
+      "run_number": 2,
+      "distance": 0.37,
+      "events": 3,
+      "frames": 916
+    },
+    {
+      "name": "parameter-aliases",
+      "size": [
+        1520,
+        940
+      ],
+      "scale": 1.0,
+      "run_active": true,
+      "run_number": 2,
+      "distance": 0.7699999999999999,
+      "events": 4,
+      "frames": 1019
+    },
+    {
+      "name": "overview-custom",
+      "size": [
+        1520,
+        940
+      ],
+      "scale": 1.0,
+      "run_active": true,
+      "run_number": 2,
+      "distance": 1.17,
+      "events": 4,
+      "frames": 1103
+    },
+    {
+      "name": "overview-selector",
+      "size": [
+        1520,
+        940
+      ],
+      "scale": 1.0,
+      "run_active": true,
+      "run_number": 2,
+      "distance": 1.37,
+      "events": 6,
+      "frames": 1152
+    },
+    {
+      "name": "waveforms-100",
+      "size": [
+        1520,
+        940
+      ],
+      "scale": 1.0,
+      "run_active": true,
+      "run_number": 2,
+      "distance": 1.8700000000000006,
+      "events": 6,
+      "frames": 1258
+    },
+    {
+      "name": "waveforms-80",
+      "size": [
+        1520,
+        940
+      ],
+      "scale": 0.8,
+      "run_active": true,
+      "run_number": 2,
+      "distance": 2.370000000000001,
+      "events": 8,
+      "frames": 1371
+    }
+  ],
+  "scope": "PC/Mock only; no ADS build, flashing or real vehicle commands",
+  "source_sha256": {
+    "app\\__init__.py": "faae9105aeaea523c725f1715329e765fe3ff8d1c4464e9ec240232691a3a037",
+    "app\\core\\models.py": "1c96cd10517169bc60d70e561938aab98ecb575ff5a51b61984c26a61eab1d83",
+    "app\\core\\store.py": "50d46fe447c1547fa0802a551d7a0169fe5a26446f3dd16f2386e1e2c145a6ef",
+    "app\\main.py": "acaa3b2aabbdf744d59581ff664232251d9195cbf16b550968861a7e60ad9dd3",
+    "app\\plotting\\measurement.py": "58a0b5b62e71931d53fb0e5a8da542698410dd7a88554a3fa059fc81bd36285d",
+    "app\\plotting\\scope.py": "03b077582875f00c5db19d9c9777b4aec5843e3430b65c6280dfd38d3d882857",
+    "app\\plugins\\registry.py": "9b1615ff0f6cfe54e4e2ce9c5639b41404358e48ca3532660bd0cdb765e608ba",
+    "app\\protocols\\firewater.py": "432d35972dd1ec79beca013a585496fe15c1190e7d968fe0f7d9d8a07f0c08d3",
+    "app\\recording\\session.py": "20d6c952d582677752b0e97b2eec526b1154662fc85edce55b8e39fc661b7145",
+    "app\\services\\background.py": "bebf838c3bf0bddc868261412360c64565588ee03c4d132ff58b740823235e2b",
+    "app\\services\\engine.py": "55d398085a1a3e2e7d1c14da88434f203038727b937f1ba24cca57a412523f5e",
+    "app\\services\\experiments.py": "8c750744de68022549c6466312581459ad7acd9a294f35a785f57d13911238cc",
+    "app\\services\\requests.py": "dcd7d73f511d1851691ab4b2ac5eb1bcd4aae3cda4e52a679e63fd5432cdd7ce",
+    "app\\services\\task_state.py": "aee2b740fedafc2522e6050fdf3e7b8228bf3ce5dc0fb51e2d6cb03d7d371d28",
+    "app\\transports\\mock.py": "4437f5cf203c520c6cca36cd3efb5a914bf7ba1cb53448ae29986e59eaf640e1",
+    "app\\transports\\serial_transport.py": "ef0b8d8502d1f80ff1698bba428ddad6975b5584e57b26fb6886a12bb0ea6e96",
+    "app\\ui\\connection.py": "eea186198c7835262cb447b11d1ef94a4a8b41c55ed5f2c2d22b3670583d6c3c",
+    "app\\ui\\edit_history.py": "d29e4be387bb18f4a1d609c658e1f0f23c086396f0665055b8c0fbc16ea5d45d",
+    "app\\ui\\experiments_page.py": "02e0347931be687368abef07aafbc414c9a1a96c1c5ab7551b5b4f18a62ea7e6",
+    "app\\ui\\interactions.py": "e743a4b9cf7dabc0ff584f14de8d821188f9d297650644c97570fe759780e6ad",
+    "app\\ui\\overview.py": "a29c3335b63c553f078d9f7f5a71da3c342b0a4ecbff5ff7ca5c8353bd382483",
+    "app\\ui\\parameter_table.py": "17695922c5a6e297ab501fabdfeef0a2e4f01689bb8008eee8ae7540176ddca8",
+    "app\\ui\\parameters.py": "95d269a76da7ca9e0fad21af128e779dc3ed7d92cfacd53c0548e560df48fbde",
+    "app\\ui\\reorder.py": "25ee11c6076c39fa5daa25967498299d925972716ed9c88580edf293f1147d4f",
+    "app\\ui\\task_page.py": "00bff61bf2bd404bb9e8b661d121772dab283b371a1ca77f1b80a4134ea32c9b",
+    "app\\ui\\window.py": "381c91aa2cac1bd21d667c4ba923eaf6830d130c2c55f6188025634d4a211a97",
+    "app\\ui\\workbench.py": "83c3c5c667dcc8d8575d59de9cb3e1445dba9d45e610502c030cfdba305e8d09",
+    "app\\visualization\\orientation.py": "e70e5e49e9b350d60db5d9036c1a2d6fe4eda38af5f88b0d7eef39ede672227a"
+  }
+}

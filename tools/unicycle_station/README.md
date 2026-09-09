@@ -1,14 +1,22 @@
 # Embedded Station · 独轮车上位机
 
+文档核对：2026-09-07。车端参数与模式以当前源码及 MCU Schema 为准，见 [参数参考](../../参数参考.md) 和 [源码核对](docs/source-audit.md)。下述发行包与测试结果有各自日期，不代表本次重新构建。
+
 程序全部位于独轮车项目总文件夹的 `tools/unicycle_station/` 下。Windows 桌面应用，Python 3.11+、PySide6、pyqtgraph、pyserial；首个设备配置为 TC264D Q 型独轮车。
 
 ## 启动
 
-**当前调试增强版 0.2**：直接打开 `dist/debug-workflow/EmbeddedStation/EmbeddedStation.exe`，无需另装 Python。复制到其他电脑时需复制整个 `EmbeddedStation` 文件夹。包含三轴显示反向开关、任务状态与进出事件、相对轨迹、试验对比、故障截取、联动波形和环路工作台，详见 [调试增强版使用说明](docs/debug-workflow.md)。
+**当前稳定性修复版 0.4.1（2026-09-09）**：打开 `dist/stability-0.4.1/EmbeddedStation/EmbeddedStation.exe`。修复迟到快照误判复位和乱序轨迹重复积分，保留 0.4 功能；见 [0.4.1 说明](docs/stability-0.4.1.md)。无需重新烧录车端。
 
-原来的 `dist/EmbeddedStation` 和 `dist/handshake-fix/EmbeddedStation` 保留作为历史版本。新版已包含握手诊断修复，详见 [连接排查](docs/handshake-diagnosis.md)。车端新任务遥测需自行在 ADS 构建并烧录，本轮未执行 ADS 测试。
+**保留的个性化调试版 0.4（2026-09-07）**：打开 `dist/personalization-workflow/EmbeddedStation/EmbeddedStation.exe`。新增按 Run 独立记录任务与轨迹、参数及分组显示别名、总览项目显隐，并修复波形恢复与集中到达数据的绘图问题。波形页勾选即显示，提供“显示姿态”和“恢复实时显示”。详见 [0.4 操作说明](docs/personalization-workflow.md)。无需为本次更新重新烧录车端。
 
-双击 `start_windows.bat`，然后点 **Mock 演示**。Mock 会自动循环模拟运行与停车状态，仅作用于软件演示，点击立即停车后保持模拟 STOP。无需车辆即可查看姿态、波形、72 项固件参数、记录和回放。首次启动缺少依赖时会在本目录 `.venv` 中安装。
+**保留的交互优化版 0.3（2026-09-07）**：直接打开 `dist/interaction-workflow/EmbeddedStation/EmbeddedStation.exe`。新增 Ctrl+滚轮缩放、Ctrl+Z 撤销、可折叠参数分组和拖动排序，保留 0.2 的调试功能。本次仅更新上位机，无需重新烧录车端。快捷键与使用说明见 [交互优化版说明](docs/interaction-workflow.md)。
+
+**保留的调试增强版 0.2**：直接打开 `dist/debug-workflow/EmbeddedStation/EmbeddedStation.exe`，无需另装 Python。复制到其他电脑时需复制整个 `EmbeddedStation` 文件夹。包含三轴显示反向开关、任务状态与进出事件、相对轨迹、试验对比、故障截取、联动波形和环路工作台，详见 [调试增强版使用说明](docs/debug-workflow.md)。
+
+原来的 `dist/EmbeddedStation` 和 `dist/handshake-fix/EmbeddedStation` 保留作为历史版本。新版已包含握手诊断修复，详见 [连接排查](docs/handshake-diagnosis.md)。车端 task1 遥测已在当前源码中；是否已构建并烧录须另行确认，本次文档更新未执行 ADS 测试。
+
+双击 `start_windows.bat`，然后点 **Mock 演示**。Mock 会自动循环模拟运行与停车状态，仅作用于软件演示，点击立即停车后保持模拟 STOP。无需车辆即可查看姿态、波形、72 项参数的模拟数据、记录和回放。Mock/Profile 的默认值与示例预设是快照，不是车端读回值；zero_pid 只是全零导入演示，不代表固件当前默认值。首次启动缺少依赖时会在本目录 `.venv` 中安装。
 
 也可在本目录执行：
 
@@ -23,7 +31,7 @@
 ## 操作
 
 - **总览**：姿态、运行模式、链路、视觉、速度与参数 revision。
-- **实时波形**：左侧搜索与勾选通道，选择目标图表后“选择应用到图表”。可添加/删除/停靠/浮动图表、添加设备预设。同一通道可显示在多个图表。右键图表进一步调整坐标，支持暂停、跟随、5–120 秒窗口、十字线、样式、别名、统计、CSV/PNG 导出。统计下方悬停可查看全部已选通道。
+- **实时波形**：左侧搜索与勾选通道，选择目标图表后勾选即显示；“显示姿态”用于快速检查，“恢复实时显示”恢复跟随和自动纵轴。可添加/删除/停靠/浮动图表、添加设备预设。同一通道可显示在多个图表。右键图表进一步调整坐标，支持暂停、跟随、5–120 秒窗口、十字线、样式、别名、统计、CSV/PNG 导出。统计下方悬停可查看全部已选通道。
 - **3D 姿态**：非对称长方体、车头箭头、彩色坐标轴、地面网格；鼠标旋转/缩放/平移。默认 ZYX 旋转，轴映射 JSON 可配置。先逐轴转动车体校验映射；显示归零只作用于画面。超过 700 ms 无姿态输入显示 STALE，停止运动。
 - **任务与轨迹**：显示道路状态、进入/退出和环岛阶段，提供轮速与航向积分的相对轨迹；缺失数据明确分段。
 - **试验与对比**：自动运行片段、参数快照、A/B 波形与参数差异、故障前后日志截取。

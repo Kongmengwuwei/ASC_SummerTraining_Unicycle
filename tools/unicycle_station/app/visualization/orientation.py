@@ -1,3 +1,5 @@
+from copy import deepcopy
+from app.ui.edit_history import change
 import json
 import time
 import numpy as np
@@ -75,13 +77,15 @@ class OrientationWidget(W.QWidget):
             with QtCore.QSignalBlocker(box):
                 box.setChecked(self.mapping.get("signs", [1,1,1])[i] < 0)
 
+    def apply_mapping(self,mapping):
+        self.mapping=deepcopy(mapping);self.zero=np.eye(3);self.quat=QtGui.QQuaternion();self.sync_switches()
+
     def flip_axis(self, axis, reverse):
-        signs = list(self.mapping.get("signs", [1,1,1]))
-        signs[axis] = -1 if reverse else 1
-        self.mapping["signs"] = signs
-        self.mapping["verified"] = False
-        self.zero = np.eye(3)
-        self.quat = QtGui.QQuaternion()
+        mapping=deepcopy(self.mapping)
+        mapping["signs"]=list(mapping.get("signs",[1,1,1]));mapping["signs"][axis]=-1 if reverse else 1
+        mapping["verified"]=False
+        if getattr(self,"history",None) is not None:change(self.history,"改变 3D 显示方向",self.mapping,mapping,self.apply_mapping)
+        else:self.apply_mapping(mapping)
 
     def vertices(self):
         x,y,z=np.asarray(self.mapping.get("dimensions",[3,1.3,.65]))/2
@@ -103,7 +107,8 @@ class OrientationWidget(W.QWidget):
                 raise ValueError("需要三个姿态通道及有效 FRONT 方向")
             dims=mapping.get("dimensions",[3,1.3,.65])
             if len(dims)!=3 or any(not np.isfinite(v) or v<=0 for v in dims):raise ValueError("模型尺寸非法")
-            self.mapping=mapping;self.zero=np.eye(3);self.sync_switches()
+            if getattr(self,"history",None) is not None:change(self.history,"调整 3D 轴映射",self.mapping,mapping,self.apply_mapping)
+            else:self.apply_mapping(mapping)
         except (ValueError,TypeError) as exc:W.QMessageBox.information(self,"映射无效",str(exc))
 
     def update_data(self):

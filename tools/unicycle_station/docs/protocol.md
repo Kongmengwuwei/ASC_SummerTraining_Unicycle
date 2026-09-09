@@ -1,12 +1,14 @@
 # UART2 配置协议 v1
 
+源码核对：2026-09-07，code/vofa.c、vofa_task.inc、param.c、board_config.h。
+
 默认链路为 115200、8N1、ASCII、PC 无流控；MCU 模块自身的 P10_2 RTS 仍控制上行 FIFO 搬运。端口和 PC 串口配置可修改并保存。
 
 ## 帧与兼容性
 
 保留 `att:roll,pitch,yaw`、25 通道 `run:`、`speed:turn,speed` 和完整行 `stop`。下行必须以 CR、LF 或 CRLF 结束。应用默认 CRLF。旧固件不回应 cfg 时仅监看及停车，参数保持锁定。
 
-单条下行不含结束符最多 **63 字节**。超长、串口环溢出、1 秒未结束的残行均作废，丢弃到下一结束符。旧实现的“遇到新 speed/stop 前缀就提交残行”已移除，避免截断或粘连命令被执行。合法的完整旧命令保持兼容。
+单条下行不含结束符最多 **63 字节**。超长、串口环溢出、1 秒未结束的残行均作废，丢弃到下一结束符。旧实现的“遇到新 speed/stop 前缀就提交残行”已移除，避免截断或粘连命令被执行。合法的完整旧命令保持兼容。Remote 的 turn 和 speed 输入范围均为 −90～90，speed ÷40 转为 m/s 后必须在 ±1.50 m/s 内，否则拒绝（有效 speed 原始输入实际为 ±60）；仅车身启动 Remote 后接受，超过 1000 ms 无有效命令归零速度但保持平衡。
 
 | 请求 | 成功应答 |
 |---|---|
@@ -56,17 +58,17 @@ PC 状态超过 700 ms 未更新即锁定参数。STOP 必须同时满足 start_
 
 PC 停车使用独立线程，不进入普通请求队列。串口发送临界区仅允许当前一次有界写入完成，清理系统待发缓冲后发送 `\r\nstop\r\n`，前置结束符隔离可能的半条配置命令。Mock 直接发送 `stop\r\n`。已发送和 MCU 确认 STOP 是两种不同状态。PC 随后发送带序号的 status 请求，只有该请求成功且状态为 STOP 才确认停车，积压的旧周期状态帧不会单独触发确认。此无线命令不替代车身返回键或现场物理断电。
 
-MCU 在 CPU0 前台优先分发 stop，取消尚未执行的 Schema/保存操作并调用原有 `control_stop()`。没有新增任何发车入口。
+MCU 在 CPU0 前台解析完整 stop，取消尚未执行的 Schema/保存操作并调用原有 `control_stop()`。没有新增任何发车入口。
 
 Flash 保存先排队，待下行已消费完且静默 100 ms 后执行；要求 STOP、无 Test/Jog/Remote/Run，A/B 链路正常且绝对回读转速均 ≤50 RPM、C 轮当前速度计数为 0，并连续满足至少 500 ms。存在 IPM 待保存时拒绝。该判据是现有传感器分辨率下的静止判断，不能证明车体绝对静止。
 
-实际写入复用 `param_save()` / `param_save_names()`，它们已实现 CRC 与逐字回读比对。保存组为 Roll/Pitch/Yaw/Lean/Run/Camera/Element/Motor/Zero/Odometry/IPM/Other。PC 危险参数必须停车、解锁高级模式、预览新旧值并二次确认。
+实际写入复用 `param_save()` / `param_save_names()`，它们已实现 CRC 与逐字回读比对。当前非空保存组为 Roll/Pitch/Yaw/Lean/Run/Camera/Element/Motor/Zero/Odometry/IPM，另支持 all；Other 是分类回退值，当前没有成员，保存会返回 BAD_FORMAT。组名大小写按源码精确匹配。PC 危险参数必须停车、解锁高级模式、预览新旧值并二次确认。
 
 ## 实时与带宽边界
 
 格式化、Schema 遍历、参数解析、Flash 均在 CPU0 前台。1 ms 中断的 UART RX 最多搬 32 字节，TX 最多 16 字节。保留现有快照、双核职责和电机安全闸。
 
-上行帧装不下则整帧丢弃，并累计 tx_drop。遥测为应答预留 384 字节；Schema 每次前台最多发一个参数，间隔至少 30 ms。hello 后提供额外 10 Hz 姿态（当原 att 模式未启用），便于 Run 时看到 Pitch/Yaw。
+tx_push 装不下时整帧丢弃并累计 tx_drop；部分发送前跳过路径不累计（例如 task 预留空间不足、普通波形格式化超长），所以 tx_drop 不是全部遥测损失数。遥测为应答预留 384 字节；Schema 每次前台最多发一个参数，间隔至少 30 ms。hello 后提供额外 10 Hz 姿态（当原 att 模式未启用），便于 Run 时看到 Pitch/Yaw。
 
 115200 的理论有效载荷约 11520 B/s。25 通道文本帧长度随数值变化，不能保证任何数值下持续 50 Hz 加完整配置流都无丢帧；PC 将遥测缺口与控制停顿区分。准确单向链路时延无法由未同步 PC/MCU 时钟直接求得，界面提供接收年龄、遥测间隔和应答耗时，不冒充绝对链路时延。
 
@@ -84,4 +86,4 @@ taskevt:sequence,uptime_ms,previous_state,current_state,element,phase,run_active
 
 实现位于 `code/vofa_task.inc`，由 vofa.c 包含，无需新增 ADS 翻译单元。CPU0 的 vofa_snapshot 在现有 1 ms ISR 内执行固定次数诊断比较和定长快照/队列写入，无字符串格式化和动态分配。CPU0 前台 vofa_poll 取快照并格式化，状态帧为配置应答预留发送空间。16 项 SPSC 事件环使用发布/获取内存屏障；队列满增加丢弃计数并保留原有事件顺序。约 5 Hz 的同步速度/航向供上位机估算，不参与控制。
 
-普通 att/run/stat 字段与 cfg 写入/停车权限保持原约定。旧 cfg v1 固件没有 task 帧时，上位机仍开放正常的兼容功能，任务页面提示等待数据。
+task 诊断中的视觉过期判断为 age >100 ms，Run 停帧退出为 age ≥100 ms，边界相差一拍。普通 att/run/stat 字段与 cfg 写入/停车权限保持原约定。旧 cfg v1 固件没有 task 帧时，上位机仍开放正常的兼容功能，任务页面提示等待数据。

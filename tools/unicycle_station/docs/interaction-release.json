@@ -1,0 +1,138 @@
+{
+  "version": "0.3.0",
+  "date": "2026-09-07T16:13:08.776476+08:00",
+  "executable": "dist\\interaction-workflow\\EmbeddedStation\\EmbeddedStation.exe",
+  "executable_sha256": "91c8908e3f52b5c8adc390d6073b95ea8ddd2be3618426c188ad595e6a34d531",
+  "tests": {
+    "passed": 83,
+    "failed": 0,
+    "duration_seconds": 42.28,
+    "report": "docs/interaction-tests.txt"
+  },
+  "source_visual_smoke": [
+    {
+      "name": "parameters-100",
+      "scale": 1.0,
+      "size": [
+        1520,
+        780
+      ],
+      "parameters": 72,
+      "history": 0,
+      "frames": 665
+    },
+    {
+      "name": "groups-100",
+      "scale": 1.0,
+      "size": [
+        1520,
+        780
+      ],
+      "parameters": 72,
+      "history": 0,
+      "frames": 752
+    },
+    {
+      "name": "groups-80",
+      "scale": 0.8,
+      "size": [
+        1520,
+        780
+      ],
+      "parameters": 72,
+      "history": 0,
+      "frames": 858
+    },
+    {
+      "name": "groups-140",
+      "scale": 1.4,
+      "size": [
+        1520,
+        780
+      ],
+      "parameters": 72,
+      "history": 0,
+      "frames": 965
+    },
+    {
+      "name": "overview-100",
+      "scale": 1.0,
+      "size": [
+        1520,
+        780
+      ],
+      "parameters": 72,
+      "history": 0,
+      "frames": 1072
+    },
+    {
+      "name": "overview-80",
+      "scale": 0.8,
+      "size": [
+        1520,
+        780
+      ],
+      "parameters": 72,
+      "history": 0,
+      "frames": 1175
+    },
+    {
+      "name": "workbench-100",
+      "scale": 1.0,
+      "size": [
+        1520,
+        780
+      ],
+      "parameters": 72,
+      "history": 0,
+      "frames": 1291
+    },
+    {
+      "name": "scope-80",
+      "scale": 0.8,
+      "size": [
+        1520,
+        780
+      ],
+      "parameters": 72,
+      "history": 0,
+      "frames": 1410
+    }
+  ],
+  "source_visual_stderr_bytes": 0,
+  "scope": "Windows upper-PC interaction changes only; Mock checks; no ADS build, flashing or real serial commands",
+  "source_sha256": {
+    "app\\__init__.py": "faae9105aeaea523c725f1715329e765fe3ff8d1c4464e9ec240232691a3a037",
+    "app\\core\\models.py": "1c96cd10517169bc60d70e561938aab98ecb575ff5a51b61984c26a61eab1d83",
+    "app\\core\\store.py": "50d46fe447c1547fa0802a551d7a0169fe5a26446f3dd16f2386e1e2c145a6ef",
+    "app\\main.py": "acaa3b2aabbdf744d59581ff664232251d9195cbf16b550968861a7e60ad9dd3",
+    "app\\plotting\\measurement.py": "58a0b5b62e71931d53fb0e5a8da542698410dd7a88554a3fa059fc81bd36285d",
+    "app\\plotting\\scope.py": "36baa047b5d4c84c20699d89b424f59634269d3fed24d6770bf7636ba5693441",
+    "app\\plugins\\registry.py": "9b1615ff0f6cfe54e4e2ce9c5639b41404358e48ca3532660bd0cdb765e608ba",
+    "app\\protocols\\firewater.py": "432d35972dd1ec79beca013a585496fe15c1190e7d968fe0f7d9d8a07f0c08d3",
+    "app\\recording\\session.py": "20d6c952d582677752b0e97b2eec526b1154662fc85edce55b8e39fc661b7145",
+    "app\\services\\background.py": "bebf838c3bf0bddc868261412360c64565588ee03c4d132ff58b740823235e2b",
+    "app\\services\\engine.py": "6d7f1019b36b304aaaa69619616ecbd66d2487d7fbc4469f3840a441525d320f",
+    "app\\services\\experiments.py": "8c750744de68022549c6466312581459ad7acd9a294f35a785f57d13911238cc",
+    "app\\services\\requests.py": "dcd7d73f511d1851691ab4b2ac5eb1bcd4aae3cda4e52a679e63fd5432cdd7ce",
+    "app\\services\\task_state.py": "a03ab0cf1e92e5a586639fc493f10dfa98f63dda1247f436afb2a7637d7ee42f",
+    "app\\transports\\mock.py": "4437f5cf203c520c6cca36cd3efb5a914bf7ba1cb53448ae29986e59eaf640e1",
+    "app\\transports\\serial_transport.py": "ef0b8d8502d1f80ff1698bba428ddad6975b5584e57b26fb6886a12bb0ea6e96",
+    "app\\ui\\connection.py": "eea186198c7835262cb447b11d1ef94a4a8b41c55ed5f2c2d22b3670583d6c3c",
+    "app\\ui\\edit_history.py": "b58d31744eece6a5366cb271caf55142e7733b4d935b277f33c26a6d555ac589",
+    "app\\ui\\experiments_page.py": "02e0347931be687368abef07aafbc414c9a1a96c1c5ab7551b5b4f18a62ea7e6",
+    "app\\ui\\interactions.py": "e743a4b9cf7dabc0ff584f14de8d821188f9d297650644c97570fe759780e6ad",
+    "app\\ui\\parameter_table.py": "17695922c5a6e297ab501fabdfeef0a2e4f01689bb8008eee8ae7540176ddca8",
+    "app\\ui\\parameters.py": "52891be49cf42cafcabe5627e2e6d5ff85ed8e205a0826f192ab4da0f78c4ac0",
+    "app\\ui\\reorder.py": "25ee11c6076c39fa5daa25967498299d925972716ed9c88580edf293f1147d4f",
+    "app\\ui\\task_page.py": "44f032c2432fac045d55901df46581252566791d497f9cd7f0e10398017ef594",
+    "app\\ui\\window.py": "030ad027f051b175fcf66895270407d529bb1486d5d37a2e5efce3fc6cfa3ba2",
+    "app\\ui\\workbench.py": "83c3c5c667dcc8d8575d59de9cb3e1445dba9d45e610502c030cfdba305e8d09",
+    "app\\visualization\\orientation.py": "e70e5e49e9b350d60db5d9036c1a2d6fe4eda38af5f88b0d7eef39ede672227a"
+  },
+  "packaged_smoke": {
+    "exit_code": 0,
+    "pages": 10,
+    "screenshots": "docs/screenshots"
+  }
+}

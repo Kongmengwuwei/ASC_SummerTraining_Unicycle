@@ -1,5 +1,7 @@
 # 架构与扩展
 
+源码核对：2026-09-07。当前固件标识 tc264-cfg1-task1，配置协议版本仍为 1。
+
 ```text
 串口 / Mock → device-io 线程：增量解析 + 请求状态机 → 固定容量 DataStore
                         └→ 有界日志队列 → session-writer 线程 → raw.txt / frames.jsonl
@@ -21,3 +23,18 @@ GUI 停车按钮 → 独立 priority-stop 线程 → 有界串口写锁 → stop
 图表时间轴为 PC 单调接收时间，原始日志另保留 MCU uptime。回放使用磁盘顺序读取和每 5 秒一个索引，避免将完整会话载入内存；事件索引最多 10000 项。快速拖动后重置图表缓存，从目标位置继续播放；不将播放空隙补成真实样本。
 
 参考实现接口：[Qt QOpenGLWidget](https://doc.qt.io/qtforpython-6/PySide6/QtOpenGLWidgets/QOpenGLWidget.html)、[pyqtgraph PlotDataItem](https://pyqtgraph.readthedocs.io/en/latest/api_reference/graphicsItems/plotdataitem.html)。
+
+## task1 与调试增强模块
+
+- 车端 code/vofa_task.inc 由 vofa.c 包含，复用 CPU0 1 ms 快照调用；只观察 CPU0 已接收的视觉与控制状态。前台格式化 task/taskevt，不增加独立控制分支或 CPU1 电机责任。
+- app/services/task_state.py 管理道路状态/事件与相对轨迹；app/ui/task_page.py 展示。使用同步的 MCU 时间、航向和轮速积分，数据缺口分段，不能当作真实赛道地图。
+- app/services/experiments.py 和 app/ui/experiments_page.py 处理试验片段、参数快照、对比和故障截取；app/services/background.py 承担相应后台工作。档案和日志不进入车端控制 ISR。
+- app/plotting/measurement.py 与 scope.py 提供测量及联动波形；方向开关只影响 PC 显示/估算，不改车端零点或极性。
+
+当前文档导航以 0.2 的十页面结构为准；旧初版八页面截图/测试记录保留在 validation.md 的历史部分。
+
+## 与固件参数保持一致
+
+g_param_table 和车端 Schema 决定名称、类型、范围、当前值及权限；Profile/示例/Mock 是独立文件快照。默认值及菜单步长的源码索引见 [参数参考](../../../参数参考.md)。scripts/generate_profiles.py 会重写 Profile 和部分示例，应仅在需要更新这些文件时执行，并审查差异。
+
+改参数时应同步 board_config、param_load_defaults、menu 分组与保存列表、CPU1 反馈、cfg_group/权限及 PC 元数据。当前 direction_rate_kd 对应结构字段 direction_balance_kd，lean_roll_kp 对应 direction_roll_kp，不能简单假设协议名等于结构成员名。

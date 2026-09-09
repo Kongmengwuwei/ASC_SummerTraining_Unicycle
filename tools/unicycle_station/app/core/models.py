@@ -93,6 +93,8 @@ class Parameter:
     enum_options: dict = field(default_factory=dict)
     sort_order: int = 0
     pending: Any = None
+    edit_revision: int = 0
+    edit_target: Any = None
     previous: Any = None
     ram_dirty: bool = False
     flash_state: str = "未知"

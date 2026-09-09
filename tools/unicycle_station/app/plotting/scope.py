@@ -7,6 +7,8 @@ import pyqtgraph as pg
 import pyqtgraph.exporters
 from PySide6 import QtCore, QtGui, QtWidgets as W
 
+from app.ui.reorder import ChannelTree
+from app.ui.edit_history import change
 from app.plotting.measurement import CursorMeasurement, points_with_gaps
 
 PALETTE = ["#56b6f7", "#e5b567", "#b294e2", "#56c5a7", "#e58caf", "#90a7bc"]
@@ -46,12 +48,15 @@ class PlotPanel(W.QWidget):
             b = W.QPushButton(label)
             b.clicked.connect(slot)
             bar.addWidget(b)
+        live=W.QPushButton('恢复实时');live.setToolTip('取消暂停、跟随最新数据并自动调整纵轴');live.clicked.connect(self.resume_live);bar.addWidget(live)
         layout.addLayout(bar)
+        self.hint=W.QLabel();self.hint.setWordWrap(True);self.hint.setStyleSheet('color:#9aabbc;padding:3px');layout.addWidget(self.hint)
         self.plot = pg.PlotWidget(background="#151a20")
         self.plot.showGrid(x=True,y=True,alpha=.18)
         self.plot.addLegend(offset=(12,8))
         self.plot.setLabel("bottom", "PC 接收时间", units="s")
         self.plot.setMinimumHeight(160)
+        self.plot.setSizePolicy(W.QSizePolicy.Expanding,W.QSizePolicy.Ignored)
         layout.addWidget(self.plot,1)
         self.stats = W.QLabel("选择通道以显示统计")
         self.stats.setSizePolicy(W.QSizePolicy.Ignored,W.QSizePolicy.Maximum)
@@ -94,7 +99,7 @@ class PlotPanel(W.QWidget):
                            style=QtCore.Qt.DashLine if style.get("dash") else QtCore.Qt.SolidLine)
             curve = self.plot.plot(name=style.get("alias", label), pen=pen)
             curve.setClipToView(True)
-            curve.setDownsampling(auto=True, method="peak")
+            curve.setDownsampling(auto=False, method="peak")
             self.curves[name] = curve
 
     def update_data(self):
@@ -104,9 +109,26 @@ class PlotPanel(W.QWidget):
         for name, series in data.items():
             if series:
                 points = points_with_gaps(series)
+                # Serial packets can deliver many samples at nearly the same PC time.
+                # Time-spacing based automatic downsampling can then discard every point.
+                density=max(2,self.plot.width()*2)
+                step=1 if np.isnan(points).any() else max(1,len(points)//density)
+                self.curves[name].setDownsampling(ds=step,auto=False,method='peak')
                 self.curves[name].setData(points[:,0]-self.store.started, points[:,1], connect="finite")
             else:
                 self.curves[name].setData([], [])
+        available=[name for name,series in data.items() if series]
+        missing=[name for name in self.channels if name not in available]
+        if not self.channels:hint='尚未选择通道：在左侧勾选，或点击“显示姿态”。'
+        elif self.pause.isChecked():hint='图表已暂停，后台仍接收；点击“恢复实时”继续。'
+        elif not available:
+            tags={tag for tag,items in self.store.profile.channels.items() if any(ch['name'] in self.channels for ch in items)}
+            hint='当前时间窗口未收到所选通道。'+('Run 全量通道需车端启用 Run 遥测；可先点击“显示姿态”检查链路。' if 'run' in tags else '请检查连接及数据源是否发送这些通道。')
+        elif available and all(end-data[name][-1][0]>.7 for name in available):hint='所选通道已超过 0.7 秒未更新；当前显示已有数据，请检查连接或车端遥测模式。'
+        elif not self.follow.isChecked():hint='视图未跟随最新数据；点击“恢复实时”回到当前时刻。'
+        elif missing:hint='正在显示 '+str(len(available))+' 个通道；等待 '+', '.join(missing[:4])
+        else:hint='实时显示 · '+str(len(available))+' 个通道'
+        self.hint.setText(hint)
         if self.follow.isChecked():
             self.plot.setXRange(end-self.store.started-seconds, end-self.store.started, padding=0)
         lines = []
@@ -126,6 +148,10 @@ class PlotPanel(W.QWidget):
             if key in self.event_items:continue
             item=pg.InfiniteLine(event["time"]-self.store.started,pen=pg.mkPen("#78694e",style=QtCore.Qt.DotLine),label=event_labels[event["kind"]],labelOpts={"position":.9-(index%4)*.09,"color":"#ac9975"})
             item.setToolTip(event["message"]);self.plot.addItem(item,ignoreBounds=True);self.event_items[key]=item
+
+    def resume_live(self):
+        self.pause.setChecked(False);self.held_at=None;self.follow.setChecked(True)
+        self.plot.enableAutoRange(axis='y');self.update_data()
 
     def range_dialog(self):
         text, ok = W.QInputDialog.getText(self, "Y 轴范围", "输入 min,max；留空自动缩放")
@@ -175,7 +201,7 @@ class PlotPanel(W.QWidget):
 
     def save_state(self):
         return dict(title=self.title,channels=self.channels,seconds=int(self.window.currentText()),styles=self.styles,
-                    ranges=self.plot.viewRange(), follow=self.follow.isChecked())
+                    ranges=self.plot.viewRange(), follow=self.follow.isChecked(),auto_y=bool(self.plot.getViewBox().autoRangeEnabled()[1]))
 
     def restore_state(self,state):
         self.styles=state.get("styles",{})
@@ -183,14 +209,16 @@ class PlotPanel(W.QWidget):
         self.follow.setChecked(state.get("follow",True))
         self.set_channels(state.get("channels",[]))
         if "ranges" in state:
-            self.plot.setRange(xRange=state["ranges"][0],yRange=state["ranges"][1])
+            if not self.follow.isChecked():self.plot.setXRange(*state['ranges'][0],padding=0)
+            if not state.get('auto_y',True):self.plot.setYRange(*state['ranges'][1],padding=0)
+        self.plot.enableAutoRange(axis='y',enable=state.get('auto_y',True))
 
 
 class ScopePage(W.QWidget):
-    def __init__(self,store):
+    def __init__(self,store,history=None):
         super().__init__()
         self.store=store
-        self.panels=[]
+        self.panels=[];self.history=history;self.channel_order=[];self.syncing=False
         outer=W.QVBoxLayout(self)
         bar=W.QHBoxLayout()
         self.search=W.QLineEdit()
@@ -199,7 +227,7 @@ class ScopePage(W.QWidget):
         bar.addWidget(self.search)
         self.target=W.QComboBox()
         bar.addWidget(self.target)
-        for text,slot in [("添加图表",lambda:self.add_plot()),("删除图表",self.remove_plot),("选择应用到图表",self.assign)]:
+        for text,slot in [("添加图表",lambda:self.add_plot()),("删除图表",self.remove_plot),("显示姿态",self.show_attitude),("恢复实时显示",self.resume_live)]:
             b=W.QPushButton(text);b.clicked.connect(slot);bar.addWidget(b)
         self.linked=W.QCheckBox("多图联动");self.linked.setChecked(True);self.linked.toggled.connect(self.link_panels);bar.addWidget(self.linked)
         self.presets=W.QComboBox()
@@ -207,20 +235,54 @@ class ScopePage(W.QWidget):
         bar.addWidget(self.presets)
         b=W.QPushButton("添加预设");b.clicked.connect(self.add_preset);bar.addWidget(b)
         outer.addLayout(bar)
+        help_text=W.QLabel('勾选通道即显示在所选图表 · 姿态可用于连接检查 · Run 通道取决于车端遥测模式')
+        help_text.setWordWrap(True);outer.addWidget(help_text)
         split=W.QSplitter()
-        self.tree=W.QTreeWidget();self.tree.setHeaderLabels(["通道", "单位"])
-        self.tree.setMaximumWidth(310)
-        self.tree.setMinimumWidth(230)
+        self.tree=ChannelTree();self.tree.setHeaderLabels(["通道", "单位", "数据"])
+        self.tree.setMaximumWidth(480)
+        self.tree.setMinimumWidth(300)
+        self.tree.setRootIsDecorated(False)
         self.tree.header().setSectionResizeMode(0,W.QHeaderView.Stretch)
         self.tree.header().setSectionResizeMode(1,W.QHeaderView.ResizeToContents)
-        self.tree.itemDoubleClicked.connect(lambda *args:self.assign())
+        self.tree.header().setSectionResizeMode(2,W.QHeaderView.ResizeToContents)
+        self.tree.orderChanged.connect(self.reorder_channels)
+        self.tree.itemChanged.connect(lambda item,col:self.assign() if col==0 and not self.syncing else None)
+        self.target.currentIndexChanged.connect(self.sync_selection)
+        self.tree.setToolTip('勾选后立即显示在所选图表；可拖动调整通道顺序')
         split.addWidget(self.tree)
         self.host=W.QMainWindow();self.host.setDockNestingEnabled(True)
-        split.addWidget(self.host);split.setStretchFactor(1,1)
+        split.addWidget(self.host);split.setStretchFactor(1,1);split.setSizes([360,900])
         outer.addWidget(split)
         self.known=set()
         for title,channels in list(store.profile.data.get("plot_presets",{}).items())[:2]:
             self.add_plot(title,store.profile.data.get("default_plot_channels",{}).get(title,channels))
+
+    def sync_selection(self,*args):
+        if not hasattr(self,'tree'):return
+        index=self.target.currentIndex();names=set(self.panels[index][1].channels) if 0<=index<len(self.panels) else set()
+        with QtCore.QSignalBlocker(self.tree):
+            for i in range(self.tree.topLevelItemCount()):
+                item=self.tree.topLevelItem(i);item.setCheckState(0,QtCore.Qt.Checked if item.data(0,QtCore.Qt.UserRole) in names else QtCore.Qt.Unchecked)
+
+    def show_attitude(self):
+        if not self.panels:self.add_plot('姿态')
+        index=max(0,self.target.currentIndex());dock,panel=self.panels[index]
+        names=[ch['name'] for ch in self.store.profile.channels.get('att',[])]
+        if not names:names=list(self.store.snapshot()[0])[:3]
+        if self.history is None:panel.set_channels(names)
+        else:change(self.history,'显示姿态通道',panel.channels,names,panel.set_channels)
+        dock.show();panel.resume_live();self.sync_selection()
+
+    def resume_live(self):
+        if not self.panels:self.show_attitude()
+        for dock,panel in self.panels:dock.show();panel.resume_live()
+
+    def reorder_channels(self,before,after):
+        if self.history is None:self.channel_order=after
+        else:change(self.history,"调整通道顺序",before,after,self.restore_channel_order)
+
+    def restore_channel_order(self,order):
+        self.channel_order=order;self.tree.restore_order(order)
 
     def add_plot(self,title=None,channels=None):
         if len(self.panels)>=8:
@@ -249,7 +311,9 @@ class ScopePage(W.QWidget):
         for j in range(self.tree.topLevelItemCount()):
             item=self.tree.topLevelItem(j)
             if item.checkState(0)==QtCore.Qt.Checked:names.append(item.data(0,QtCore.Qt.UserRole))
-        self.panels[i][1].set_channels(names)
+        panel=self.panels[i][1]
+        if self.history is None:panel.set_channels(names)
+        else:change(self.history,"修改图表通道",panel.channels,names,panel.set_channels)
 
     def add_preset(self):
         name=self.presets.currentText()
@@ -261,13 +325,22 @@ class ScopePage(W.QWidget):
             item=self.tree.topLevelItem(i);item.setHidden(query not in item.text(0).lower())
 
     def update_data(self):
-        latest,_,_=self.store.snapshot()
+        latest,stamps,_=self.store.snapshot()
         definitions={ch["name"]:ch for channels in self.store.profile.channels.values() for ch in channels}
         for name in sorted(set(latest)|set(definitions)):
             if name in self.known:continue
             self.known.add(name);d=definitions.get(name,{})
             item=W.QTreeWidgetItem([f"{d.get('label',name)} · {name}",d.get("unit","")])
-            item.setData(0,QtCore.Qt.UserRole,name);item.setCheckState(0,QtCore.Qt.Unchecked);self.tree.addTopLevelItem(item)
+            item.setFlags(item.flags() & ~QtCore.Qt.ItemIsDropEnabled)
+            item.setData(0,QtCore.Qt.UserRole,name);item.setToolTip(0,item.text(0));item.setCheckState(0,QtCore.Qt.Unchecked)
+            with QtCore.QSignalBlocker(self.tree):self.tree.addTopLevelItem(item)
+        if self.channel_order:self.tree.restore_order(self.channel_order)
+        self.sync_selection()
+        with QtCore.QSignalBlocker(self.tree):
+            for i in range(self.tree.topLevelItemCount()):
+                item=self.tree.topLevelItem(i);name=item.data(0,QtCore.Qt.UserRole)
+                state='接收中' if self.store.clock()-stamps.get(name,0)<.7 else '已过期' if name in latest else '未收到'
+                item.setText(2,state)
         self.filter_channels()
         for dock,panel in self.panels:
             if dock.isVisible():panel.update_data()
@@ -295,9 +368,10 @@ class ScopePage(W.QWidget):
         self.sync_controls(first)
 
     def layout_state(self):
-        return {"docks":bytes(self.host.saveState().toBase64()).decode(),"linked":self.linked.isChecked()}
+        return {"docks":bytes(self.host.saveState().toBase64()).decode(),"linked":self.linked.isChecked(),"channel_order":self.tree.order() or self.channel_order}
 
     def restore_layout(self,state):
+        self.restore_channel_order(state.get("channel_order",[]))
         self.linked.setChecked(state.get("linked",True))
         if state.get("docks"):self.host.restoreState(QtCore.QByteArray.fromBase64(state["docks"].encode()))
         self.link_panels()

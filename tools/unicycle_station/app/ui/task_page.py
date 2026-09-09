@@ -12,10 +12,10 @@ class TaskPage(W.QWidget):
         super().__init__()
         self.engine = engine
         layout = W.QVBoxLayout(self)
-        self.title = W.QLabel("等待 MCU 任务状态")
+        self.title = W.QLabel("等待 Run 开始")
         self.title.setStyleSheet("font-size:25px;font-weight:600;padding:8px")
         layout.addWidget(self.title)
-        self.detail = W.QLabel("新固件上报 task / taskevt；旧固件仍可使用其他调试功能")
+        self.detail = W.QLabel("仅在 Run 期间记录；结束后保留本次结果，下次 Run 自动清空")
         self.detail.setWordWrap(True); layout.addWidget(self.detail)
         split = W.QSplitter()
         history = W.QWidget(); history.setMinimumWidth(370); left = W.QVBoxLayout(history)
@@ -37,6 +37,7 @@ class TaskPage(W.QWidget):
         self.speed_reverse.toggled.connect(self.mapping_changed)
         bar.addWidget(self.yaw_reverse);bar.addWidget(self.speed_reverse);box.addWidget(bar)
         self.plot = pg.PlotWidget(background="#151a20")
+        self.plot.setMinimumHeight(220);self.plot.setSizePolicy(W.QSizePolicy.Expanding,W.QSizePolicy.Ignored)
         self.plot.setAspectLocked(True);self.plot.showGrid(x=True,y=True,alpha=.2)
         self.plot.setLabel("bottom","相对 X",units="m");self.plot.setLabel("left","相对 Y",units="m")
         for axis in ("bottom","left"):self.plot.getAxis(axis).enableAutoSIPrefix(False)
@@ -69,17 +70,20 @@ class TaskPage(W.QWidget):
         with observer.lock:
             current=observer.current;stamp=observer.stamp;events=list(observer.events)
         age=self.engine.store.clock()-stamp
+        session=self.engine.run_session
         if current:
-            self.title.setText(observer.label(current[1]) + (" · STALE" if age>.7 else ""))
+            self.title.setText(f"第 {session.number} 次 Run · "+observer.label(current[1]) + (" · 已结束" if not session.active else " · 等待数据" if age>.7 else ""))
             self.title.setStyleSheet(f"font-size:25px;font-weight:600;padding:8px;color:{'#d1a96a' if age>.7 else '#70c9ae'}")
-            self.detail.setText(f"{'正式 Run' if current[5] else '观察 / 未进入 Run'} · 环岛 {PHASES.get(int(current[3]), str(int(current[3])))} · 视觉年龄 {int(current[6])} ms · 质量 {current[7]:.2f} · 状态序号 {int(current[8])} · 队列丢弃 {int(current[9])}")
+            phase_detail=(' · 环岛 '+PHASES.get(int(current[3]),str(int(current[3])))) if int(current[1]) in (5,6) else ''
+            self.detail.setText(f"{'记录中' if session.active else '本次结果已冻结'}{phase_detail} · 视觉年龄 {int(current[6])} ms · 质量 {current[7]:.2f} · 状态序号 {int(current[8])} · 队列丢弃 {int(current[9])}")
         else:
-            self.title.setText("等待 MCU 任务状态")
-        signature=(len(events),events[-1]["seq"] if events else None)
+            self.title.setText(f"第 {session.number} 次 Run · 等待任务数据" if session.active else "Run 已结束" if session.number else "等待 Run 开始")
+            self.detail.setText("仅在 Run 期间记录任务与轨迹；结束后保留结果，下次 Run 自动清空。")
+        signature=(session.number,len(events),events[-1]["seq"] if events else None)
         if signature!=self.signature:
             self.signature=signature;self.events.setRowCount(len(events))
             for row,event in enumerate(reversed(events)):
-                for col,text in enumerate((f"{event['uptime']/1000:.3f}",event["message"],PHASES.get(event["phase"],str(event["phase"])))):
+                for col,text in enumerate((f"{event['uptime']/1000:.3f}",event["message"],(PHASES.get(event["phase"],str(event["phase"])) if event.get("state") in (5,6) else "—"))):
                     self.events.setItem(row,col,W.QTableWidgetItem(text))
         with self.engine.trajectory.lock:
             trajectory=self.engine.trajectory;points=list(trajectory.points)
