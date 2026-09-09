@@ -6,3 +6,6 @@ build/
 dist/
 sessions/
 *.spec
+
+# Disposable verification output; keep documentation separate.
+/artifacts/

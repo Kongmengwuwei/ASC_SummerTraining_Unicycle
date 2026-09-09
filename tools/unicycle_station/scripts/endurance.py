@@ -9,11 +9,12 @@ import psutil
 from app.core.models import DeviceProfile
 from app.services.engine import StationEngine
 
-parser=argparse.ArgumentParser();parser.add_argument("--seconds",type=int,default=1800);parser.add_argument("--output",default="docs/endurance.json");args=parser.parse_args()
+parser=argparse.ArgumentParser();parser.add_argument("--seconds",type=int,default=1800);parser.add_argument("--output",default="artifacts/endurance.json");args=parser.parse_args()
 root=Path(__file__).resolve().parents[1]
 engine=StationEngine(DeviceProfile.load(root/"app/profiles/tc264_unicycle/profile.json"))
-engine.log_directory=root/"sessions/endurance"
+engine.log_directory=root/"artifacts/mock-sessions/endurance"
 output=root/args.output
+output.parent.mkdir(parents=True,exist_ok=True)
 engine.start("mock",faults=True)
 process=psutil.Process();samples=[];start=time.monotonic()
 try:

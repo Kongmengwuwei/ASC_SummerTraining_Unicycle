@@ -1,1 +1,0 @@
-{"schema_version": 1, "kind": "endurance_result", "completed": true, "duration_seconds": 1800.21, "bounded_rings": true, "post_warmup_growth_mb": 9.38, "log_drops": 0}

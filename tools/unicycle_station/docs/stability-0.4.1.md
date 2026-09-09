@@ -1,6 +1,6 @@
 # 0.4.1 收数边界修复
 
-2026-09-09。程序：`dist/stability-0.4.1/EmbeddedStation/EmbeddedStation.exe`，需保留整个文件夹。旧版安装包与验证记录保留。
+2026-09-09。程序：`dist/EmbeddedStation/EmbeddedStation.exe`，分发时需复制整个文件夹。工作目录仅保留最新版，旧版源码与记录由 Git 保存。
 
 本版继续保留 0.4 的 Run 会话、显示别名、总览显隐及波形改进，详见 [0.4 操作说明](personalization-workflow.md)。仅更新上位机，无需重新烧录车端，本轮没有 ADS 构建、烧录或实车控制操作。
 
@@ -9,4 +9,4 @@
 - 正常 MCU 时间回绕继续处理，重新连接时仍重建记录。没有启动标识的协议无法对任意长时间重放数据做绝对复位识别，此判断基于收到的快照时间线。
 - 普通道路状态不再显示环岛阶段，首次观测明确标注；环岛仍显示相应阶段。
 
-完整回归：94 项通过。专项和打包验证见 `stability-tests.txt`、`stability-screenshots/result.json` 和 `stability-release.json`。以上为 PC / Mock 验证，不是车端 CPU 负载或行驶稳定性测试。
+整理后重新从当前源码打包，包含当前 Profile 的参数范围快照。最新回归与安装包验证见 [验证记录](validation.md)。本次未执行 ADS 构建、烧录或实车测试。

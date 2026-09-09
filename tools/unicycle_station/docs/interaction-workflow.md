@@ -1,6 +1,6 @@
 # 交互优化版 0.3
 
-2026-09-07。安装包位于 `tools/unicycle_station/dist/interaction-workflow/EmbeddedStation/EmbeddedStation.exe`。复制到其他电脑时，请复制整个 `EmbeddedStation` 文件夹。原有 0.2 安装包保留。
+程序入口：`tools/unicycle_station/dist/EmbeddedStation/EmbeddedStation.exe`。复制到其他电脑时，请复制整个 `EmbeddedStation` 文件夹。
 
 本版只更新上位机，不改变通信协议和车端控制逻辑；已能正常连接的车端无需重新烧录。本轮没有进行 ADS 构建、烧录或实车串口操作。
 
@@ -45,4 +45,4 @@
 
 ## 验证记录
 
-本次验证使用本地自动化测试和 Mock 数据，覆盖撤销/重做、应答期间撤销、分组搜索、拖动处理、工作区恢复、缩放快捷键及既有功能回归。源码界面检查覆盖 80%、100%、140% 三种显示比例；独立安装包另行验证全部 10 个页面。结果保存在 `interaction-tests.txt`、`interaction-screenshots/result.json` 和 `interaction-release.json`。这些记录不代表实车控制或道路稳定性测试。
+撤销、分组、排序及缩放的测试与当前安装包验证见 [验证记录](validation.md)。历史专项检查保存在 Git。

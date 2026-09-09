@@ -6,10 +6,10 @@ from PySide6 import QtCore,QtGui,QtWidgets as W
 from app.ui.window import MainWindow
 
 root=Path(__file__).resolve().parents[1]
-out=root/'docs/interaction-screenshots';out.mkdir(exist_ok=True)
+out=root/'artifacts/interaction-screenshots';out.mkdir(parents=True,exist_ok=True)
 fmt=QtGui.QSurfaceFormat();fmt.setDepthBufferSize(24);fmt.setSamples(4);QtGui.QSurfaceFormat.setDefaultFormat(fmt)
 app=W.QApplication([]);window=MainWindow(restore=False);window.persist_enabled=False
-window.engine.log_directory=root/'sessions/interaction-smoke'
+window.engine.log_directory=root/'artifacts/mock-sessions/interaction-smoke'
 window.show();window.connect_mock()
 results=[]
 

@@ -26,7 +26,7 @@ PC 再读取 status 和 Schema。当前源码 hello 标识为 tc264-cfg1-task1�
 - 新增“重新握手”按钮，仅发配置读取请求；参数仍须完整握手/状态/Schema 才开放。
 - 空读取不再作为接收包写入日志；新会话元数据附带串口设置和数据源类别。
 
-源码启动脚本已使用修复后的代码。考虑旧 EXE 正在使用中，本次更新包放在 `dist/handshake-fix/EmbeddedStation/EmbeddedStation.exe`，不会强制关闭原上位机。退出旧程序后打开更新包，重新选择串口。
+源码与当前安装包均包含握手诊断修复。退出旧程序后打开 `dist/EmbeddedStation/EmbeddedStation.exe`，重新选择串口。
 
 ## 按证据排查链路
 
@@ -51,4 +51,4 @@ PC 再读取 status 和 Schema。当前源码 hello 标识为 tc264-cfg1-task1�
 
 这些是诊断判据，不代表本次已经读取了车上变量。此次没有自动连接串口、发车、修改 MCU 参数或执行 ADS 构建。
 
-验证：50 项 pytest 通过，修复版窗口 EXE 的 Mock 八页面验证通过、退出码 0；见 [handshake-release.json](handshake-release.json)。用户补充无线发送 TX / 接收 RX 灯持续闪烁，说明模块链路存在活动，但仍需核对上位机选中的 COM 口；不能据此认定 PC 已收到字节。
+当前验证见 [验证记录](validation.md)，历史握手修复记录保存在 Git。无线发送 TX / 接收 RX 灯闪烁表示链路有活动，仍需核对上位机选中的 COM 口，不能据此认定 PC 已收到字节。

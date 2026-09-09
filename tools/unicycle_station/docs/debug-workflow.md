@@ -1,8 +1,8 @@
 # 调试增强版使用说明 · 0.2
 
-源码/文档核对：2026-09-07。协议依据 vofa.c / vofa_task.inc；发行包验证见 debug-release.json，不代表本次重新测试。
+操作说明依据当前源码；最新验证见 [验证记录](validation.md)。
 
-新版入口：`../dist/debug-workflow/EmbeddedStation/EmbeddedStation.exe`。所有程序文件仍位于独轮车项目的 `tools/unicycle_station` 下。分发时复制整个 `EmbeddedStation` 文件夹；原发行包和握手修复包保留。
+程序入口：`tools/unicycle_station/dist/EmbeddedStation/EmbeddedStation.exe`。分发时复制整个 `EmbeddedStation` 文件夹。
 
 ## 姿态方向
 
@@ -65,4 +65,4 @@
 
 ## 验证范围
 
-见 [0.2 发行验证记录](debug-release.json)。自动测试与 Mock 页面检查验证了软件行为；它们不构成 TASKING 编译、MCU 中断耗时测量、无线实测吞吐、道路识别准确率或实车轨迹精度的证据。已有 30 分钟旧版测试记录保留，本轮持续收数检查另存 `debug-endurance.json`，不混用结果。
+当前 PC / Mock 验证见 [验证记录](validation.md)。历次验证保存在 Git，不作为本次硬件性能或实车轨迹精度的证明。

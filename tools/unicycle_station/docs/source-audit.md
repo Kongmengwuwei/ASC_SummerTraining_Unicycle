@@ -50,7 +50,7 @@
 
 ## PC 与固件验证记录
 
-[validation.md](validation.md) 保留 2026-09-06 初版 PC 验证，并索引 2026-09-07 的 [debug-release.json](debug-release.json)：记录 70 项测试、Mock 10 页面打包检查、约 180 秒后台检查。它们是已有历史结果，本次没有重跑、重新打包或改写其 JSON/日志/截图。
+当前上位机验证见 [validation.md](validation.md)；历史版本的验证记录保存在 Git 提交 `d3d9c31` 及之前的历史中，不能当作当前固件或安装包的新验证结果。
 
 cfg/task 源码及 PC 主机测试不代替当前 TASKING 编译、1 ms ISR 时序、实际 UART2 吞吐、Flash 停顿和车辆行为。上位机 Profile、Mock、示例预设与现有 EXE 是独立快照；车端实际参数须经 Schema 读取，电脑上有某个 ELF 或 EXE 不能证明车辆已运行相应固件。
 ## 2026-09-09 转弯压弯专项

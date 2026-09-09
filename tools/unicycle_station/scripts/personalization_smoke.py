@@ -6,11 +6,11 @@ from PySide6 import QtCore,QtGui,QtWidgets as W
 from app.ui.window import MainWindow
 
 root=Path(__file__).resolve().parents[1]
-parser=argparse.ArgumentParser();parser.add_argument('--output',default='docs/personalization-screenshots');args=parser.parse_args()
+parser=argparse.ArgumentParser();parser.add_argument('--output',default='artifacts/personalization-screenshots');args=parser.parse_args()
 out=root/args.output;out.mkdir(parents=True,exist_ok=True)
 fmt=QtGui.QSurfaceFormat();fmt.setDepthBufferSize(24);fmt.setSamples(4);QtGui.QSurfaceFormat.setDefaultFormat(fmt)
 app=W.QApplication([]);window=MainWindow(restore=False);window.persist_enabled=False
-window.engine.log_directory=root/'sessions'/out.name
+window.engine.log_directory=root/'artifacts/mock-sessions'/out.name
 window.show();window.connect_mock();results=[];frozen=None
 
 

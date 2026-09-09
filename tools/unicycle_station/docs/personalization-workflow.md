@@ -1,6 +1,6 @@
 # Run 会话与个性化显示 · 0.4
 
-2026-09-07。Windows 程序位于 `tools/unicycle_station/dist/personalization-workflow/EmbeddedStation/EmbeddedStation.exe`，迁移时复制整个 `EmbeddedStation` 文件夹。0.2、0.3 安装包保留。
+Windows 程序位于 `tools/unicycle_station/dist/EmbeddedStation/EmbeddedStation.exe`，迁移时复制整个 `EmbeddedStation` 文件夹。
 
 本版只修改上位机，继续使用现有协议，无需为本次更新重新烧录车端。本轮没有 ADS 构建、烧录和实车串口操作。界面缩放、撤销、折叠和拖动功能继续可用，见 [0.3 操作说明](interaction-workflow.md)。
 
@@ -41,4 +41,4 @@
 
 自动化测试覆盖 Run 开始/结束/重启、旧包延迟到达、MCU 时间回绕与复位、别名及工作区恢复、总览显隐撤销、参数读回值和待应用值区别、实际曲线数据、通道即时勾选与撤销、旧范围恢复和暂停恢复。Mock 界面检查覆盖上述新功能与 80%/100% 显示比例，运行时检查停止冻结和下次 Run 从零开始。
 
-最终结果见 `personalization-tests.txt`、`personalization-screenshots/result.json` 和 `personalization-release.json`。历史版本测试记录保持原样。软件测试不代表实车控制或道路稳定性验证。
+当前结果见 [验证记录](validation.md)，历次专项验证保存在 Git。软件测试不代表实车控制或道路稳定性验证。

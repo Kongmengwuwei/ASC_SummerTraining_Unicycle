@@ -1,22 +1,18 @@
 # Embedded Station · 独轮车上位机
 
-文档核对：2026-09-07。车端参数与模式以当前源码及 MCU Schema 为准，见 [参数参考](../../参数参考.md) 和 [源码核对](docs/source-audit.md)。下述发行包与测试结果有各自日期，不代表本次重新构建。
+整理日期：2026-09-09。车端参数与模式以当前源码及 MCU Schema 为准，见 [参数参考](../../参数参考.md) 和 [源码核对](docs/source-audit.md)。
 
 程序全部位于独轮车项目总文件夹的 `tools/unicycle_station/` 下。Windows 桌面应用，Python 3.11+、PySide6、pyqtgraph、pyserial；首个设备配置为 TC264D Q 型独轮车。
 
 ## 启动
 
-**当前稳定性修复版 0.4.1（2026-09-09）**：打开 `dist/stability-0.4.1/EmbeddedStation/EmbeddedStation.exe`。修复迟到快照误判复位和乱序轨迹重复积分，保留 0.4 功能；见 [0.4.1 说明](docs/stability-0.4.1.md)。无需重新烧录车端。
+**最新版 0.4.1**：双击本目录的 `start_app.bat`，或打开 `dist/EmbeddedStation/EmbeddedStation.exe`。无需安装 Python；复制到其他电脑时须复制整个 `EmbeddedStation` 文件夹。
 
-**保留的个性化调试版 0.4（2026-09-07）**：打开 `dist/personalization-workflow/EmbeddedStation/EmbeddedStation.exe`。新增按 Run 独立记录任务与轨迹、参数及分组显示别名、总览项目显隐，并修复波形恢复与集中到达数据的绘图问题。波形页勾选即显示，提供“显示姿态”和“恢复实时显示”。详见 [0.4 操作说明](docs/personalization-workflow.md)。无需为本次更新重新烧录车端。
+本目录只保留这一份发行程序。历史源码与验证记录保存在 Git；安装包不纳入 Git，需要旧版时从对应提交重新构建。最新改动见 [版本说明](docs/stability-0.4.1.md)，验证结果见 [验证记录](docs/validation.md)。
 
-**保留的交互优化版 0.3（2026-09-07）**：直接打开 `dist/interaction-workflow/EmbeddedStation/EmbeddedStation.exe`。新增 Ctrl+滚轮缩放、Ctrl+Z 撤销、可折叠参数分组和拖动排序，保留 0.2 的调试功能。本次仅更新上位机，无需重新烧录车端。快捷键与使用说明见 [交互优化版说明](docs/interaction-workflow.md)。
+快捷键、折叠和排序见 [交互说明](docs/interaction-workflow.md)，Run 记录、名称自定义及总览显隐见 [个性化说明](docs/personalization-workflow.md)，任务轨迹等见 [调试说明](docs/debug-workflow.md)。串口连接问题见 [连接排查](docs/handshake-diagnosis.md)。
 
-**保留的调试增强版 0.2**：直接打开 `dist/debug-workflow/EmbeddedStation/EmbeddedStation.exe`，无需另装 Python。复制到其他电脑时需复制整个 `EmbeddedStation` 文件夹。包含三轴显示反向开关、任务状态与进出事件、相对轨迹、试验对比、故障截取、联动波形和环路工作台，详见 [调试增强版使用说明](docs/debug-workflow.md)。
-
-原来的 `dist/EmbeddedStation` 和 `dist/handshake-fix/EmbeddedStation` 保留作为历史版本。新版已包含握手诊断修复，详见 [连接排查](docs/handshake-diagnosis.md)。车端 task1 遥测已在当前源码中；是否已构建并烧录须另行确认，本次文档更新未执行 ADS 测试。
-
-双击 `start_windows.bat`，然后点 **Mock 演示**。Mock 会自动循环模拟运行与停车状态，仅作用于软件演示，点击立即停车后保持模拟 STOP。无需车辆即可查看姿态、波形、72 项参数的模拟数据、记录和回放。Mock/Profile 的默认值与示例预设是快照，不是车端读回值；zero_pid 只是全零导入演示，不代表固件当前默认值。首次启动缺少依赖时会在本目录 `.venv` 中安装。
+开发时可双击 `start_windows.bat`，然后点 **Mock 演示**。Mock 会自动循环模拟运行与停车状态，仅作用于软件演示，点击立即停车后保持模拟 STOP。无需车辆即可查看姿态、波形、72 项参数的模拟数据、记录和回放。Mock/Profile 的默认值与示例预设是快照，不是车端读回值；zero_pid 只是全零导入演示，不代表固件当前默认值。首次启动缺少依赖时会在本目录 `.venv` 中安装。
 
 也可在本目录执行：
 
@@ -52,9 +48,11 @@
 .\.venv\Scripts\python.exe scripts/endurance.py
 ```
 
-`--smoke` 自动打开 Mock 并逐页截图到 `docs/screenshots/`；endurance 默认进行 30 分钟真实时间收数、记录和内存测试，结果在 `docs/endurance.json`。
+`--smoke` 自动打开 Mock 并逐页截图到 `artifacts/screenshots/`；endurance 默认进行 30 分钟真实时间收数、记录和内存测试，结果在 `artifacts/endurance.json`。
 
 双击 `build_windows.bat`：先安装项目依赖、运行测试，再以 PyInstaller 生成 `dist/EmbeddedStation/EmbeddedStation.exe`。分发时复制整个 `dist/EmbeddedStation` 文件夹，不能只取其中 exe。`requirements-lock.txt` 记录本次 Windows / Python 3.13 验证所用版本。
+
+测试截图、构建日志和 Mock 测试会话统一放在 Git 忽略的 `artifacts/` 下，可在测试结束后删除；实际采集会话仍使用设置页配置的日志目录。
 
 ## 首次实车联调
 
