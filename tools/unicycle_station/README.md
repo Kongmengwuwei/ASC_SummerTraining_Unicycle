@@ -12,7 +12,7 @@
 
 快捷键、折叠和排序见 [交互说明](docs/interaction-workflow.md)，Run 记录、名称自定义及总览显隐见 [个性化说明](docs/personalization-workflow.md)，任务轨迹等见 [调试说明](docs/debug-workflow.md)。串口连接问题见 [连接排查](docs/handshake-diagnosis.md)。
 
-开发时可双击 `start_windows.bat`，然后点 **Mock 演示**。Mock 会自动循环模拟运行与停车状态，仅作用于软件演示，点击立即停车后保持模拟 STOP。无需车辆即可查看姿态、波形、72 项参数的模拟数据、记录和回放。Mock/Profile 的默认值与示例预设是快照，不是车端读回值；zero_pid 只是全零导入演示，不代表固件当前默认值。首次启动缺少依赖时会在本目录 `.venv` 中安装。
+开发时可双击 `start_windows.bat`，然后点 **Mock 演示**。Mock 会自动循环模拟运行与停车状态，仅作用于软件演示，点击立即停车后保持模拟 STOP。无需车辆即可查看姿态、波形、74 项参数的模拟数据、记录和回放。Mock/Profile 的默认值与示例预设是快照，不是车端读回值；zero_pid 只是全零导入演示，不代表固件当前默认值。首次启动缺少依赖时会在本目录 `.venv` 中安装。
 
 也可在本目录执行：
 

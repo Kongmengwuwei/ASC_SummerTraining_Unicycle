@@ -19,7 +19,7 @@ def capture(name):
 def run(step=0):
     try:
         if step==0:
-            if len(window.engine.params)<72:
+            if len(window.engine.params)<len(window.engine.profile.data['mock_parameters']):
                 assert time.monotonic()-started<20
                 QtCore.QTimer.singleShot(200,lambda:run(0));return
             capture('overview-100');window.resize(980,760);window.interactions.set_zoom(1.25)

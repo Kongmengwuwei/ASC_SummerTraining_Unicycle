@@ -97,8 +97,20 @@
 #define DIRECTION_HEADING_KP_DEFAULT (0.92f)    // 赛道航向误差到目标横摆角速度
 #define DIRECTION_CURVE_KFF_DEFAULT  (50.0f)    // 速度乘归一化曲率前馈
 #define DIRECTION_BALANCE_KD_DEFAULT (0.0f)     // 方向偏差 D，报告初值为 0
-#define DIRECTION_ROLL_KP_MAX        (100.0f)   // 压弯增益可调上限，默认值保持不变
-#define DIRECTION_ROLL_KP_DEFAULT    (2.5f)     // 山大压弯公式方向倾角 Kp
+// 双项压弯：转弯率前馈 + v*r/g；新名称避免旧 lean_roll_kp 的 Flash 值误用。
+#define LEAN_TURN_KP_DEFAULT        (0.01f)    // 方向预压弯增益(s)
+#define LEAN_TURN_KP_MAX            (0.10f)
+#define LEAN_SPEED_KP_DEFAULT       (1.0f)     // v*r/g 物理项倍率
+#define LEAN_SPEED_KP_MAX           (2.0f)
+#define LEAN_SLEW_DPS_DEFAULT       (24.0f)    // 压弯变化速度(°/s)
+#define LEAN_SLEW_DPS_MIN           (1.0f)
+#define LEAN_SLEW_DPS_MAX           (60.0f)
+#define LEAN_DT_S                   (0.005f)   // 与 run5 保持一致
+#define LEAN_SPEED_FILTER_ALPHA     (0.10f)    // 5ms 拍，约45ms一阶时间常数
+#define LEAN_SPEED_MIN_MPS          (0.05f)    // 低于此速度不主动压弯
+#define LEAN_SPEED_FULL_MPS         (0.30f)    // 线性淡入到全权重
+#define LEAN_RATE_DEAD_DPS          (2.0f)     // 连续转弯率死区
+#define LEAN_GRAVITY_MPS2           (9.80665f)
 #define LEAN_MAX_ANGLE_DEFAULT       (5.0f)     // 压弯动态零点最大值(°)
 #define DIRECTION_CAMERA_LIMIT       (5000.0f)  // direction_camera 加权和限幅
 #define DIRECTION_CAMERA_WEIGHT_SUM  (345.0f)   // 60行方向权重总和，用于还原平均像素偏差
@@ -107,10 +119,6 @@
 #define DIRECTION_YAW_RATE_LIMIT     (120.0f)   // 正式循迹目标横摆角速度限幅(°/s)
 #define DIRECTION_YAW_SLEW           (600.0f)   // 目标横摆角速度变化率(°/s^2)
 #define DIRECTION_YAW_LEAD_LIMIT     (35.0f)    // 目标航向相对当前航向最大超前角(°)
-#define DIRECTION_LEAN_OUTPUT_SCALE  (200.0f)   // 山大 Yaw_Zero=yaw+direction_output*200
-#define DIRECTION_LEAN_ERROR_DEAD    (1000.0f)  // 山大原始加权方向偏差死区
-#define DIRECTION_LEAN_FORMULA_DIV   (100.0f)   // 山大压弯公式固定除数
-#define DIRECTION_LEAN_SLEW          (0.08f)    // 压弯角每5ms最大变化量(°)
 #define DIRECTION_LEAN_LIMIT         (10.0f)    // 压弯角软件硬限幅(°)
 #define ROLL_TARGET_LIMIT            (10.0f)    // 回收与压弯合成后的 Roll 目标限幅(°)
 #define YAW_MOMENTUM_WARN_RPM        (2500.0f)  // 单项实测：共模RPM超过该值后温和降低转向与Run速度

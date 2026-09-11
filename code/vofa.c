@@ -360,7 +360,9 @@ static uint8 cfg_live_control(const char *name)
         "direction_heading_kp",
         "direction_curve_kff",
         "direction_rate_kd",
-        "lean_roll_kp",
+        "lean_turn_kp",
+        "lean_speed_kp",
+        "lean_slew_dps",
         "lean_max_angle",
     };
     uint8 i;

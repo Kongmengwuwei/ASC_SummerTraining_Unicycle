@@ -61,7 +61,9 @@ const param_desc_t g_param_table[] =
     { "y_rate_ki",        &g_param.y_rate_ki,        1, -50.0f,   50.0f  },
     { "y_rate_kd",        &g_param.y_rate_kd,        1, -200.0f,  200.0f },
     // 压弯
-    { "lean_roll_kp",      &g_param.direction_roll_kp, 1, 0.0f, DIRECTION_ROLL_KP_MAX },
+    { "lean_turn_kp",      &g_param.lean_turn_kp,      1, 0.0f, LEAN_TURN_KP_MAX },
+    { "lean_speed_kp",     &g_param.lean_speed_kp,     1, 0.0f, LEAN_SPEED_KP_MAX },
+    { "lean_slew_dps",     &g_param.lean_slew_dps,     1, LEAN_SLEW_DPS_MIN, LEAN_SLEW_DPS_MAX },
     { "lean_max_angle",    &g_param.lean_max_angle,    1, 0.0f, DIRECTION_LEAN_LIMIT },
     // 元素现场参数
     { "elem_en_zebra",    &g_param.elem_en_zebra,    0, 0.0f,     1.0f   },
@@ -421,7 +423,9 @@ void param_load_defaults(void)
     g_param.y_rate_ki  = Y_RATE_KI_DEFAULT;
     g_param.y_rate_kd  = Y_RATE_KD_DEFAULT;
 
-    g_param.direction_roll_kp = DIRECTION_ROLL_KP_DEFAULT;
+    g_param.lean_turn_kp     = LEAN_TURN_KP_DEFAULT;
+    g_param.lean_speed_kp    = LEAN_SPEED_KP_DEFAULT;
+    g_param.lean_slew_dps    = LEAN_SLEW_DPS_DEFAULT;
     g_param.lean_max_angle    = LEAN_MAX_ANGLE_DEFAULT;
     g_param.elem_en_zebra    = ELEM_EN_ZEBRA_DEFAULT;
     g_param.elem_en_cross    = ELEM_EN_CROSS_DEFAULT;

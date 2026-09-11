@@ -1,0 +1,35 @@
+{
+  "source": "C:\\Users\\kongmeng\\Documents\\EmbeddedStation\\sessions\\20260911_210105_615700\\frames.jsonl",
+  "total_run_frames": 7778,
+  "active_frames": 3217,
+  "valid_turn_frames_with_settled_speed_target": 1906,
+  "turn_yaw_clip_gt_1_frames": 0,
+  "turn_pixel_near_cap_frames": 551,
+  "active_momentum_scale_min": 1.0,
+  "example_mcu_ms": [
+    51610.0,
+    52630.0
+  ],
+  "example_speed_actual": [
+    0.71,
+    0.894
+  ],
+  "example_speed_target": [
+    0.5,
+    0.5
+  ],
+  "example_yaw_command_mean": 80.8901923076923,
+  "example_gyro_z_mean": 80.90846153846154,
+  "example_pixel_mean": 14.493,
+  "example_body_pitch_coupling_magnitude_dps": [
+    5.275133406189541,
+    7.290720823055164
+  ],
+  "limitations": [
+    "CH20 is encoder speed, not independent ground speed.",
+    "CH10 is body gyro_z, not exact Euler yaw rate.",
+    "No pitch rate, pitch loop target/I output or C duty in run frames; causal attribution remains incomplete.",
+    "PC delivery is bursty; plot uses MCU time and does not bridge resets.",
+    "20260912_003324_799300 is Mock and excluded."
+  ]
+}

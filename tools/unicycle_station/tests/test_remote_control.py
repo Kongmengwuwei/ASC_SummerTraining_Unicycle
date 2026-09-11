@@ -68,8 +68,8 @@ def test_remote_probe_and_mock_wire_path():
     e=StationEngine(builtin_profile());e.auto_record=False
     try:
         e.start('mock');deadline=time.monotonic()+8
-        while time.monotonic()<deadline and (not e.protocol_ready or len(e.params)<72):time.sleep(.02)
-        assert e.protocol_ready and len(e.params)==72
+        while time.monotonic()<deadline and (not e.protocol_ready or len(e.params)<len(e.profile.data['mock_parameters'])):time.sleep(.02)
+        assert e.protocol_ready and len(e.params)==len(e.profile.data['mock_parameters'])
         e.transport.enter_remote_demo();e.remote.wanted=True
         deadline=time.monotonic()+3
         while time.monotonic()<deadline and not e.remote.availability()[0]:time.sleep(.02)

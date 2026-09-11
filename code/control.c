@@ -15,6 +15,7 @@
 start_state_t start_flag = START_STOP;          // 发车状态机，上电全停
 
 float g_roll_zero, g_pitch_zero;                // 机械零点(°)
+static float s_lean_speed_mps;                 // 压弯使用的带符号低通实际速度
 float g_lean_offset = 0;                        // 压弯动态零点偏移(°)
 float g_pwm_roll, g_pwm_pitch, g_pwm_yaw;       // 三轴串级输出，混控前
 int16 g_motor_a, g_motor_b, g_motor_c;          // 混控后的三电机控制量
@@ -212,6 +213,7 @@ static void cascade_reset(void)
     pid_reset(&p_vel_pid);   pid_reset(&p_angle_pid); pid_reset(&p_rate_pid);
     pid_reset(&y_angle_pid); pid_reset(&y_rate_pid);
     g_lean_offset = 0;
+    s_lean_speed_mps = 0.0f;
     s_speed_ramp = 0.0f;
     s_rcy_fb = 0.0f;                                 // 回收环反馈
     g_flywheel_common_rpm = 0.0f;
@@ -312,6 +314,7 @@ static void run_hold_balance(run_stop_t reason)
     s_direction_last_mode = TRACK_MODE_HOLD;
     pid_reset(&p_vel_pid);
     g_lean_offset = 0.0f;
+    s_lean_speed_mps = 0.0f;
     g_yaw_target = imu_get_angle_yaw();
 }
 
@@ -687,26 +690,67 @@ static void direction_yaw_target_update(void)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
-// 函数简介     按山大方向输出与 C 轮速度生成压弯角，并增加可调动态零点上限
-// 参数说明     direction_output 由航向目标差按山大 200 倍关系还原的方向输出
-// 返回参数     float           本拍生效的压弯角(°)
-// 使用示例     g_lean_offset = lean_offset_update((g_yaw_target - yaw) / 200.0f);
+// 函数简介     以持续转弯率生成双项压弯，不依赖航向跟踪误差或横向偏差门控
+// 参数说明     void；每5ms调用，低通实际速度，输出变化速度使用°/s
+// 返回参数     float           平滑后的压弯目标偏移(°)，LEAN_DIR在Roll合成处应用
+// 使用示例     g_lean_offset = lean_offset_update();
 //-------------------------------------------------------------------------------------------------------------------
-static float lean_offset_update(float direction_output)
+static float lean_offset_update(void)
 {
-    float limit = constrain_float(LEAN_MAX_ANGLE, 0.0f, DIRECTION_LEAN_LIMIT);
     float target = 0.0f;
+    float speed = Y_Motor_GetSpeedMps();
+    float rate = s_direction_yaw_rate_cmd;
+    float limit = ctrl_is_finite(LEAN_MAX_ANGLE) ?
+                  constrain_float(LEAN_MAX_ANGLE, 0.0f, DIRECTION_LEAN_LIMIT) : 0.0f;
+    float slew = ctrl_is_finite(LEAN_SLEW_DPS) ?
+                 constrain_float(LEAN_SLEW_DPS, LEAN_SLEW_DPS_MIN, LEAN_SLEW_DPS_MAX) :
+                 LEAN_SLEW_DPS_DEFAULT;
+    float step = slew * LEAN_DT_S;
     float delta;
 
-    if (s_run_active && fabsf(g_vision_direction_camera) > DIRECTION_LEAN_ERROR_DEAD)
+    if (!ctrl_is_finite(g_lean_offset)) g_lean_offset = 0.0f;
+    if (!ctrl_is_finite(s_lean_speed_mps)) s_lean_speed_mps = 0.0f;
+    g_lean_offset = constrain_float(g_lean_offset, -DIRECTION_LEAN_LIMIT, DIRECTION_LEAN_LIMIT);
+
+    if (s_run_active && s_run_vision_armed && g_track_valid && g_vision_ipm_ok &&
+        g_vision_age_ms < VISION_LINK_TIMEOUT_MS &&
+        s_direction_last_mode != TRACK_MODE_HOLD &&
+        ctrl_is_finite(speed) && ctrl_is_finite(rate) &&
+        ctrl_is_finite(LEAN_TURN_KP) && ctrl_is_finite(LEAN_SPEED_KP))
     {
-        target = direction_output * (float)Y_Motor_GetSpeed20ms() *
-                 DIRECTION_ROLL_KP / DIRECTION_LEAN_FORMULA_DIV;
-        target = constrain_float(target, -limit, limit);
+        float speed_abs;
+        float fade;
+        float signed_fade;
+        float rate_abs;
+
+        speed = constrain_float(speed, -RUN_SPEED_MAX_MPS, RUN_SPEED_MAX_MPS);
+        s_lean_speed_mps += LEAN_SPEED_FILTER_ALPHA * (speed - s_lean_speed_mps);
+        speed_abs = fabsf(s_lean_speed_mps);
+        fade = constrain_float((speed_abs - LEAN_SPEED_MIN_MPS) /
+                               (LEAN_SPEED_FULL_MPS - LEAN_SPEED_MIN_MPS), 0.0f, 1.0f);
+        signed_fade = (s_lean_speed_mps < 0.0f) ? -fade : fade;
+        rate = constrain_float(rate, -DIRECTION_YAW_RATE_LIMIT, DIRECTION_YAW_RATE_LIMIT);
+        rate_abs = fabsf(rate) - LEAN_RATE_DEAD_DPS;
+        if (rate_abs > 0.0f)
+        {
+            rate = (rate < 0.0f) ? -rate_abs : rate_abs;
+            // 小角度 phi[deg]≈v[m/s]*r[deg/s]/g；限10°内无需在ISR求atan。
+            // K1方向项也按车速淡入；直行(rate=0)绝不产生速度独立的侧倾。
+            target = signed_fade * rate *
+                     (constrain_float(LEAN_TURN_KP, 0.0f, LEAN_TURN_KP_MAX) +
+                      constrain_float(LEAN_SPEED_KP, 0.0f, LEAN_SPEED_KP_MAX) *
+                      speed_abs / LEAN_GRAVITY_MPS2);
+            target = constrain_float(target, -limit, limit);
+        }
     }
+    else
+    {
+        s_lean_speed_mps = 0.0f;
+    }
+
     delta = target - g_lean_offset;
-    if (delta > DIRECTION_LEAN_SLEW)       return g_lean_offset + DIRECTION_LEAN_SLEW;
-    if (delta < -DIRECTION_LEAN_SLEW)      return g_lean_offset - DIRECTION_LEAN_SLEW;
+    if (delta > step)  return g_lean_offset + step;
+    if (delta < -step) return g_lean_offset - step;
     return target;
 }
 
@@ -896,19 +940,13 @@ static void cascade_run(void)
         pid_reset(&r_rcy_pid); pid_reset(&r_angle_pid); pid_reset(&r_rate_pid);
         pid_reset(&y_angle_pid); pid_reset(&y_rate_pid);
         g_lean_offset = 0;
+        s_lean_speed_mps = 0.0f;
         g_yaw_target  = imu_get_angle_yaw();
     }
 
     if (run20) direction_control_update();
     direction_yaw_target_update();
-    if (run5)
-    {
-        float direction_output = constrain_float(g_yaw_target - imu_get_angle_yaw(),
-                                                  -DIRECTION_YAW_LEAD_LIMIT,
-                                                   DIRECTION_YAW_LEAD_LIMIT) /
-                                 DIRECTION_LEAN_OUTPUT_SCALE;
-        g_lean_offset = lean_offset_update(direction_output);
-    }
+    if (run5) g_lean_offset = lean_offset_update();
     g_pwm_yaw = yaw_cascade_ctrl(run5);
     if (run20) speed_ramp_update();                      // 速度目标斜坡与速度环同拍
     g_pwm_roll  = roll_cascade_ctrl(g_roll_zero + LEAN_DIR * g_lean_offset, run5, run20);
@@ -1329,6 +1367,7 @@ void control_init(void)
     g_pitch_zero  = PITCH_ZERO_INIT;
     g_yaw_target  = 0;
     g_lean_offset = 0;
+    s_lean_speed_mps = 0.0f;
     s_speed_ramp  = 0.0f;
     start_flag    = START_STOP;
 

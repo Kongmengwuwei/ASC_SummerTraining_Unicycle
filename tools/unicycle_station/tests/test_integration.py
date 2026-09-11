@@ -18,7 +18,7 @@ def test_mock_handshake_parameters_record_stop_and_faults(tmp_path):
     e=StationEngine(p);e.log_directory=tmp_path
     try:
         e.start("mock",faults=True)
-        wait_until(lambda:len(e.params)==72)
+        wait_until(lambda:len(e.params)==len(e.profile.data['mock_parameters']))
         wait_until(e.stopped)
         e.submit("apply",[("r_rate_kp",5000)],False)
         wait_until(lambda:e.params["r_rate_kp"].value==2000)
@@ -33,7 +33,7 @@ def test_mock_handshake_parameters_record_stop_and_faults(tmp_path):
 
 def test_schema_end_count_mismatch_keeps_locked():
     p=DeviceProfile.load(Path(__file__).parents[1]/"app/profiles/tc264_unicycle/profile.json")
-    e=StationEngine(p);e._schema_complete(True,["schema","72"])
+    e=StationEngine(p);e._schema_complete(True,['schema',str(len(p.data['mock_parameters']))])
     assert not e.params
 
 

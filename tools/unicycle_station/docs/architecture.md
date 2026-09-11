@@ -37,4 +37,4 @@ GUI 停车按钮 → 独立 priority-stop 线程 → 有界串口写锁 → stop
 
 g_param_table 和车端 Schema 决定名称、类型、范围、当前值及权限；Profile/示例/Mock 是独立文件快照。默认值及菜单步长的源码索引见 [参数参考](../../../参数参考.md)。scripts/generate_profiles.py 会重写 Profile 和部分示例，应仅在需要更新这些文件时执行，并审查差异。
 
-改参数时应同步 board_config、param_load_defaults、menu 分组与保存列表、CPU1 反馈、cfg_group/权限及 PC 元数据。当前 direction_rate_kd 对应结构字段 direction_balance_kd，lean_roll_kp 对应 direction_roll_kp，不能简单假设协议名等于结构成员名。
+改参数时应同步 board_config、param_load_defaults、menu 分组与保存列表、CPU1 反馈、cfg_group/权限及 PC 元数据。当前 direction_rate_kd 对应结构字段 direction_balance_kd，不能简单假设协议名等于结构成员名。

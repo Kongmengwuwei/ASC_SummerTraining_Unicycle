@@ -17,7 +17,7 @@ def step(stage=0):
     try:
         e=w.engine
         if stage==0:
-            if len(e.params)<72:
+            if len(e.params)<len(e.profile.data['mock_parameters']):
                 assert time.monotonic()<deadline
                 QtCore.QTimer.singleShot(100,lambda:step(0));return
             with e.transport.lock:e.transport.mode='Balance';e.transport.manual_stopped=True
@@ -25,14 +25,14 @@ def step(stage=0):
         elif stage==1:
             assert e.permission(e.params['run_speed_straight'])[0]
             w.grab().save(str(out/'speed-steering.png'));bench(4)
-            e.submit('apply',[('lean_roll_kp',3.0)],False)
+            e.submit('apply',[('lean_speed_kp',1.2)],False)
         elif stage==2:
-            if e.params['lean_roll_kp'].value!=3:
+            if e.params['lean_speed_kp'].value!=1.2:
                 assert time.monotonic()<deadline
                 QtCore.QTimer.singleShot(100,lambda:step(2));return
             w.workbenches[4][0].update_data();w.grab().save(str(out/'lean.png'))
             assert not e.run_session.active
-            (out/'result.json').write_text(json.dumps(dict(mode=e.transport.mode,lean=e.params['lean_roll_kp'].value,run_active=e.run_session.active,pages=2)),encoding='utf-8')
+            (out/'result.json').write_text(json.dumps(dict(mode=e.transport.mode,lean=e.params['lean_speed_kp'].value,run_active=e.run_session.active,pages=2)),encoding='utf-8')
             w.close();app.quit();return
         QtCore.QTimer.singleShot(1200,lambda:step(stage+1))
     except Exception:

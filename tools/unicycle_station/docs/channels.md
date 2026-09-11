@@ -48,6 +48,6 @@ task 的 yaw/speed 来自同一 CPU0 快照；run 不包含完整 Pitch/Yaw 姿�
 
 ## 参数快照与波形的区别
 
-当前 g_param_table 有 72 项，编译默认 PID 非全零。参数的当前值由 Schema/get/set 应答和 revision 同步；run 的 25 通道不附带 24 个 PID 增益。历史日志中必须结合参数应答/试验快照解释调参过程。旧 roll/pit/yaw/mot/trk/bal 通道不存在，不能复用旧编号。
+当前 g_param_table 有 74 项，编译默认 PID 非全零。参数的当前值由 Schema/get/set 应答和 revision 同步；run 的 25 通道不附带 24 个 PID 增益。历史日志中必须结合参数应答/试验快照解释调参过程。旧 roll/pit/yaw/mot/trk/bal 通道不存在，不能复用旧编号。
 
 tx_drop、task.event_drop 和按 uptime 估计的遥测缺口计数覆盖不同路径；task 周期帧的带宽跳过也可能不增加 tx_drop。它们均不是可靠的无线丢包率测量。

@@ -2,6 +2,9 @@
 from pathlib import Path
 import json
 import re
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.core.live_parameters import LIVE_CONTROL_PARAMETERS
 root = Path(__file__).resolve().parents[3]
 station = Path(__file__).resolve().parents[1]
 table = (root / "code/param.c").read_text(encoding="utf-8")
@@ -25,7 +28,9 @@ def group(n):
     return "Motor"
 steps = {name: (float(step.rstrip("f")), int(dec)) for _, name, step, dec in re.findall(r'\{\s*"([^"]+)",\s*"([^"]+)",\s*([\d.]+f?),\s*(\d+)\s*\}', menu)}
 defaults = dict(re.findall(r'g_param\.([\w\[\]]+)\s*=\s*(\w+_DEFAULT);', table))
-labels = {"run_speed_straight":"直道速度", "run_speed_curve":"弯道速度", "cam_exposure":"摄像头曝光", "err_front_row":"前瞻行", "roll_zero_init":"横滚机械零点", "pitch_zero_init":"俯仰机械零点", "roll_protect":"横滚保护角", "pitch_protect":"俯仰保护角", "fly_speed_limit":"飞轮限速", "fly_slew":"飞轮输出变化率", "odom_counts_per_m":"每米编码器计数", "odom_test_speed":"里程测试速度", "steer_dir":"转向极性", "enc_dir_c":"编码器极性", "lean_roll_kp":"压弯增益", "lean_max_angle":"压弯最大角度"}
+labels = {"run_speed_straight":"直道速度", "run_speed_curve":"弯道速度", "cam_exposure":"摄像头曝光", "err_front_row":"前瞻行", "roll_zero_init":"横滚机械零点", "pitch_zero_init":"俯仰机械零点", "roll_protect":"横滚保护角", "pitch_protect":"俯仰保护角", "fly_speed_limit":"飞轮限速", "fly_slew":"飞轮输出变化率", "odom_counts_per_m":"每米编码器计数", "odom_test_speed":"里程测试速度", "steer_dir":"转向极性", "enc_dir_c":"编码器极性", "lean_turn_kp":"方向预压弯", "lean_speed_kp":"速度压弯倍率", "lean_slew_dps":"压弯变化速度", "lean_max_angle":"压弯最大角度"}
+lean_units = {'lean_turn_kp': 's', 'lean_speed_kp': '倍', 'lean_slew_dps': '°/s', 'lean_max_angle': '°'}
+lean_descriptions = {'lean_turn_kp': '乘以去死区转弯率，低速淡出；当前范围以 MCU Schema 为准。', 'lean_speed_kp': 'v×转弯率/g 的倍率；当前实际范围以 MCU Schema 为准。', 'lean_slew_dps': '正常入弯、反向和回正的变化上限；停车/串级复位直接清零。'}
 params, metadata = [], {}
 pattern = r'\{\s*"([^"]+)",\s*&g_param\.([\w\[\]]+),\s*([01]),\s*([^,]+),\s*([^}]+)\}'
 for name, member, floating, low, high in re.findall(pattern, table.split("#define PARAM_TABLE_NUM")[0]):
@@ -39,7 +44,7 @@ for name, member, floating, low, high in re.findall(pattern, table.split("#defin
     if name.startswith("elem_en_"):
         step = 1
     params.append(dict(name=name, type="float" if floating == "1" else "int", min=lo, max=hi, value=value,
-                       group=g, step=step, flags=4 | (1 if name in pid else 0) | (2 if g in ("Motor", "Zero", "IPM") else 0)))
+                       group=g, step=step, flags=4 | (1 if name in pid or name in LIVE_CONTROL_PARAMETERS else 0) | (16 if name in LIVE_CONTROL_PARAMETERS else 0) | (2 if g in ("Motor", "Zero", "IPM") else 0)))
     label = labels.get(name, "")
     if name in pid:
         axis, ring, gain = name.split("_")
@@ -47,6 +52,10 @@ for name, member, floating, low, high in re.findall(pattern, table.split("#defin
     if not label:
         label = {"Run":"跑车", "Element":"元素", "Motor":"电机", "IPM":"逆透视"}.get(g, g) + " · " + name
     metadata[name] = dict(label=label, step=step, decimals=decimals, default=value, description="当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。")
+    if name in lean_units:
+        metadata[name]["unit"] = lean_units[name]
+    if name in lean_descriptions:
+        metadata[name]["description"] = lean_descriptions[name]
     if "dir" in name and g == "Motor":
         metadata[name]["enum_options"] = {"-1":"反向 −1", "1":"正向 +1"}
 

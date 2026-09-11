@@ -22,7 +22,7 @@ const param_desc_t g_param_table[] = {
     {"motor_dir_a", &g_param.motor_dir_a, 0,-1,1},
     {"cam_exposure", &g_param.cam_exposure, 0,4,1600},
     {"run_speed_straight", &g_param.run_speed_straight,1,0,1.5f},
-    {"lean_roll_kp", &g_param.direction_roll_kp,1,0,100},
+    {"lean_speed_kp", &g_param.lean_speed_kp,1,0,2},
     {"direction_rate_kd", &g_param.direction_balance_kd,1,0,1}
 };
 uint16 param_count(void) { return sizeof(g_param_table)/sizeof(g_param_table[0]); }
@@ -136,20 +136,20 @@ int main(void) {
     start_flag=START_BALANCE;mock_test=mock_jog=0;mock_run=1;
     assert((cfg_pid_mask() & 0x01000000u)!=0);
     feed("cfg:set,40,run_speed_straight,0.25\n");assert(g_param.run_speed_straight==.25f);assert(strstr(drain(),"APPLIED"));
-    feed("cfg:set,41,lean_roll_kp,200\n");assert(g_param.direction_roll_kp==100);assert(strstr(drain(),"CLAMPED"));
+    feed("cfg:set,41,lean_speed_kp,200\n");assert(g_param.lean_speed_kp==2);assert(strstr(drain(),"CLAMPED"));
     feed("cfg:set,42,direction_rate_kd,0.5\n");assert(g_param.direction_balance_kd==.5f);assert(strstr(drain(),"APPLIED"));
     feed("cfg:set,43,cam_exposure,80\n");assert(strstr(drain(),"RUNNING_LOCKED"));
     feed("cfg:set,44,motor_dir_a,1\n");assert(strstr(drain(),"UNSAFE_PARAM"));
     feed("cfg:save,45,all\n");assert(strstr(drain(),"SAVE_BLOCKED"));
     mock_run=0;mock_remote=1;
-    feed("cfg:set,46,lean_roll_kp,5\n");assert(g_param.direction_roll_kp==5);assert(strstr(drain(),"APPLIED"));
+    feed("cfg:set,46,lean_speed_kp,1.25\n");assert(g_param.lean_speed_kp==1.25f);assert(strstr(drain(),"APPLIED"));
     mock_remote=0;mock_test=1;g_tune_axis=TUNE_AXIS_ROLL;g_tune_ring=TUNE_RING_RATE;
     assert((cfg_pid_mask() & 0x01000000u)==0);
-    feed("cfg:set,47,lean_roll_kp,6\n");assert(g_param.direction_roll_kp==5);assert(strstr(drain(),"RUNNING_LOCKED"));
+    feed("cfg:set,47,lean_speed_kp,1.5\n");assert(g_param.lean_speed_kp==1.25f);assert(strstr(drain(),"RUNNING_LOCKED"));
     mock_test=0;mock_jog=1;assert(cfg_pid_mask()==0);
     feed("cfg:set,48,run_speed_straight,0.4\n");assert(g_param.run_speed_straight==.25f);assert(strstr(drain(),"RUNNING_LOCKED"));
     mock_jog=0;start_flag=START_STOP;
     feed("cfg:schema,49\n");
-    {int found=0;for(unsigned i=0;i<8;i++){g_control_uptime_ms+=31;cfg_poll();if(strstr(drain(),"lean_roll_kp,float,5,0,100,Lean,0.0001,21"))found=1;}assert(found);}
+    {int found=0;for(unsigned i=0;i<8;i++){g_control_uptime_ms+=31;cfg_poll();if(strstr(drain(),"lean_speed_kp,float,1.25,0,2,Lean,0.0001,21"))found=1;}assert(found);}
     printf("MCU host contract checks passed (not an ADS/TASKING build)\n");return 0;
 }

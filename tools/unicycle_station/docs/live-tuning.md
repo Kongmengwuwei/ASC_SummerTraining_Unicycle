@@ -11,15 +11,15 @@
 
 ## 当前权限
 
-Balance、Run 和 Remote 允许三轴 PID，以及以下 14 项在线控制参数：
+Balance、Run 和 Remote 允许三轴 PID，以及以下 16 项在线控制参数：
 
 - 速度：run_speed_straight / curve / cross / ring / ramp / lost。
 - 加减速：run_accel_mps2、run_decel_mps2。
 - 转向：direction_pixel_kp、direction_heading_kp、direction_curve_kff、direction_rate_kd。
-- 压弯：lean_roll_kp、lean_max_angle。
+- 压弯：lean_turn_kp、lean_speed_kp、lean_slew_dps、lean_max_angle。2026-09-11 替换了旧增益，公式与 Flash 迁移见 [压弯控制说明](../../../压弯控制说明.md)。
 
 单轴 Test 只开放该测试实际参与的 PID 环路；Jog 全部锁定。电机方向、机械零点、保护阈值、IPM 等参数和 Flash 保存保持停车限制。断线、状态过期或模式变化时重新锁定不允许的项，车端每笔写入也会重新检查权限与范围。
 
 “run:”只是诊断帧标签，真实 Run 状态位仍决定任务与轨迹记录，不会因 Run Test 出现波形就开始累计 Run 轨迹。姿态、速度、PID 输出可按实际激活环路观察；视觉规划等未启用模块的数值不能当成当前控制指令。
 
-本轮使用 PC/Mock 和主机 C 契约测试，不执行 ADS 构建、烧录或实车验证。
+0.5.1 在线调参功能当时只进行了 PC/Mock 与主机 C 契约测试。2026-09-11 新压弯已完成 ADS 构建和相关主机回归，未烧录或实车验证，记录见压弯控制说明。

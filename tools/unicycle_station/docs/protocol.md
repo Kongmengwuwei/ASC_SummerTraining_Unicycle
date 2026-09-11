@@ -14,7 +14,7 @@
 |---|---|
 | `cfg:hello,1` | `rsp:1,ok,hello,1,tc264-cfg1-task1,63` |
 | `cfg:status,2` | `stat:…`，然后 `rsp:2,ok,status` |
-| `cfg:schema,3` | 多条 `par:3,…`，最后 `rsp:3,ok,schema,72`（数量以当前表为准） |
+| `cfg:schema,3` | 多条 `par:3,…`，最后 `rsp:3,ok,schema,74`（数量以当前表为准） |
 | `cfg:get,4,r_rate_kp` | `rsp:4,ok,get,r_rate_kp,实际值` |
 | `cfg:set,5,r_rate_kp,12.5` | `rsp:5,ok,set,r_rate_kp,实际值,APPLIED` |
 | `cfg:save,6,Roll` | `rsp:6,ok,save,Roll,VERIFIED` |

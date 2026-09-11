@@ -59,7 +59,9 @@ typedef struct
     float y_rate_kd;                    // 航向角速度内环 D
 
     // 压弯
-    float direction_roll_kp;            // 山大压弯公式方向倾角 Kp
+    float lean_turn_kp;                 // 转弯率预压弯增益(s)
+    float lean_speed_kp;                // v*r/g 速度压弯倍率
+    float lean_slew_dps;                // 压弯输出变化速度(°/s)
     float lean_max_angle;               // 压弯动态零点最大值(°)
 
     // 元素使能，0=关 1=开。默认全关，普通循迹跑稳后一次只开一个
@@ -144,7 +146,9 @@ extern volatile uint32 g_param_revision;// 参数修订号
 #define Y_RATE_KD               (g_param.y_rate_kd)
 
 // 压弯
-#define DIRECTION_ROLL_KP       (g_param.direction_roll_kp)
+#define LEAN_TURN_KP            (g_param.lean_turn_kp)
+#define LEAN_SPEED_KP           (g_param.lean_speed_kp)
+#define LEAN_SLEW_DPS           (g_param.lean_slew_dps)
 #define LEAN_MAX_ANGLE          (g_param.lean_max_angle)
 
 // 零点、标定与保护

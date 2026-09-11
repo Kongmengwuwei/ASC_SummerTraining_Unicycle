@@ -132,7 +132,9 @@ static const menu_param_item_t s_yaw_items[] =
 
 static const menu_param_item_t s_lean_items[] =
 {
-    { "Lean Kp",     "lean_roll_kp",   0.1f, 2 },
+    { "Turn Kp",     "lean_turn_kp",   0.005f, 3 },
+    { "Speed Kp",    "lean_speed_kp",  0.05f, 2 },
+    { "Slew dps",    "lean_slew_dps",  1.0f, 1 },
     { "Lean Max",    "lean_max_angle", 0.1f, 2 }
 };
 

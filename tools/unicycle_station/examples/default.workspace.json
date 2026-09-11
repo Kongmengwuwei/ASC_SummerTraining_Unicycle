@@ -695,19 +695,13 @@
         "default": 0.0,
         "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
       },
-      "lean_roll_kp": {
-        "label": "压弯增益",
-        "step": 0.1,
-        "decimals": 2,
-        "default": 2.5,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
-      },
       "lean_max_angle": {
         "label": "压弯最大角度",
         "step": 0.1,
         "decimals": 2,
         "default": 5.0,
-        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
+        "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。",
+        "unit": "°"
       },
       "elem_en_zebra": {
         "label": "元素 · elem_en_zebra",
@@ -868,6 +862,30 @@
         "decimals": 0,
         "default": 0.0,
         "description": "当前范围、类型与权限由 MCU Schema 确认；默认值仅供参考。"
+      },
+      "lean_turn_kp": {
+        "label": "方向预压弯",
+        "step": 0.005,
+        "decimals": 3,
+        "default": 0.01,
+        "description": "乘以去死区转弯率，低速淡出；当前范围以 MCU Schema 为准。",
+        "unit": "s"
+      },
+      "lean_speed_kp": {
+        "label": "速度压弯倍率",
+        "step": 0.05,
+        "decimals": 2,
+        "default": 1,
+        "description": "v×转弯率/g 的倍率；当前实际范围以 MCU Schema 为准。",
+        "unit": "倍"
+      },
+      "lean_slew_dps": {
+        "label": "压弯变化速度",
+        "step": 1,
+        "decimals": 1,
+        "default": 24,
+        "description": "正常入弯、反向和回正的变化上限；停车/串级复位直接清零。",
+        "unit": "°/s"
       }
     },
     "parameter_groups": [
@@ -1385,14 +1403,34 @@
         "flags": 5
       },
       {
-        "name": "lean_roll_kp",
+        "name": "lean_turn_kp",
         "type": "float",
-        "min": 0.0,
-        "max": 100.0,
-        "value": 2.5,
+        "min": 0,
+        "max": 0.1,
+        "value": 0.01,
         "group": "Lean",
-        "step": 0.1,
-        "flags": 4
+        "step": 0.005,
+        "flags": 21
+      },
+      {
+        "name": "lean_speed_kp",
+        "type": "float",
+        "min": 0,
+        "max": 2,
+        "value": 1,
+        "group": "Lean",
+        "step": 0.05,
+        "flags": 21
+      },
+      {
+        "name": "lean_slew_dps",
+        "type": "float",
+        "min": 1,
+        "max": 60,
+        "value": 24,
+        "group": "Lean",
+        "step": 1,
+        "flags": 21
       },
       {
         "name": "lean_max_angle",
@@ -1402,7 +1440,7 @@
         "value": 5.0,
         "group": "Lean",
         "step": 0.1,
-        "flags": 4
+        "flags": 21
       },
       {
         "name": "elem_en_zebra",
