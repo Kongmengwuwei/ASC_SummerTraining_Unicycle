@@ -97,6 +97,7 @@
 #define DIRECTION_HEADING_KP_DEFAULT (0.92f)    // 赛道航向误差到目标横摆角速度
 #define DIRECTION_CURVE_KFF_DEFAULT  (50.0f)    // 速度乘归一化曲率前馈
 #define DIRECTION_BALANCE_KD_DEFAULT (0.0f)     // 方向偏差 D，报告初值为 0
+#define DIRECTION_ROLL_KP_MAX        (100.0f)   // 压弯增益可调上限，默认值保持不变
 #define DIRECTION_ROLL_KP_DEFAULT    (2.5f)     // 山大压弯公式方向倾角 Kp
 #define LEAN_MAX_ANGLE_DEFAULT       (5.0f)     // 压弯动态零点最大值(°)
 #define DIRECTION_CAMERA_LIMIT       (5000.0f)  // direction_camera 加权和限幅
@@ -110,7 +111,7 @@
 #define DIRECTION_LEAN_ERROR_DEAD    (1000.0f)  // 山大原始加权方向偏差死区
 #define DIRECTION_LEAN_FORMULA_DIV   (100.0f)   // 山大压弯公式固定除数
 #define DIRECTION_LEAN_SLEW          (0.08f)    // 压弯角每5ms最大变化量(°)
-#define DIRECTION_LEAN_LIMIT         (8.0f)     // 压弯角软件硬限幅(°)
+#define DIRECTION_LEAN_LIMIT         (10.0f)    // 压弯角软件硬限幅(°)
 #define ROLL_TARGET_LIMIT            (10.0f)    // 回收与压弯合成后的 Roll 目标限幅(°)
 #define YAW_MOMENTUM_WARN_RPM        (2500.0f)  // 单项实测：共模RPM超过该值后温和降低转向与Run速度
 #define YAW_MOMENTUM_HARD_RPM        (6000.0f)  // 共模RPM达到该值时进入最小权限，不依赖Flash软超速阈值

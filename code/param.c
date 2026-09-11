@@ -61,8 +61,8 @@ const param_desc_t g_param_table[] =
     { "y_rate_ki",        &g_param.y_rate_ki,        1, -50.0f,   50.0f  },
     { "y_rate_kd",        &g_param.y_rate_kd,        1, -200.0f,  200.0f },
     // 压弯
-    { "lean_roll_kp",      &g_param.direction_roll_kp, 1, 0.0f, 20.0f },
-    { "lean_max_angle",    &g_param.lean_max_angle,    1, 0.0f, 8.0f  },
+    { "lean_roll_kp",      &g_param.direction_roll_kp, 1, 0.0f, DIRECTION_ROLL_KP_MAX },
+    { "lean_max_angle",    &g_param.lean_max_angle,    1, 0.0f, DIRECTION_LEAN_LIMIT },
     // 元素现场参数
     { "elem_en_zebra",    &g_param.elem_en_zebra,    0, 0.0f,     1.0f   },
     { "elem_en_cross",    &g_param.elem_en_cross,    0, 0.0f,     1.0f   },
