@@ -1,0 +1,442 @@
+{
+  "manifest": [
+    {
+      "path": "C:\\Users\\kongmeng\\Documents\\EmbeddedStation\\sessions\\20260911_175605_792100\\frames.jsonl",
+      "prefix_bytes": 10945850,
+      "set_responses": [
+        {
+          "time": 58.23873680000179,
+          "raw": "rsp:87,ok,set,r_rate_kp,-20,APPLIED"
+        },
+        {
+          "time": 102.98729470000035,
+          "raw": "rsp:89,ok,set,r_rate_kp,-25,APPLIED"
+        },
+        {
+          "time": 103.02227459999995,
+          "raw": "rsp:90,ok,set,r_rate_kd,-10,APPLIED"
+        },
+        {
+          "time": 127.50798070000019,
+          "raw": "rsp:92,ok,set,r_rate_kp,-18,APPLIED"
+        },
+        {
+          "time": 168.80823500000042,
+          "raw": "rsp:94,ok,set,p_rate_ki,0.8,APPLIED"
+        },
+        {
+          "time": 191.87037690000216,
+          "raw": "rsp:96,ok,set,p_vel_kp,0.05,APPLIED"
+        },
+        {
+          "time": 191.9018369000005,
+          "raw": "rsp:97,ok,set,p_rate_kp,28,APPLIED"
+        }
+      ]
+    },
+    {
+      "path": "C:\\Users\\kongmeng\\Documents\\EmbeddedStation\\sessions\\20260911_180126_149700\\frames.jsonl",
+      "prefix_bytes": 43950041,
+      "set_responses": [
+        {
+          "time": 6.841719899999589,
+          "raw": "rsp:104,ok,set,p_vel_kp,0.05,APPLIED"
+        },
+        {
+          "time": 55.53950650000115,
+          "raw": "rsp:106,ok,set,p_angle_kp,6,APPLIED"
+        },
+        {
+          "time": 67.650658999999,
+          "raw": "rsp:108,ok,set,p_angle_kp,10,APPLIED"
+        },
+        {
+          "time": 203.60879740000019,
+          "raw": "rsp:110,ok,set,p_angle_kp,9,APPLIED"
+        },
+        {
+          "time": 247.38358929999958,
+          "raw": "rsp:112,ok,set,p_rate_ki,0.5,APPLIED"
+        },
+        {
+          "time": 266.67120760000034,
+          "raw": "rsp:114,ok,set,p_rate_ki,1,APPLIED"
+        },
+        {
+          "time": 296.95560230000046,
+          "raw": "rsp:116,ok,set,p_vel_kp,0.04,APPLIED"
+        },
+        {
+          "time": 296.984328999999,
+          "raw": "rsp:117,ok,set,p_rate_ki,0.75,APPLIED"
+        },
+        {
+          "time": 312.1694162999993,
+          "raw": "rsp:120,ok,set,p_vel_kp,0.05,APPLIED"
+        },
+        {
+          "time": 312.19664829999965,
+          "raw": "rsp:121,ok,set,p_vel_ki,0.003,APPLIED"
+        },
+        {
+          "time": 373.08077480000065,
+          "raw": "rsp:123,ok,set,p_vel_ki,0,APPLIED"
+        },
+        {
+          "time": 403.536241400001,
+          "raw": "rsp:125,ok,set,p_vel_ki,0.01,APPLIED"
+        },
+        {
+          "time": 426.71658410000236,
+          "raw": "rsp:127,ok,set,p_vel_ki,0.001,APPLIED"
+        },
+        {
+          "time": 447.61134930000117,
+          "raw": "rsp:129,ok,set,p_rate_kp,20,APPLIED"
+        },
+        {
+          "time": 477.63761140000133,
+          "raw": "rsp:131,ok,set,p_rate_kd,0.5,APPLIED"
+        },
+        {
+          "time": 483.1093867000018,
+          "raw": "rsp:133,ok,set,p_rate_kp,25,APPLIED"
+        },
+        {
+          "time": 493.5921515000009,
+          "raw": "rsp:135,ok,set,p_rate_kd,0,APPLIED"
+        },
+        {
+          "time": 523.127741100001,
+          "raw": "rsp:137,ok,set,p_angle_kp,8.8,APPLIED"
+        },
+        {
+          "time": 528.705170600002,
+          "raw": "rsp:139,ok,set,p_angle_kp,10,APPLIED"
+        },
+        {
+          "time": 541.0924320000013,
+          "raw": "rsp:141,ok,set,p_rate_kp,20,APPLIED"
+        },
+        {
+          "time": 555.1620949000026,
+          "raw": "rsp:143,ok,set,p_rate_kp,24,APPLIED"
+        },
+        {
+          "time": 577.1781255999995,
+          "raw": "rsp:145,ok,set,p_angle_kp,9,APPLIED"
+        },
+        {
+          "time": 598.4872163,
+          "raw": "rsp:147,ok,set,p_vel_kp,0.056,APPLIED"
+        },
+        {
+          "time": 623.9389513999995,
+          "raw": "rsp:149,ok,set,p_angle_kp,8,APPLIED"
+        },
+        {
+          "time": 655.3996628999994,
+          "raw": "rsp:151,ok,set,p_rate_kp,25,APPLIED"
+        }
+      ]
+    }
+  ],
+  "method": "Zero-speed Balance validated by run flags; linear interpolation on MCU time; 0.15–3 Hz Hann periodogram only; formula consistency checked, correlations do not establish causation.",
+  "windows": [
+    {
+      "label": "rate_baseline",
+      "session": "20260911_175605_792100",
+      "pc_window_s": [
+        10,
+        40
+      ],
+      "n": 1200,
+      "parameters": {
+        "r_rcy_kp": 0.0016,
+        "r_rcy_ki": 0.0,
+        "r_rcy_kd": 0.0,
+        "r_angle_kp": 36.00006,
+        "r_angle_ki": 0.0,
+        "r_angle_kd": 0.0,
+        "r_rate_kp": -18.0,
+        "r_rate_ki": 0.0,
+        "r_rate_kd": -7.5,
+        "p_vel_kp": 0.052,
+        "p_vel_ki": 0.002,
+        "p_vel_kd": 0.0,
+        "p_angle_kp": 7.000001,
+        "p_angle_ki": 0.0,
+        "p_angle_kd": 0.0,
+        "p_rate_kp": 25.0,
+        "p_rate_ki": 0.75,
+        "p_rate_kd": 0.0,
+        "roll_zero_init": 0.6,
+        "fly_speed_limit": 8000.0
+      },
+      "roll_q05_median_q95": [
+        -0.36155,
+        0.611,
+        1.583
+      ],
+      "target_q05_median_q95": [
+        -0.15714999999999998,
+        0.794,
+        1.7386999999999992
+      ],
+      "recovery_q05_median_q95": [
+        -1.1386999999999998,
+        -0.194,
+        0.7571499999999999
+      ],
+      "roll_error_rms_deg": 0.6586153657484769,
+      "roll_rate_rms_deg_s": 5.921690102214626,
+      "max_abs_roll_output": 1148.0,
+      "max_abs_individual_rpm": 737.0,
+      "yaw_clip_share": 0.0,
+      "dominant_hz": {
+        "roll": 1.6344229486324218,
+        "target": 1.6344229486324218,
+        "recovery": 1.6344229486324218
+      },
+      "max_mcu_gap_ms": 40.000000000020464,
+      "target_formula_max_residual_deg": 4.440892098500626e-16,
+      "recovery_formula_max_residual_deg": 0.000400000000000178
+    },
+    {
+      "label": "rate_P_minus20",
+      "session": "20260911_175605_792100",
+      "pc_window_s": [
+        65,
+        80
+      ],
+      "n": 600,
+      "parameters": {
+        "r_rcy_kp": 0.0016,
+        "r_rcy_ki": 0.0,
+        "r_rcy_kd": 0.0,
+        "r_angle_kp": 36.00006,
+        "r_angle_ki": 0.0,
+        "r_angle_kd": 0.0,
+        "r_rate_kp": -20.0,
+        "r_rate_ki": 0.0,
+        "r_rate_kd": -7.5,
+        "p_vel_kp": 0.052,
+        "p_vel_ki": 0.002,
+        "p_vel_kd": 0.0,
+        "p_angle_kp": 7.000001,
+        "p_angle_ki": 0.0,
+        "p_angle_kd": 0.0,
+        "p_rate_kp": 25.0,
+        "p_rate_ki": 0.75,
+        "p_rate_kd": 0.0,
+        "roll_zero_init": 0.6,
+        "fly_speed_limit": 8000.0
+      },
+      "roll_q05_median_q95": [
+        -0.09029999999999998,
+        0.597,
+        1.5144999999999995
+      ],
+      "target_q05_median_q95": [
+        0.2179,
+        0.6505000000000001,
+        1.7866999999999993
+      ],
+      "recovery_q05_median_q95": [
+        -1.1866999999999999,
+        -0.0505,
+        0.38209999999999994
+      ],
+      "roll_error_rms_deg": 0.6153618352915082,
+      "roll_rate_rms_deg_s": 6.218902797117833,
+      "max_abs_roll_output": 2180.0,
+      "max_abs_individual_rpm": 808.5,
+      "yaw_clip_share": 0.0,
+      "dominant_hz": {
+        "roll": 1.7356475300400533,
+        "target": 0.20026702269692923,
+        "recovery": 0.20026702269692923
+      },
+      "max_mcu_gap_ms": 40.000000000020464,
+      "target_formula_max_residual_deg": 4.440892098500626e-16,
+      "recovery_formula_max_residual_deg": 0.00040000000000040004
+    },
+    {
+      "label": "rate_D_minus10",
+      "session": "20260911_175605_792100",
+      "pc_window_s": [
+        133,
+        145
+      ],
+      "n": 480,
+      "parameters": {
+        "r_rcy_kp": 0.0016,
+        "r_rcy_ki": 0.0,
+        "r_rcy_kd": 0.0,
+        "r_angle_kp": 36.00006,
+        "r_angle_ki": 0.0,
+        "r_angle_kd": 0.0,
+        "r_rate_kp": -18.0,
+        "r_rate_ki": 0.0,
+        "r_rate_kd": -10.0,
+        "p_vel_kp": 0.052,
+        "p_vel_ki": 0.002,
+        "p_vel_kd": 0.0,
+        "p_angle_kp": 7.000001,
+        "p_angle_ki": 0.0,
+        "p_angle_kd": 0.0,
+        "p_rate_kp": 25.0,
+        "p_rate_ki": 0.75,
+        "p_rate_kd": 0.0,
+        "roll_zero_init": 0.6,
+        "fly_speed_limit": 8000.0
+      },
+      "roll_q05_median_q95": [
+        -0.356,
+        0.659,
+        1.5897499999999993
+      ],
+      "target_q05_median_q95": [
+        -0.1581,
+        0.787,
+        1.5681
+      ],
+      "recovery_q05_median_q95": [
+        -0.9681,
+        -0.187,
+        0.7580999999999999
+      ],
+      "roll_error_rms_deg": 0.6417720032586858,
+      "roll_rate_rms_deg_s": 5.949731996765344,
+      "max_abs_roll_output": 1010.0,
+      "max_abs_individual_rpm": 535.0,
+      "yaw_clip_share": 0.0,
+      "dominant_hz": {
+        "roll": 1.5833333333333333,
+        "target": 1.5833333333333333,
+        "recovery": 1.5833333333333333
+      },
+      "max_mcu_gap_ms": 40.000000000020464,
+      "target_formula_max_residual_deg": 2.220446049250313e-16,
+      "recovery_formula_max_residual_deg": 0.00040000000000006697
+    },
+    {
+      "label": "latest_early",
+      "session": "20260911_180126_149700",
+      "pc_window_s": [
+        15,
+        50
+      ],
+      "n": 1400,
+      "parameters": {
+        "r_rcy_kp": 0.0016,
+        "r_rcy_ki": 0.0,
+        "r_rcy_kd": 0.0,
+        "r_angle_kp": 36.00006,
+        "r_angle_ki": 0.0,
+        "r_angle_kd": 0.0,
+        "r_rate_kp": -18.0,
+        "r_rate_ki": 0.0,
+        "r_rate_kd": -7.5,
+        "p_vel_kp": 0.05,
+        "p_vel_ki": 0.002,
+        "p_vel_kd": 0.0,
+        "p_angle_kp": 7.000001,
+        "p_angle_ki": 0.0,
+        "p_angle_kd": 0.0,
+        "p_rate_kp": 25.0,
+        "p_rate_ki": 0.75,
+        "p_rate_kd": 0.0,
+        "roll_zero_init": 0.6,
+        "fly_speed_limit": 8000.0
+      },
+      "roll_q05_median_q95": [
+        -0.23315,
+        0.5834999999999999,
+        1.4062499999999998
+      ],
+      "target_q05_median_q95": [
+        -0.1341,
+        0.659,
+        1.4034999999999995
+      ],
+      "recovery_q05_median_q95": [
+        -0.8035,
+        -0.059,
+        0.7340999999999999
+      ],
+      "roll_error_rms_deg": 0.5586516918949972,
+      "roll_rate_rms_deg_s": 5.040593282824666,
+      "max_abs_roll_output": 1165.0,
+      "max_abs_individual_rpm": 753.0,
+      "yaw_clip_share": 0.0,
+      "dominant_hz": {
+        "roll": 1.8285714285714285,
+        "target": 0.19999999999999998,
+        "recovery": 0.19999999999999998
+      },
+      "max_mcu_gap_ms": 40.00000000000625,
+      "target_formula_max_residual_deg": 2.220446049250313e-16,
+      "recovery_formula_max_residual_deg": 0.000400000000000178
+    },
+    {
+      "label": "latest_late",
+      "session": "20260911_180126_149700",
+      "pc_window_s": [
+        660,
+        678
+      ],
+      "n": 718,
+      "parameters": {
+        "r_rcy_kp": 0.0016,
+        "r_rcy_ki": 0.0,
+        "r_rcy_kd": 0.0,
+        "r_angle_kp": 36.00006,
+        "r_angle_ki": 0.0,
+        "r_angle_kd": 0.0,
+        "r_rate_kp": -18.0,
+        "r_rate_ki": 0.0,
+        "r_rate_kd": -7.5,
+        "p_vel_kp": 0.056,
+        "p_vel_ki": 0.001,
+        "p_vel_kd": 0.0,
+        "p_angle_kp": 8.0,
+        "p_angle_ki": 0.0,
+        "p_angle_kd": 0.0,
+        "p_rate_kp": 25.0,
+        "p_rate_ki": 0.75,
+        "p_rate_kd": 0.0,
+        "roll_zero_init": 0.6,
+        "fly_speed_limit": 8000.0
+      },
+      "roll_q05_median_q95": [
+        -0.8090999999999999,
+        0.7004999999999999,
+        2.4833
+      ],
+      "target_q05_median_q95": [
+        -2.41585,
+        0.9944999999999999,
+        5.1209999999999996
+      ],
+      "recovery_q05_median_q95": [
+        -4.521,
+        -0.3945,
+        3.0158499999999995
+      ],
+      "roll_error_rms_deg": 2.283492957978301,
+      "roll_rate_rms_deg_s": 9.13005805172427,
+      "max_abs_roll_output": 5188.0,
+      "max_abs_individual_rpm": 4058.5,
+      "yaw_clip_share": 0.0,
+      "dominant_hz": {
+        "roll": 1.6703786191536747,
+        "target": 0.16703786191536746,
+        "recovery": 0.16703786191536746
+      },
+      "max_mcu_gap_ms": 73.00000000009277,
+      "target_formula_max_residual_deg": 1.7763568394002505e-15,
+      "recovery_formula_max_residual_deg": 0.0004000000000008441
+    }
+  ]
+}

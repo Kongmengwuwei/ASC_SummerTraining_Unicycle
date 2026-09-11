@@ -1,0 +1,290 @@
+{
+  "method": "Fixed file prefixes; stat Balance/no Run/Test/Jog + run flags and zero ramp target. Statistics by PC receive time; frequency by MCU uptime with linear interpolation onto 20 ms grid; 0.2–4 Hz Hann periodogram, not an identified closed-loop mode.",
+  "manifest": [
+    {
+      "path": "C:\\Users\\kongmeng\\Documents\\EmbeddedStation\\sessions\\20260911_160605_934300\\frames.jsonl",
+      "prefix_bytes": 19200934,
+      "last_record_time_s": 484.1198239000005,
+      "set_responses": [
+        {
+          "schema_version": 1,
+          "kind": "frame",
+          "time": 416.4402895000003,
+          "pc_time": 1789114382.4120204,
+          "tag": "rsp",
+          "values": [
+            "8",
+            "ok",
+            "set",
+            "p_vel_kp",
+            "0.08000001",
+            "APPLIED"
+          ],
+          "raw": "rsp:8,ok,set,p_vel_kp,0.08000001,APPLIED",
+          "error": "",
+          "mcu_uptime": null
+        },
+        {
+          "schema_version": 1,
+          "kind": "frame",
+          "time": 448.1329246000005,
+          "pc_time": 1789114414.1046555,
+          "tag": "rsp",
+          "values": [
+            "10",
+            "ok",
+            "set",
+            "p_vel_ki",
+            "0.006",
+            "APPLIED"
+          ],
+          "raw": "rsp:10,ok,set,p_vel_ki,0.006,APPLIED",
+          "error": "",
+          "mcu_uptime": null
+        }
+      ]
+    },
+    {
+      "path": "C:\\Users\\kongmeng\\Documents\\EmbeddedStation\\sessions\\20260911_170857_597700\\frames.jsonl",
+      "prefix_bytes": 7936701,
+      "last_record_time_s": 299.6280694999987,
+      "set_responses": []
+    }
+  ],
+  "windows": [
+    {
+      "label": "baseline_early",
+      "session": "20260911_160605_934300",
+      "pc_window_s": [
+        20,
+        60
+      ],
+      "speed_Kp": 0.065,
+      "speed_Ki": 0.004,
+      "pitch_zero": -4,
+      "run_samples": 1600,
+      "att_samples": 400,
+      "speed_mean_mps": 0.0015587499999999998,
+      "speed_rms_mps": 0.1082525577065041,
+      "speed_q05_median_q95": [
+        -0.175,
+        0.0,
+        0.192
+      ],
+      "speed_minmax": [
+        -0.286,
+        0.342
+      ],
+      "pitch_q05_median_q95": [
+        -6.5348500000000005,
+        -3.77,
+        -1.523850000000002
+      ],
+      "pitch_minmax": [
+        -7.397,
+        -0.611
+      ],
+      "speed_dominant_hz": 0.5750000000000001,
+      "period_s": 1.7391304347826084,
+      "dt_median_ms": 20.000000000003126,
+      "dt_max_ms": 40.00000000000625,
+      "missing_estimate": 400,
+      "max_individual_fly_rpm": 675.5
+    },
+    {
+      "label": "baseline_later",
+      "session": "20260911_160605_934300",
+      "pc_window_s": [
+        300,
+        350
+      ],
+      "speed_Kp": 0.065,
+      "speed_Ki": 0.004,
+      "pitch_zero": -4,
+      "run_samples": 2000,
+      "att_samples": 500,
+      "speed_mean_mps": 0.0010950000000000005,
+      "speed_rms_mps": 0.08875378865152743,
+      "speed_q05_median_q95": [
+        -0.15,
+        0.0,
+        0.137
+      ],
+      "speed_minmax": [
+        -0.291,
+        0.312
+      ],
+      "pitch_q05_median_q95": [
+        -6.4717,
+        -3.776,
+        -1.5041000000000018
+      ],
+      "pitch_minmax": [
+        -7.2,
+        -0.873
+      ],
+      "speed_dominant_hz": 0.5602240896358542,
+      "period_s": 1.7850000000000004,
+      "dt_median_ms": 19.99999999998181,
+      "dt_max_ms": 40.000000000020464,
+      "missing_estimate": 499,
+      "max_individual_fly_rpm": 783.0
+    },
+    {
+      "label": "before_P_change",
+      "session": "20260911_160605_934300",
+      "pc_window_s": [
+        404,
+        414
+      ],
+      "speed_Kp": 0.065,
+      "speed_Ki": 0.004,
+      "pitch_zero": -4,
+      "run_samples": 398,
+      "att_samples": 100,
+      "speed_mean_mps": 0.0018844221105527633,
+      "speed_rms_mps": 0.10688600511971744,
+      "speed_q05_median_q95": [
+        -0.16275,
+        0.0,
+        0.1927499999999999
+      ],
+      "speed_minmax": [
+        -0.252,
+        0.312
+      ],
+      "pitch_q05_median_q95": [
+        -6.2528500000000005,
+        -3.899,
+        -1.4322500000000011
+      ],
+      "pitch_minmax": [
+        -6.74,
+        -0.889
+      ],
+      "speed_dominant_hz": 0.6024096385542168,
+      "period_s": 1.6600000000000001,
+      "dt_median_ms": 20.000000000038654,
+      "dt_max_ms": 73.00000000003593,
+      "missing_estimate": 101,
+      "max_individual_fly_rpm": 818.0
+    },
+    {
+      "label": "P_increased",
+      "session": "20260911_160605_934300",
+      "pc_window_s": [
+        437,
+        447
+      ],
+      "speed_Kp": 0.08,
+      "speed_Ki": 0.004,
+      "pitch_zero": -4,
+      "run_samples": 399,
+      "att_samples": 100,
+      "speed_mean_mps": 0.005892230576441102,
+      "speed_rms_mps": 0.10554229217994315,
+      "speed_q05_median_q95": [
+        -0.171,
+        0.0,
+        0.20949999999999983
+      ],
+      "speed_minmax": [
+        -0.248,
+        0.295
+      ],
+      "pitch_q05_median_q95": [
+        -6.3781,
+        -3.9735,
+        -1.3935
+      ],
+      "pitch_minmax": [
+        -7.224,
+        -0.882
+      ],
+      "speed_dominant_hz": 0.6024096385542168,
+      "period_s": 1.6600000000000001,
+      "dt_median_ms": 20.000000000010232,
+      "dt_max_ms": 54.00000000003047,
+      "missing_estimate": 100,
+      "max_individual_fly_rpm": 1032.0
+    },
+    {
+      "label": "P_I_increased",
+      "session": "20260911_160605_934300",
+      "pc_window_s": [
+        452,
+        462
+      ],
+      "speed_Kp": 0.08,
+      "speed_Ki": 0.006,
+      "pitch_zero": -4,
+      "run_samples": 400,
+      "att_samples": 100,
+      "speed_mean_mps": -0.0010475000000000016,
+      "speed_rms_mps": 0.1096311429293702,
+      "speed_q05_median_q95": [
+        -0.18,
+        0.0,
+        0.188
+      ],
+      "speed_minmax": [
+        -0.257,
+        0.316
+      ],
+      "pitch_q05_median_q95": [
+        -6.82615,
+        -3.6254999999999997,
+        -0.9805000000000001
+      ],
+      "pitch_minmax": [
+        -7.8,
+        0.232
+      ],
+      "speed_dominant_hz": 0.7028112449799195,
+      "period_s": 1.422857142857143,
+      "dt_median_ms": 19.99999999998181,
+      "dt_max_ms": 40.000000000020464,
+      "missing_estimate": 99,
+      "max_individual_fly_rpm": 918.0
+    },
+    {
+      "label": "latest",
+      "session": "20260911_170857_597700",
+      "pc_window_s": [
+        5,
+        45
+      ],
+      "speed_Kp": 0.065,
+      "speed_Ki": 0.004,
+      "pitch_zero": -3.8,
+      "run_samples": 1600,
+      "att_samples": 400,
+      "speed_mean_mps": 2.8125000000000094e-05,
+      "speed_rms_mps": 0.12090689341389928,
+      "speed_q05_median_q95": [
+        -0.188,
+        0.0,
+        0.209
+      ],
+      "speed_minmax": [
+        -0.312,
+        0.372
+      ],
+      "pitch_q05_median_q95": [
+        -6.23555,
+        -3.597,
+        -1.5288500000000012
+      ],
+      "pitch_minmax": [
+        -7.01,
+        -0.775
+      ],
+      "speed_dominant_hz": 0.6003001500750375,
+      "period_s": 1.6658333333333335,
+      "dt_median_ms": 19.99999999998181,
+      "dt_max_ms": 40.000000000020464,
+      "missing_estimate": 400,
+      "max_individual_fly_rpm": 1453.0
+    }
+  ]
+}
