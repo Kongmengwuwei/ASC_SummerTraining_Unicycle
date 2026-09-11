@@ -171,9 +171,13 @@ class MainWindow(W.QMainWindow):
         self.task_page=TaskPage(self.engine) if self.engine.profile.data.get("task_states") else None
         self.params=ParameterPage(self.engine)
         self.workbenches=[];bench=W.QTabWidget()
-        for group,channels in self.engine.profile.data.get("workbenches",{}).items():
+        workbench_specs=dict(self.engine.profile.data.get("workbenches",{}))
+        if self.engine.profile.data.get("id")=="tc264_unicycle":
+            workbench_specs.setdefault("Run",["speed_plan","speed_ramp","speed_actual","lateral_error","heading_error","yaw_rate_actual"])
+            workbench_specs.setdefault("Lean",["roll","roll_target","lean_offset","recovery_output"])
+        for group,channels in workbench_specs.items():
             widget=W.QSplitter(QtCore.Qt.Vertical);params=ParameterPage(self.engine,group);plot=TuningPlots(self.engine,group,channels,params)
-            widget.addWidget(params);widget.addWidget(plot);widget.setSizes([420,370]);bench.addTab(widget,group);self.workbenches.append((params,plot))
+            widget.addWidget(params);widget.addWidget(plot);widget.setSizes([420,370]);bench.addTab(widget,{"Run":"速度 / 转向","Lean":"压弯"}.get(group,group));self.workbenches.append((params,plot))
         self.logs=LogPage(self.engine,self.open_replay)
         self.experiments=ExperimentsPage(self.engine)
         self.diagnostics=W.QPlainTextEdit();self.diagnostics.setReadOnly(True);self.diagnostics.document().setMaximumBlockCount(600)

@@ -85,6 +85,7 @@ class Parameter:
     description: str = ""
     read_only: bool = False
     runtime_writable: bool = False
+    runtime_control: bool = False
     persistent: bool = True
     dangerous: bool = False
     requires_stopped: bool = True
@@ -196,7 +197,7 @@ class DeviceProfile:
         flags = int(flags)
         p = Parameter(name=name, type=typ, value=value, min=float(low), max=float(high),
                       group=group if group in self.data.get("parameter_groups", []) else "未分类参数",
-                      step=float(step), runtime_writable=bool(flags & 1), dangerous=bool(flags & 2),
+                      step=float(step), runtime_writable=bool(flags & 1), runtime_control=bool(flags & 16), dangerous=bool(flags & 2),
                       persistent=bool(flags & 4), read_only=bool(flags & 8), requires_stopped=not bool(flags & 1))
         for k, v in metadata.items():
             if k in ("label", "unit", "description", "decimals", "default", "visible_if", "enabled_if", "enum_options", "sort_order", "step"):

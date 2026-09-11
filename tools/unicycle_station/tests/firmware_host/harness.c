@@ -20,11 +20,14 @@ const param_desc_t g_param_table[] = {
     {"r_rate_kp", &g_param.r_rate_kp, 1, -2000,2000},
     {"r_angle_kp", &g_param.r_angle_kp, 1,-2000,2000},
     {"motor_dir_a", &g_param.motor_dir_a, 0,-1,1},
-    {"cam_exposure", &g_param.cam_exposure, 0,4,1600}
+    {"cam_exposure", &g_param.cam_exposure, 0,4,1600},
+    {"run_speed_straight", &g_param.run_speed_straight,1,0,1.5f},
+    {"lean_roll_kp", &g_param.direction_roll_kp,1,0,100},
+    {"direction_rate_kd", &g_param.direction_balance_kd,1,0,1}
 };
-uint16 param_count(void) { return 4; }
+uint16 param_count(void) { return sizeof(g_param_table)/sizeof(g_param_table[0]); }
 const param_desc_t *param_find(const char *name) {
-    uint16 i; for(i=0;i<4;i++) if(strcmp(name,g_param_table[i].name)==0) return &g_param_table[i]; return NULL;
+    uint16 i; for(i=0;i<param_count();i++) if(strcmp(name,g_param_table[i].name)==0) return &g_param_table[i]; return NULL;
 }
 uint8 param_get_by_name(const char *name,float *value) {
     const param_desc_t *d=param_find(name); if(!d)return 0;
@@ -43,7 +46,7 @@ control_test_status_t control_test_last_status(void) {return CTRL_TEST_STATUS_OK
 uint8 control_ipm_pending(void) {return 0;}
 void control_remote_status(float *steer,float *speed,uint16 *age,uint8 *seen) {*steer=10;*speed=.15f;*age=25;*seen=1;}
 uint8 control_remote_command(float a,float b) {(void)a;(void)b;return mock_remote;}
-void control_run_diag_snapshot(volatile control_run_diag_t *out) {(void)out;}
+void control_run_diag_snapshot(volatile control_run_diag_t *out) {memset((void *)out,0,sizeof(*out));out->uptime_ms=g_control_uptime_ms;out->roll=12.5f;out->state_flags=mock_run ? 1 : 2;}
 imu_calib_state_t imu_calib_state(void) {return IMU_CALIB_OK;}
 uint8 imu_link_lost(void) {return 0;}
 uint8 W_Motor_LinkLost(void) {return 0;}
@@ -85,7 +88,7 @@ int main(void) {
     feed("cfg:set,14,r_rate_kp,3\n");assert(g_param.r_rate_kp==3);drain();
     feed("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxstop\n");assert(stop_count==2);drain();
     s_tx_head=VOFA_TX_SIZE-2;s_tx_tail=0;assert(!tx_push((const uint8*)"abc",3));assert(s_tx_head==VOFA_TX_SIZE-2);s_tx_tail=s_tx_head;
-    feed("cfg:schema,15\n");for(unsigned i=0;i<5;i++){g_control_uptime_ms+=31;cfg_poll();}assert(strstr(drain(),"rsp:15,ok,schema,4"));
+    feed("cfg:schema,15\n");for(unsigned i=0;i<8;i++){g_control_uptime_ms+=31;cfg_poll();}assert(strstr(drain(),"rsp:15,ok,schema,7"));
     g_control_uptime_ms+=600;cfg_poll();drain();
     feed("cfg:save,16,all\n");s_rx_idle_ms=101;cfg_poll();assert(save_count==1);assert(strstr(drain(),"save,all,VERIFIED"));
     /* Diagnostic state capture continues with ordinary VOFA output disabled. */
@@ -104,5 +107,49 @@ int main(void) {
     assert(s_task_dropped>0 && s_task_head-s_task_tail==TASK_EVENT_CAPACITY);
     g_control_uptime_ms+=200;task_poll();assert(strstr(drain(),"task:"));
     assert(save_count==1 && stop_count==2);
+    /* Handshake enables diagnostic frames in Balance/Remote and single-axis
+       Test without modifying menu telemetry selection or setting Run active. */
+    mock_run=mock_test=mock_remote=0;start_flag=START_STOP;g_vofa_mode=VOFA_OFF;
+    s_station_att=0;assert(vofa_effective_mode()==VOFA_OFF);
+    start_flag=START_BALANCE;assert(vofa_effective_mode()==VOFA_OFF);
+    feed("cfg:hello,30\n");drain();assert(vofa_effective_mode()==VOFA_RUN);
+    assert(!mock_run && g_vofa_mode==VOFA_OFF);
+    vofa_poll();drain();
+    for(unsigned i=0;i<20;i++){g_control_uptime_ms++;vofa_snapshot();}
+    vofa_poll();assert(strstr(drain(),"run:") && strstr(response,"12.500"));
+    mock_remote=1;
+    for(unsigned i=0;i<20;i++){g_control_uptime_ms++;vofa_snapshot();}
+    vofa_poll();assert(strstr(drain(),"run:"));
+    mock_remote=0;start_flag=START_STOP;mock_test=1;assert(vofa_effective_mode()==VOFA_RUN);
+    for(unsigned i=0;i<20;i++){g_control_uptime_ms++;vofa_snapshot();}
+    vofa_poll();assert(strstr(drain(),"run:"));
+    mock_test=0;assert(vofa_effective_mode()==VOFA_OFF);vofa_poll();drain();
+    for(unsigned i=0;i<30;i++){g_control_uptime_ms++;vofa_snapshot();}
+    vofa_poll();assert(!strstr(drain(),"run:"));
+    g_vofa_mode=VOFA_ATT;assert(vofa_effective_mode()==VOFA_ATT);
+    start_flag=START_BALANCE;assert(vofa_effective_mode()==VOFA_RUN);
+    /* ATT menu selection must not suppress auxiliary att frames during tests. */
+    g_control_uptime_ms+=101;cfg_poll();assert(strstr(drain(),"att:"));
+    s_station_att=0;assert(vofa_effective_mode()==VOFA_ATT);
+    g_vofa_mode=VOFA_RUN;assert(vofa_effective_mode()==VOFA_RUN);
+    /* Runtime permission is advertised and rechecked on the MCU per write. */
+    start_flag=START_BALANCE;mock_test=mock_jog=0;mock_run=1;
+    assert((cfg_pid_mask() & 0x01000000u)!=0);
+    feed("cfg:set,40,run_speed_straight,0.25\n");assert(g_param.run_speed_straight==.25f);assert(strstr(drain(),"APPLIED"));
+    feed("cfg:set,41,lean_roll_kp,200\n");assert(g_param.direction_roll_kp==100);assert(strstr(drain(),"CLAMPED"));
+    feed("cfg:set,42,direction_rate_kd,0.5\n");assert(g_param.direction_balance_kd==.5f);assert(strstr(drain(),"APPLIED"));
+    feed("cfg:set,43,cam_exposure,80\n");assert(strstr(drain(),"RUNNING_LOCKED"));
+    feed("cfg:set,44,motor_dir_a,1\n");assert(strstr(drain(),"UNSAFE_PARAM"));
+    feed("cfg:save,45,all\n");assert(strstr(drain(),"SAVE_BLOCKED"));
+    mock_run=0;mock_remote=1;
+    feed("cfg:set,46,lean_roll_kp,5\n");assert(g_param.direction_roll_kp==5);assert(strstr(drain(),"APPLIED"));
+    mock_remote=0;mock_test=1;g_tune_axis=TUNE_AXIS_ROLL;g_tune_ring=TUNE_RING_RATE;
+    assert((cfg_pid_mask() & 0x01000000u)==0);
+    feed("cfg:set,47,lean_roll_kp,6\n");assert(g_param.direction_roll_kp==5);assert(strstr(drain(),"RUNNING_LOCKED"));
+    mock_test=0;mock_jog=1;assert(cfg_pid_mask()==0);
+    feed("cfg:set,48,run_speed_straight,0.4\n");assert(g_param.run_speed_straight==.25f);assert(strstr(drain(),"RUNNING_LOCKED"));
+    mock_jog=0;start_flag=START_STOP;
+    feed("cfg:schema,49\n");
+    {int found=0;for(unsigned i=0;i<8;i++){g_control_uptime_ms+=31;cfg_poll();if(strstr(drain(),"lean_roll_kp,float,5,0,100,Lean,0.0001,21"))found=1;}assert(found);}
     printf("MCU host contract checks passed (not an ADS/TASKING build)\n");return 0;
 }

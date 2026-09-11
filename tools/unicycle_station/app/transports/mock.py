@@ -4,6 +4,7 @@ import random
 import threading
 import time
 from app.protocols.firewater import FireWaterParser
+from app.core.live_parameters import LIVE_CONTROL_PARAMETERS
 
 
 class MockTransport:
@@ -15,6 +16,8 @@ class MockTransport:
         self.queue = bytearray()
         self.lock = threading.RLock()
         self.params = {p["name"]: dict(p) for p in profile.data.get("mock_parameters", [])}
+        for name,p in self.params.items():
+            if name in LIVE_CONTROL_PARAMETERS:p["flags"] |= 17
         self.connected = False
         self.mode = "STOP"
         self.manual_stopped = False
@@ -40,7 +43,7 @@ class MockTransport:
     def status_values(self, ms):
         return [ms, 2 if self.mode in ("Run", "Balance", "Remote") else 0, int(self.mode == "Run"),
                 1 if self.mode == "Test" else 0, int(self.mode == "Jog"), 7, 1, 1, 1, 0,
-                0, self.revision, 0, 0, 0x00ffffff if self.mode in ("STOP", "Balance", "Run", "Remote") else 7]
+                0, self.revision, 0, 0, 0x01ffffff if self.mode in ("Balance", "Run", "Remote") else 0x00ffffff if self.mode=="STOP" else 7]
 
     def enter_remote_demo(self):
         with self.lock:
@@ -156,7 +159,7 @@ class MockTransport:
                         self.append(prefix + "err,UNKNOWN_PARAM,Unknown parameter")
                     elif op == "get":
                         self.append(prefix + f"ok,get,{p['name']},{p['value']}")
-                    elif self.mode != "STOP" and (self.mode == "Jog" or not p["flags"] & 1):
+                    elif self.mode != "STOP" and (self.mode == "Jog" or not p["flags"] & 1 or (p["flags"] & 16 and self.mode not in ("Balance","Run","Remote"))):
                         self.append(prefix + "err,RUNNING_LOCKED,Locked")
                     else:
                         try:

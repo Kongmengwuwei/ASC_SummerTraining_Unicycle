@@ -28,7 +28,7 @@ seq 为 1–65535；PC 同一时刻仅保留一个在途配置请求。读取超
 par:<seq>,<name>,<float|int>,<value>,<min>,<max>,<group>,<step>,<flags>
 ```
 
-flags：bit0=PID 运行期候选，bit1=危险参数，bit2=可持久化，bit3=只读。bit0 还必须与当前 stat 的 pid_write_mask 相交，不表示所有模式均可写。参数的类型与范围以 `g_param_table` 为准，显示名称、说明、步长等由 Profile 补充。未知参数自动显示在未分类组。
+flags：bit0=运行期候选，bit1=危险参数，bit2=可持久化，bit3=只读，bit4=速度/转向/压弯在线白名单。PID 必须与 stat 的 bit0–23 相交；白名单参数必须同时带 bit0、bit4，且 stat bit24 开放。不表示所有模式均可写。参数的类型与范围以 `g_param_table` 为准，显示名称、说明、步长等由 Profile 补充。未知参数自动显示在未分类组。
 
 越界有限值被钳位后返回 `CLAMPED` 与实际生效值；NaN、Inf、非整数 int、非法极性（不是 ±1）被拒绝。RAM 写入在极短临界区中完成并更新 revision，PID 在下一控制拍刷新。不会自动保存 Flash。
 
@@ -50,7 +50,7 @@ stat:uptime,start_mode,run_active,test_mode,jog_mode,imu_state,bldc_state,cam_st
 - att_state：bit0 已收敛，bit1 曾发散。
 - run_stop：0 无、1 斑马线、2 丢线、3 视觉过期、4 人工、5 安全保护。
 - test_status：与 `control_test_status_t` 一致，见固件头文件。
-- pid_write_mask：bit0–8 Roll rate/angle/rcy 的 kp/ki/kd；bit9–17 Pitch rate/angle/vel；bit18–23 Yaw rate/angle。
+- pid_write_mask：bit0–8 Roll rate/angle/rcy 的 kp/ki/kd；bit9–17 Pitch rate/angle/vel；bit18–23 Yaw rate/angle；bit24 为在线控制白名单许可，仅 Balance（含 Run/Remote）且无单轴 Test/Jog 时开放。
 
 PC 状态超过 700 ms 未更新即锁定参数。STOP 必须同时满足 start_mode、run_active、test_mode、jog_mode 为 0；Run 的正常终点可能仍处于 Balance，不能当作完全 STOP。
 
@@ -93,3 +93,9 @@ task 诊断中的视觉过期判断为 age >100 ms，Run 停帧退出为 age ≥
 请求：`cfg:remote,<seq>`，无参数；应答：`rsp:<seq>,ok,remote,1,<active>,<steer_deg>,<speed_mps>,<age_ms>,<seen>`。`1` 是该扩展版本，active/seen 为 0/1，age_ms 是最后一条合法遥控命令的年龄（0–65535）。该接口不会启动 Remote；现有 hello 标识、stat 15 字段及其余命令保持兼容。
 
 PC 使用新鲜 Remote 查询和 stat 双重确认再允许现有 speed 指令。speed 的第一项是相对当前航向角，第二项是速度原始输入（m/s ×40）；正负转向遵循 STEER_DIR。超时回零与操作步骤见 [遥控说明](experience-remote.md)。
+
+## Run Test 波形与在线调参（0.5.1）
+
+握手后 Balance、Remote 和单轴 Test 自动使用现有 run: 25 通道诊断帧，默认分频仍为 20 ms。run: 标签不代表 Run 已启动，任务与轨迹仍由真实 Run 状态位控制。菜单波形选择不被覆盖，退出测试后恢复菜单选定模式；辅助 att 姿态继续发送。视觉规划等未启用功能的诊断值不代表正在执行的控制目标。
+
+在线白名单及操作步骤见 [运行中调试](live-tuning.md)。旧上位机忽略新权限位仍可监看；旧固件没有白名单权限标记时，新上位机继续锁定这些参数。

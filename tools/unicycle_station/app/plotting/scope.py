@@ -123,7 +123,7 @@ class PlotPanel(W.QWidget):
         elif self.pause.isChecked():hint='图表已暂停，后台仍接收；点击“恢复实时”继续。'
         elif not available:
             tags={tag for tag,items in self.store.profile.channels.items() if any(ch['name'] in self.channels for ch in items)}
-            hint='当前时间窗口未收到所选通道。'+('Run 全量通道需车端启用 Run 遥测；可先点击“显示姿态”检查链路。' if 'run' in tags else '请检查连接及数据源是否发送这些通道。')
+            hint='当前时间窗口未收到所选通道。'+('完整通道需车端启用诊断遥测（新版支持 Run / Run Test）；可先点击“显示姿态”检查链路。' if 'run' in tags else '请检查连接及数据源是否发送这些通道。')
         elif available and all(end-data[name][-1][0]>.7 for name in available):hint='所选通道已超过 0.7 秒未更新；当前显示已有数据，请检查连接或车端遥测模式。'
         elif not self.follow.isChecked():hint='视图未跟随最新数据；点击“恢复实时”回到当前时刻。'
         elif missing:hint='正在显示 '+str(len(available))+' 个通道；等待 '+', '.join(missing[:4])

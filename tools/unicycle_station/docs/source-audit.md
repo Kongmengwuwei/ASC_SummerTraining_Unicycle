@@ -37,7 +37,7 @@
 ## 已发现但本次未改代码的边界
 
 1. **Roll 菜单权限索引残留。** s_roll_items 现为 9 项，索引 6 已是 r_rcy_kp，但 group_param_edit_allowed() 仍把索引 3～6 视作 Angle。结果为 Angle Test 下 Speed Kp 可编辑，实际回收环没有启用。cfg_pid_mask() 按 3 项一组正确限制；不要把此菜单现象写成回收已参与控制。
-2. **菜单与 cfg 写入保护不同。** cfg 把非 PID 运行写入锁住；菜单主要限制 Motor/Zero/Odometry 和单轴 Test 的环。其他参数页可编辑范围较宽，Jog 使用 START_STOP，因此仅看 start_flag 的菜单限制也不能等同完整运行保护。
+2. **菜单与 cfg 写入保护不同。** cfg 在 Balance/Run/Remote 中除 PID 外开放明确的速度、转向和压弯白名单（见 live-tuning.md），其余非 PID 运行写入仍锁定；菜单主要限制 Motor/Zero/Odometry 和单轴 Test 的环。其他参数页可编辑范围较宽，Jog 使用 START_STOP，因此仅看 start_flag 的菜单限制也不能等同完整运行保护。
 3. **保存门槛不同。** 菜单 Save/IPM 自动保存没有 cfg 的 500 ms 稳定轮速与 100 ms RX 静默门槛。param_save()/param_save_names() 提供 CRC/回读，但不等于所有调用入口都实施了相同静止判据。
 4. **注释与实际退出不同。** menu_run() 附近旧注释只提斑马线保留平衡；control.c 的 manual/lost/vision 路径也会 run_hold_balance。状态显示标志不能替代 start_flag/运行标志和实际输出判定。
 5. **有效性不止一个标志。** vision_core 发布 g_direction_valid；my_image.Track_Valid 是中间中线状态。task 分类依据 CPU0 已接收状态，且超时判断为年龄 >100 ms；Run 退出采用 ≥100 ms，两者边界相差一拍。

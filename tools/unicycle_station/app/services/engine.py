@@ -282,6 +282,8 @@ class StationEngine:
         bit = self.profile.data.get("pid_mask", {}).get(p.name)
         if p.runtime_writable and bit is not None and int(self.status[14]) & (1 << bit):
             return True, "当前闭环 PID"
+        if p.runtime_writable and p.runtime_control and self.status[1]==2 and not self.status[3] and int(self.status[14]) & (1 << 24):
+            return True, "可在线调节 · 对应功能启用时生效"
         return False, "运行锁定"
 
     def _apply(self, changes, advanced=False):

@@ -67,8 +67,19 @@ static volatile uint8  s_rx_overflow;           // 接收环溢出，本行命�
 static uint32 s_cfg_rx_error, s_cfg_tx_drop;
 static uint16 s_schema_seq, s_schema_index, s_save_seq;
 static uint32 s_schema_next_ms, s_stop_since, s_cfg_last_status;
-static uint8 s_stop_seen, s_station_att;
+static uint8 s_stop_seen;
+static volatile uint8 s_station_att;
 static char s_save_group[24];
+
+/* The run: tag is a diagnostic frame, not a requirement to start visual Run.
+ * Keep menu selection intact; station-linked balance/test modes reuse the same
+ * bounded snapshot and divider instead of creating a second telemetry stream. */
+static vofa_mode_t vofa_effective_mode(void)
+{
+    if (s_station_att && (start_flag == START_BALANCE || control_test_running()))
+        return VOFA_RUN;
+    return g_vofa_mode;
+}
 
 static uint8 tx_push(const uint8 *dat, uint32 len)
 {
@@ -333,6 +344,31 @@ static int cfg_pid_index(const char *name)
     return -1;
 }
 
+/* Explicit runtime allowlist. Never infer permission from a name prefix. */
+static uint8 cfg_live_control(const char *name)
+{
+    static const char *const names[] = {
+        "run_speed_straight",
+        "run_speed_curve",
+        "run_speed_cross",
+        "run_speed_ring",
+        "run_speed_ramp",
+        "run_speed_lost",
+        "run_accel_mps2",
+        "run_decel_mps2",
+        "direction_pixel_kp",
+        "direction_heading_kp",
+        "direction_curve_kff",
+        "direction_rate_kd",
+        "lean_roll_kp",
+        "lean_max_angle",
+    };
+    uint8 i;
+    for (i = 0; i < (uint8)(sizeof(names) / sizeof(names[0])); i++)
+        if (strcmp(name, names[i]) == 0) return 1;
+    return 0;
+}
+
 static const char *cfg_group(const char *n)
 {
     if (strncmp(n, "r_", 2) == 0) return "Roll";
@@ -376,7 +412,8 @@ static uint32 cfg_pid_mask(void)
         mask = ((1u << (rings * 3u)) - 1u) << shift;
         return mask;
     }
-    if (start_flag == START_BALANCE || cfg_stopped()) return 0x00FFFFFFu;
+    if (start_flag == START_BALANCE) return 0x01FFFFFFu; /* bit 24: live control allowlist */
+    if (cfg_stopped()) return 0x00FFFFFFu;
     return 0;
 }
 
@@ -432,7 +469,7 @@ static vofa_cmd_result_t cfg_execute(char *line)
     float value, actual;
     uint32 irq;
     int pid_index;
-    uint8 allowed;
+    uint8 allowed, live_control;
     fields[0] = p;
     for (; *p; p++)
     {
@@ -493,8 +530,10 @@ static vofa_cmd_result_t cfg_execute(char *line)
             { (void)cfg_reply(seq, "err", "OUT_OF_RANGE,Polarity must be plus or minus one"); return VOFA_CMD_FORMAT; }
             if (s_save_seq) { (void)cfg_reply(seq, "err", "BUSY,Save pending"); return VOFA_CMD_FORMAT; }
             pid_index = cfg_pid_index(d->name);
+            live_control = cfg_live_control(d->name);
             irq = interrupt_global_disable();
-            allowed = (uint8)(cfg_stopped() || (pid_index >= 0 && (cfg_pid_mask() & (1u << pid_index)) != 0u));
+            allowed = (uint8)(cfg_stopped() || (pid_index >= 0 && (cfg_pid_mask() & (1u << pid_index)) != 0u) ||
+                (live_control && (cfg_pid_mask() & 0x01000000u) != 0u));
             if (allowed)
             {
                 /* Descriptor already resolved. Bounded writes; no table search in the critical section. */
@@ -543,7 +582,7 @@ static void cfg_poll(void)
         s_cfg_last_status = now;
         (void)cfg_status();
     }
-    if (s_station_att && g_vofa_mode != VOFA_ATT)
+    if (s_station_att && vofa_effective_mode() != VOFA_ATT)
     {
         static uint32 last_att;
         float a[3];
@@ -570,7 +609,8 @@ static void cfg_poll(void)
         {
             const param_desc_t *d = &g_param_table[s_schema_index];
             float value;
-            uint8 flags = 4u | (cfg_pid_index(d->name) >= 0 ? 1u : 0u) | (cfg_dangerous(d->name) ? 2u : 0u);
+            uint8 flags = 4u | (cfg_pid_index(d->name) >= 0 ? 1u : 0u) |
+                (cfg_live_control(d->name) ? 17u : 0u) | (cfg_dangerous(d->name) ? 2u : 0u);
             (void)param_get_by_name(d->name, &value);
             len = snprintf(line, sizeof(line), "par:%u,%s,%s,%.9g,%.9g,%.9g,%s,%.6g,%u\n",
                 (unsigned int)s_schema_seq, d->name, d->is_float ? "float" : "int", (double)value,
@@ -659,7 +699,7 @@ static void cmd_submit_line(void)
 //-------------------------------------------------------------------------------------------------------------------
 void vofa_snapshot(void)
 {
-    vofa_mode_t mode = g_vofa_mode;
+    vofa_mode_t mode = vofa_effective_mode();
 
     task_capture();
     if (mode == VOFA_OFF) return;
@@ -688,7 +728,7 @@ void vofa_poll(void)
 {
     static uint32 last_seq = 0;                 // 上次已发送的快照序号
     static vofa_mode_t last_mode = VOFA_OFF;
-    vofa_mode_t mode = g_vofa_mode;
+    vofa_mode_t mode = vofa_effective_mode();
     float  att_ch[VOFA_ATT_CH_COUNT];
     control_run_diag_t run;
     char   line[256];

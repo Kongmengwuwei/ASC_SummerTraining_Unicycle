@@ -6,9 +6,9 @@
 
 ## 启动
 
-**最新版 0.5.0**：双击本目录的 `start_app.bat`，或打开 `dist/EmbeddedStation/EmbeddedStation.exe`。无需安装 Python；复制到其他电脑时须复制整个 `EmbeddedStation` 文件夹。
+**最新版 0.5.1**：双击本目录的 `start_app.bat`，或打开 `dist/EmbeddedStation/EmbeddedStation.exe`。无需安装 Python；复制到其他电脑时须复制整个 `EmbeddedStation` 文件夹。
 
-本目录只保留这一份发行程序。历史源码与验证记录保存在 Git；安装包不纳入 Git，需要旧版时从对应提交重新构建。最新改动见 [版本说明](docs/experience-remote.md)，验证结果见 [验证记录](docs/validation.md)。
+本目录只保留这一份发行程序。历史源码与验证记录保存在 Git；安装包不纳入 Git，需要旧版时从对应提交重新构建。最新改动见 [版本说明](docs/live-tuning.md)，验证结果见 [验证记录](docs/validation.md)。
 
 快捷键、折叠和排序见 [交互说明](docs/interaction-workflow.md)，Run 记录、名称自定义及总览显隐见 [个性化说明](docs/personalization-workflow.md)，任务轨迹等见 [调试说明](docs/debug-workflow.md)。串口连接问题见 [连接排查](docs/handshake-diagnosis.md)。
 
@@ -34,7 +34,7 @@
 - **试验与对比**：自动运行片段、参数快照、A/B 波形与参数差异、故障前后日志截取。
 - **参数调节**：先等待完整 Schema，同步后按组搜索。当前 MCU 值与待应用值分列。单项/组应用会预览差异并逐项等待确认，失败立即中止。支持收藏、回退、微调、JSON 预设。未知新增参数显示在未分类组。
 - **Flash**：仅 MCU 确认 STOP 时开放按钮，MCU 还会检查轮速稳定和待处理操作。保存只在回读验证应答后标记成功。危险参数需停车、高级模式解锁和二次确认。
-- **调参工作台**：Roll/Pitch/Yaw 的 Schema 参数与相关数值曲线。当前固件没有独立 Pitch 输出完整遥测，页面只展示确实存在的姿态/速度，不伪造缺失通道。
+- **调参工作台**：Roll/Pitch/Yaw、速度/转向及压弯参数与相关波形同屏显示。支持 Run Test 波形及运行中在线调参，见 [操作说明](docs/live-tuning.md)。当前固件没有独立 Pitch 输出完整遥测，页面只展示确实存在的姿态/速度，不伪造缺失通道。
 - **日志与回放**：默认连接即开始记录，保证车身发车前已有数据。运行中请求停止记录会延迟到停车后至少 2 秒；主动断开或关闭应用会结束会话。打开 `frames.jsonl`，播放/暂停/倍速/拖动，双击事件跳转，导出区间。图表暂停不停止后台记录。
 - **通信诊断**：原始行、解析错误、参数应答和故障记录。未知行不会使程序崩溃。
 - **设置**：日志目录、自动记录、Mock 异常注入、派生通道。工作区菜单可新建、打开、保存、另存、导入/导出、恢复默认布局和切换设备 Profile。

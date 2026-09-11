@@ -167,3 +167,19 @@ def test_non_ring_event_does_not_show_ring_phase():
     assert '环岛阶段' not in observer.accept(evt(2,4))[-1][1]
     observer.accept(evt(3,5))
     assert '环岛阶段' in observer.accept(evt(4,5))[-1][1]
+
+
+def test_balance_diagnostic_frames_feed_waveforms_without_starting_run(window):
+    e=window.engine
+    channel=e.profile.channels['run'][1]['name']
+    panel=window.scope.panels[0][1]
+    panel.set_channels([channel])
+    stamp=time.monotonic()-.1
+    for i in range(3):
+        values=[0.0]*25;values[0]=1000+i*20;values[1]=2+i;values[24]=2  # Balance, Run inactive.
+        e.ingest(('run:'+','.join(map(str,values))+'\n').encode(),received=stamp+i*.02)
+    panel.update_data()
+    x,y=panel.curves[channel].getData()
+    assert list(y)==[2,3,4]
+    assert not e.run_session.active
+    assert not e.trajectory.points

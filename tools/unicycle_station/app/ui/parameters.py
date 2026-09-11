@@ -30,6 +30,8 @@ class ParameterPage(W.QWidget):
         bar.addWidget(self.group)
         self.modified=W.QCheckBox("只看修改");bar.addWidget(self.modified)
         self.starred=W.QCheckBox("只看收藏");bar.addWidget(self.starred)
+        self.editable_only=W.QCheckBox("只看当前可调");bar.addWidget(self.editable_only)
+        self.editable_only.toggled.connect(self.update_data)
         self.advanced=W.QCheckBox("解锁高级模式");bar.addWidget(self.advanced)
         layout.addLayout(bar)
         bar2=W.QToolBar()
@@ -291,6 +293,7 @@ class ParameterPage(W.QWidget):
             self.table.item(row,7).setText(("危险 · " if p.dangerous else "")+why)
             hidden=((self.name_prefix and not name.startswith(self.name_prefix)) or self.group.currentData() not in ("全部",p.group) or query not in (name+p.label+self.ui.parameter_label(p)+self.ui.group_label(key)).lower()
                     or (self.modified.isChecked() and p.pending in (None,p.value) and not p.ram_dirty)
+                    or (self.editable_only.isChecked() and not allowed)
                     or (self.starred.isChecked() and name not in self.favorites) or not p.condition(p.visible_if,values))
             if not hidden:visible[key]=visible.get(key,0)+1
             if p.pending is not None and p.pending!=p.value:changed[key]=changed.get(key,0)+1
@@ -306,5 +309,6 @@ class ParameterPage(W.QWidget):
             item.setBackground(QtGui.QColor("#223141" if dark else "#dfe8f1"))
             item.setForeground(QtGui.QColor("#bcd5e9" if dark else "#263f54"))
         self.save_all.setEnabled(self.engine.stopped());self.save_group.setEnabled(self.engine.stopped() and self.group.currentData() not in ("全部","未分类参数"))
-        self.status.setText(f"{len(params)} 项 · "+("STOP 已确认" if self.engine.stopped() else "运行或状态未确认")+" · "+self.ui.note)
+        editable=sum(self.engine.permission(p,self.advanced.isChecked())[0] for p in params.values())
+        self.status.setText(f"{len(params)} 项 · 当前可调 {editable} 项 · 修改后点击应用，只写 RAM · "+self.ui.note)
         self.status.setWordWrap(True)
