@@ -45,6 +45,11 @@
 Thumbs.db
 Desktop.ini
 
+# Python caches (including standalone tools)
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
 # Temporary, backup and log files
 *.tmp
 *.temp
