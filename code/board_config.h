@@ -112,7 +112,7 @@
 #define LEAN_RATE_DEAD_DPS          (2.0f)     // 连续转弯率死区
 #define LEAN_GRAVITY_MPS2           (9.80665f)
 #define LEAN_MAX_ANGLE_DEFAULT       (5.0f)     // 压弯动态零点最大值(°)
-#define DIRECTION_CAMERA_LIMIT       (5000.0f)  // direction_camera 加权和限幅
+#define DIRECTION_CAMERA_LIMIT       (15000.0f) // 加权和限幅，除以 345 后约 ±43.48 pixel
 #define DIRECTION_CAMERA_WEIGHT_SUM  (345.0f)   // 60行方向权重总和，用于还原平均像素偏差
 #define DIRECTION_ERROR_ALPHA        (0.25f)    // 方向误差低通的新值权重
 #define DIRECTION_D_RATE_LIMIT       (200.0f)   // 滤波后误差变化率限幅(pixel/s)

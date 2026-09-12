@@ -68,3 +68,9 @@ cfg/task 源码及 PC 主机测试不代替当前 TASKING 编译、1 ms ISR 时�
 Pitch 全串级及单轴测试改用 `gyro_y*cos(roll)-gyro_z*sin(roll)`，原始机体系角速度、Mahony、CPU1 反馈及其他控制参数保持原义。角度更新时缓存三角函数，陀螺仍以 1 ms 更新；初始化和串级复位清除缓存有效标志。
 
 8 项主机回归通过：实际 C 投影及两个控制入口覆盖左右倾斜、不同 Pitch/Yaw 运动组合、直立旧响应、持续转弯零 Pitch 漂移输入、缓存更新/复位及输出限幅，同时回归原压弯、Flash 迁移和协议。ADS/TASKING Debug 构建通过，0 errors，32.5 s；仅现有 `vofa_task.inc:35` W515。输入 SHA-256：`c5e88cb2fad9af266cb5059e2fadd79fe33f535b0b4f9c5cd83a795f2294a553`。最新 ELF/HEX/MAP 路径及哈希见 [.ads/build/latest.json](../../../.ads/build/latest.json)。未烧录、未进行修正后的实车验证，也未测量新增路径在车端的最坏执行时间。
+
+## 2026-09-12 视觉方向误差范围扩大
+
+共用 `DIRECTION_CAMERA_LIMIT` 由 5000 调至 15000（除以 345 后约 ±43.48 pixel），同时覆盖图像发布、CPU0 接收和方向计算；未改运行时增益、参数数量或 Flash 格式。当前控制/视觉指南、通道说明和 skill 项目参考已同步；历史日志保留原 14.493 pixel 限幅证据。
+
+新增真实 C 函数回归覆盖正负大偏差、小偏差、部分有效行归一化、回退/HOLD/失效、CPU0 限幅、Yaw 动量权限、斜率及航向超前限制。连同 Pitch 坐标、压弯和协议/ISR 检查，共 9 项通过。ADS/TASKING Debug 构建 28.1 秒通过，0 errors，仍有 `code/vofa_task.inc:35` 既有 W515 警告。输入 SHA-256：`7264fe19e3259febcbc94e59e01bc5aab2719655570ca54919f10381d4544c5d`。skill 校验通过。未烧录或进行实车验证；副作用及对照步骤见 [控制调试指南](../../../控制调试指南.md)。

@@ -20,7 +20,7 @@
 |11|yaw_output_raw|Yaw 混控前 / duty|
 |12|yaw_output_applied|Yaw 实际分配 / duty|
 |13|flywheel_common_rpm|A/B 共模 / RPM|
-|14|direction_offset|方向像素误差 / pixel|
+|14|direction_offset|方向像素误差（滤波后），当前限约 ±43.48 / pixel|
 |15|lateral_error|BEV 横向误差 / 赛道半宽归一化|
 |16|heading_error|赛道航向误差 / °|
 |17|curvature|BEV 有符号归一化曲率|
