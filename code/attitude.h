@@ -10,9 +10,9 @@ typedef struct
     float yaw;          // 连续航向角，永不清零，单位 deg
     float yaw_wrapped;  // 显示用航向角，范围 (-180, 180]
 
-    float roll_rate;    // 横滚角速度，单位 deg/s
-    float pitch_rate;   // 俯仰角速度，单位 deg/s
-    float yaw_rate;     // 航向角速度，单位 deg/s
+    float roll_rate;    // 机体系gyro_x，单位 deg/s，不等同一般姿态下的欧拉Roll变化率
+    float pitch_rate;   // 机体系gyro_y，单位 deg/s；Pitch控制另作欧拉角速度投影
+    float yaw_rate;     // 机体系gyro_z，单位 deg/s，不等同一般姿态下的欧拉Yaw变化率
 } attitude_t;
 
 extern attitude_t att;

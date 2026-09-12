@@ -60,6 +60,9 @@ static pid_t y_angle_pid, y_rate_pid;               // Yaw  ：转向外环 / �
 
 static float s_speed_ramp;                      // 斜坡后的速度环实际目标(counts/20ms)
 static float s_rcy_fb;                          // 飞轮差速 A-B(RPM)，只在 20ms 拍更新
+// Pitch欧拉角速度投影；Roll只在5ms姿态拍变化，陀螺反馈仍每1ms更新。
+static float s_pitch_rate_roll, s_pitch_roll_sin, s_pitch_roll_cos;
+static uint8 s_pitch_rate_cache_valid;
 
 // Test 状态，前台启停、1ms 中断读
 static volatile uint8 s_test_running;           // 单轴测试运行标志
@@ -209,6 +212,7 @@ static void cascade_gain_refresh(void)
 //-------------------------------------------------------------------------------------------------------------------
 static void cascade_reset(void)
 {
+    s_pitch_rate_cache_valid = 0;                 // 重启/测试切换首拍按当前Roll重建投影
     pid_reset(&r_rcy_pid);   pid_reset(&r_angle_pid); pid_reset(&r_rate_pid);
     pid_reset(&p_vel_pid);   pid_reset(&p_angle_pid); pid_reset(&p_rate_pid);
     pid_reset(&y_angle_pid); pid_reset(&y_rate_pid);
@@ -830,6 +834,26 @@ static float roll_cascade_ctrl(float zero, uint8 run5, uint8 run20)
 }
 
 //-------------------------------------------------------------------------------------------------------------------
+// 函数简介     将机体系q/r投影为ZYX欧拉Pitch角变化率，与Pitch角度外环保持同一坐标
+// 参数说明     void；调用前沿用串级/Test的姿态和陀螺有限值检查
+// 返回参数     float           pitch_dot(°/s)，不改变att.pitch_rate或IMU原始数据
+// 使用示例     feedback = pitch_euler_rate();
+//-------------------------------------------------------------------------------------------------------------------
+static float pitch_euler_rate(void)
+{
+    if (!s_pitch_rate_cache_valid || att.roll != s_pitch_rate_roll)
+    {
+        float roll_rad = att.roll * 0.017453292519943295f;
+        s_pitch_roll_sin = sinf(roll_rad);
+        s_pitch_roll_cos = cosf(roll_rad);
+        s_pitch_rate_roll = att.roll;
+        s_pitch_rate_cache_valid = 1;
+    }
+    // 使用姿态坐标中的绝对Roll，不减机械平衡零点；此式没有cos(Pitch)分母。
+    return att.pitch_rate * s_pitch_roll_cos - imu.gyro_z * s_pitch_roll_sin;
+}
+
+//-------------------------------------------------------------------------------------------------------------------
 // 函数简介     Pitch 串级，输出由 C 行进轮执行：速度环 -> 角度环 -> 角速度环
 // 参数说明     zero/run5/run20 俯仰零点、5ms 分频标志、20ms 分频标志
 // 返回参数     float           俯仰角速度环的累计输出 PWM_pitch
@@ -842,7 +866,7 @@ static float pitch_cascade_ctrl(float zero, uint8 run5, uint8 run20)
     if (run20) pid_loc_calc_limited(&p_vel_pid, (float)Y_Motor_GetSpeed20ms() - s_speed_ramp,
                                     -P_VEL_LIMIT, P_VEL_LIMIT);
     if (run5)  pid_loc_calc(&p_angle_pid, p_vel_pid.out - att.pitch + zero);             // 角度环，位置式
-    pid_inc_calc_limited(&p_rate_pid, -att.pitch_rate + p_angle_pid.out,
+    pid_inc_calc_limited(&p_rate_pid, -pitch_euler_rate() + p_angle_pid.out,
                          -DRIVE_OUT_LIMIT, DRIVE_OUT_LIMIT);                             // 角速度环，增量式
 
     return p_rate_pid.out;
@@ -1108,7 +1132,7 @@ static float pitch_test_ctrl(uint8 run5, uint8 run20)
         pid_reset(&p_angle_pid);
     }
 
-    pid_inc_calc_limited(&p_rate_pid, -att.pitch_rate + p_angle_pid.out,
+    pid_inc_calc_limited(&p_rate_pid, -pitch_euler_rate() + p_angle_pid.out,
                          -BAL_TEST_DRIVE_LIMIT, BAL_TEST_DRIVE_LIMIT);
 
     return p_rate_pid.out;
@@ -1328,6 +1352,7 @@ static control_test_status_t control_block_to_test_status(control_block_t block)
 //-------------------------------------------------------------------------------------------------------------------
 void control_init(void)
 {
+    s_pitch_rate_cache_valid = 0;
     g_cam_ok = 0;
     g_track_valid = 0;
     g_track_lost_frames = 0;
